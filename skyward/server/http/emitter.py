@@ -47,6 +47,7 @@ class ReconcilingEventEmitter(BaseEventEmitterBackend):
         await asyncio.gather(*pending, return_exceptions=True)
 
     def emit(self, event_id: str, *args: Any, **kwargs: Any) -> None:
+        logger.debug("{} {}", event_id, " ".join(f"{name}={value}" for name, value in kwargs.items()))
         for listener in self.listeners.get(event_id, ()):
             match self._key(listener, event_id, args, kwargs):
                 case None:

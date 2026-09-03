@@ -10,13 +10,14 @@ deliberately not re-exported here — one name, one import path.
 """
 
 from skyward.shared.observability.logger import NAME, Logger, logger
-from skyward.shared.observability.logging import LogConfig, LogLevel, setup_logging, teardown_logging
+from skyward.shared.observability.logging import LogConfig, LogLevel, level, setup_logging, teardown_logging
 
 __all__ = [
     "NAME",
     "LogConfig",
     "LogLevel",
     "Logger",
+    "level",
     "logger",
     "setup_logging",
     "teardown_logging",

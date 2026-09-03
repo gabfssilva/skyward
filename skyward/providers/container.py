@@ -1,7 +1,6 @@
 import asyncio
 import json
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -13,6 +12,7 @@ from skyward.shared.providers import Container
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_LABEL = "skyward.compute"
+NODE_LABEL = "skyward.node"
 WARM_IMAGE = "skyward-warm:{tag}"
 APPLE = "container"
 DEFAULT_PYTHON = "3.13"
@@ -95,11 +95,8 @@ class ContainerProvider:
             "managed_network": not self._config.network,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with asyncio.TaskGroup() as group:
-            started = [group.create_task(self._start(binding)) for _ in range(count)]
-
-        return binding, tuple(Machine(id=task.result(), state="pending") for task in started)
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        return Machine(id=await self._start(binding, node), state="pending", node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         listed = await self._cli(
@@ -138,11 +135,12 @@ class ContainerProvider:
         warm = WARM_IMAGE.format(tag=tag)
         return warm if await self._try("image", "inspect", warm) is not None else None
 
-    async def _start(self, binding: Binding) -> str:
+    async def _start(self, binding: Binding, node: str) -> str:
         created = await self._cli(
             "run", "-d",
-            "--name", f"{binding.get('container_prefix') or 'skyward'}-{uuid.uuid4().hex[:12]}",
+            "--name", f"{binding.get('container_prefix') or 'skyward'}-{node}",
             "--label", f"{COMPUTE_LABEL}={binding['compute_id']}",
+            "--label", f"{NODE_LABEL}={node}",
             "--network", binding["network"],
             "--env", f"SSH_PUB_KEY={binding['public_key']}",
             "--publish", "0:22",
@@ -200,4 +198,5 @@ def _machine(data: dict[str, Any], user: str = "root") -> Machine | None:
         port=int(published[0]["HostPort"]) if published else 22,
         user=user,
         private_host=network.get("IPAddress") or None,
+        node=(data.get("Config") or {}).get("Labels", {}).get(NODE_LABEL),
     )

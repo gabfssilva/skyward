@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 
+from casty.errors import ActorUnavailableError, ConnectionLostError
+
 from skyward.server.application.runtimes import Runtime, Runtimes
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.events import EventStore
@@ -42,6 +44,15 @@ An attempt in one of these was handed to a machine by somebody — possibly by a
 daemon that no longer exists. Finding one this process did not dispatch is not an
 error; it is the normal thing to find after a restart, and it is why the worker keeps
 its outcomes by execution id.
+"""
+
+LINK_ERRORS = (ConnectionLostError, ActorUnavailableError)
+"""The call died on the wire, and says nothing about the function.
+
+The worker runs the function as its own task and keeps the outcome under the
+execution's id, so a reply lost to a dropped link is a reply that can be asked
+for again — see :meth:`Dispatcher._reattach`. Anything else that escapes the call
+is the honest ``indeterminate``.
 """
 
 
@@ -82,7 +93,14 @@ class Dispatcher:
 
         async with self._lock(compute_id):
             spare = await self._spare(compute_id, runtime)
-            for task_id in await self._tasks.waiting(compute_id):
+            waiting = await self._tasks.waiting(compute_id)
+            logger.bind(compute_id=compute_id).debug(
+                "{} free slots across {} ready nodes, {} tasks waiting",
+                sum(spare.values()),
+                len(spare),
+                len(waiting),
+            )
+            for task_id in waiting:
                 if not any(spare.values()):
                     return
                 task = await self._tasks.get(task_id)
@@ -168,6 +186,7 @@ class Dispatcher:
 
         node = await self._worker(runtime, node_id)
 
+        logger.bind(compute_id=task.compute_id, node_id=node_id).info("streaming execution {} of task {}", execution.id, task.id)
         runtime.dispatched.add(execution.id)
         await self._tasks.observe(execution.id, "started", node_id=node_id)
         await self._record("task.started", TaskEvent(compute=task.compute_id, task=task.id, state="started"))
@@ -227,7 +246,7 @@ class Dispatcher:
         return {
             ready[rank]: slots - holding[ready[rank]]
             for rank in sorted(ready)
-            if ready[rank] in runtime.ready and holding[ready[rank]] < slots
+            if ready[rank] in runtime.reachable and holding[ready[rank]] < slots
         }
 
     async def _launch(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> None:
@@ -237,6 +256,7 @@ class Dispatcher:
         user's function does — hours, possibly — and a pass that waited for it would
         be a control plane that stops controlling while somebody trains a model.
         """
+        logger.bind(compute_id=task.compute_id, node_id=node_id).info("execution {} of task {} goes out", execution.id, task.id)
         runtime.dispatched.add(execution.id)
         await self._tasks.observe(execution.id, "dispatching", node_id=node_id)
         asyncio.get_running_loop().create_task(self._run(task, execution, runtime, node_id))
@@ -267,6 +287,12 @@ class Dispatcher:
             await self._record("task.started", TaskEvent(compute=task.compute_id, task=task.id, state="started"))
 
             await self._settle(task, execution, await _OUTCOMES.decode(await node.run(execution.id, code, args)))
+        except LINK_ERRORS as exc:
+            logger.bind(compute_id=task.compute_id, node_id=node_id).warning(
+                "the link dropped with execution {} in flight ({}); the worker will be asked for it when the link is back",
+                execution.id,
+                exc,
+            )
         except Exception as exc:
             await self._lost(task, execution, exc)
         finally:
@@ -293,14 +319,22 @@ class Dispatcher:
         if node.state != "ready" or execution.node_id not in runtime.ready:
             await self._lost(task, execution, RuntimeError(f"node {execution.node_id} went away while it held the task"))
             return
+        if execution.node_id not in runtime.reachable:
+            return
 
-        member = await runtime.member(execution.node_id)
-        system = await runtime.system(execution.node_id)
-        control = system.service(worker.Control, at=member)
+        logger.bind(compute_id=task.compute_id, node_id=execution.node_id).debug("asking the worker for execution {}", execution.id)
+        try:
+            member = await runtime.member(execution.node_id)
+            system = await runtime.system(execution.node_id)
+            control = system.service(worker.Control, at=member)
+            lookup = await _LOOKUPS.decode(await control.result(execution.id))
+        except LINK_ERRORS as exc:
+            logger.bind(compute_id=task.compute_id, node_id=execution.node_id).debug("the link dropped while asking: {}", exc)
+            return
 
-        match await _LOOKUPS.decode(await control.result(execution.id)):
+        match lookup:
             case Pending():
-                logger.bind(node_id=execution.node_id).info("execution {} is still running", execution.id)
+                logger.bind(node_id=execution.node_id).debug("execution {} is still running", execution.id)
             case Unknown():
                 await self._lost(task, execution, RuntimeError("the worker no longer has it"))
             case Done() | Failed() as outcome:
@@ -308,11 +342,14 @@ class Dispatcher:
                 self._wake("task.changed", task_id=task.id)
 
     async def _settle(self, task: Task, execution: Execution, outcome: Outcome) -> None:
+        log = logger.bind(compute_id=task.compute_id)
         match outcome:
             case Done(value=value):
+                log.info("execution {} succeeded", execution.id)
                 await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
                 await self._record("task.succeeded", TaskEvent(compute=task.compute_id, task=task.id, state="succeeded"))
             case Failed(error=error, traceback=trace):
+                log.info("execution {} failed: {}", execution.id, error)
                 await self._tasks.observe(
                     execution.id,
                     "failed",

@@ -90,6 +90,7 @@ FACTORIES: dict[str, Callable[[], Provider]] = {
     "massed_compute": factories.MassedCompute,
     "novita": factories.Novita,
     "runpod": factories.RunPod,
+    "salad": factories.Salad,
     "scaleway": factories.Scaleway,
     "tensordock": factories.TensorDock,
     "vastai": factories.VastAI,

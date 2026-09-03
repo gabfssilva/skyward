@@ -1,6 +1,5 @@
 import asyncio
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -9,7 +8,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine
+from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Verda
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -162,26 +161,26 @@ class VerdaProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with self._session() as (client, headers), asyncio.TaskGroup() as group:
-            created = [group.create_task(self._create(client, headers, binding, market)) for _ in range(count)]
-
-        machines: list[Machine] = []
-        refused: list[str] = []
-        for task in created:
-            match task.result():
-                case Machine() as machine:
-                    machines.append(machine)
-                case str() as reason:
-                    refused.append(reason)
-
-        if len(machines) < min_count:
-            raise CapabilityMismatchError(
-                f"verda created {len(machines)} of the {min_count} machines the compute cannot start "
-                f"without: {'; '.join(refused)}",
-                provider=self._name,
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        async with self._session() as (client, headers):
+            response = await client.post(
+                INSTANCES_PATH,
+                headers=headers,
+                json={
+                    "instance_type": binding["instance_type"],
+                    "image": binding["image"],
+                    "ssh_key_ids": [binding["ssh_key_id"]],
+                    "location_code": binding["region"],
+                    "is_spot": market == "spot",
+                    "hostname": f"{binding['prefix']}{node}",
+                    "description": f"skyward compute {binding['compute_id']}",
+                },
             )
-        return binding, tuple(machines)
+        if response.is_error:
+            raise CapabilityMismatchError(
+                f"verda refused the instance: {response.status_code} {response.text.strip()}", provider=self._name
+            )
+        return Machine(id=_identifier(response), state="pending", node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         async with self._session() as (client, headers):
@@ -190,7 +189,7 @@ class VerdaProvider:
             listed = response.json() or []
 
         found = (
-            _machine(entry)
+            _machine(entry, binding["prefix"])
             for entry in listed
             if str(entry.get("hostname") or "").startswith(binding["prefix"])
         )
@@ -260,32 +259,6 @@ class VerdaProvider:
             provider=self._name,
         )
 
-    async def _create(
-        self, client: httpx.AsyncClient, headers: dict[str, str], binding: Binding, market: Market
-    ) -> Machine | str:
-        """A refusal comes back as its own reason rather than as an exception.
-
-        One POST buys one instance, so a fleet that comes back short is a fleet of
-        failed POSTs, and ``min_count`` only means something if the ones that
-        succeeded survive the ones that did not.
-        """
-        response = await client.post(
-            INSTANCES_PATH,
-            headers=headers,
-            json={
-                "instance_type": binding["instance_type"],
-                "image": binding["image"],
-                "ssh_key_ids": [binding["ssh_key_id"]],
-                "location_code": binding["region"],
-                "is_spot": market == "spot",
-                "hostname": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
-                "description": f"skyward compute {binding['compute_id']}",
-            },
-        )
-        if response.is_error:
-            return f"{response.status_code} {response.text.strip()}"
-        return Machine(id=_identifier(response), state="pending")
-
     async def _delete(self, client: httpx.AsyncClient, headers: dict[str, str], machine_id: str) -> None:
         """Volumes outlive the instance that carried them unless they are named in the delete.
 
@@ -323,15 +296,16 @@ def _identifier(response: httpx.Response) -> str:
     return str(response.json()["id"])
 
 
-def _machine(entry: Mapping[str, Any]) -> Machine | None:
+def _machine(entry: Mapping[str, Any], prefix: str) -> Machine | None:
     host = entry.get("ip") or None
+    node = claimed(entry.get("hostname"), prefix)
     match entry.get("status"):
         case "error" | "discontinued" | "deleted":
             return None
         case "running":
-            return Machine(id=str(entry["id"]), state="running", host=host)
+            return Machine(id=str(entry["id"]), state="running", host=host, node=node)
         case _:
-            return Machine(id=str(entry["id"]), state="pending", host=host)
+            return Machine(id=str(entry["id"]), state="pending", host=host, node=node)
 
 
 async def _availability(

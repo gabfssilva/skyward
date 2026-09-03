@@ -1,7 +1,5 @@
-import asyncio
 import re
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -9,7 +7,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import MassedCompute
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -133,30 +131,35 @@ class MassedComputeProvider:
             "prefix": _prefix(compute_id),
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Ask for one machine per request, and read a refusal as one we did not get.
-
-        A failure cannot be allowed to cancel its siblings: a launch cancelled
-        mid-flight is a machine that may well exist and whose uuid nobody ever
-        read, which is why the exceptions are collected instead of raised. What
-        makes a partial fleet fatal is ``min_count``, and nothing else.
-        """
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
         async with self._client() as client:
-            attempts = [self._launch(client, binding) for _ in range(count)]
-            results = await asyncio.gather(*attempts, return_exceptions=True)
-
-        machines = tuple(result for result in results if isinstance(result, Machine))
-        if len(machines) < min_count:
-            failures = "; ".join(str(result) for result in results if isinstance(result, BaseException))
+            response = await client.post(
+                LAUNCH_PATH,
+                json={
+                    "productName": binding["product"],
+                    "regionName": ANY_REGION,
+                    "imageId": binding["image_id"],
+                    "instanceName": f"{binding['prefix']}{node}",
+                    "sshKeys": [binding["ssh_key_name"]],
+                },
+            )
+        if response.is_error:
             raise CapabilityMismatchError(
-                f"massed_compute launched {len(machines)} of the {min_count} machines required: {failures}",
+                f"massed_compute refused the launch: {response.status_code} {response.text}",
                 provider=self._name,
             )
 
-        return binding, machines
+        match response.json().get("response"):
+            case str() as instance_id if instance_id:
+                return Machine(id=instance_id, state="pending", node=node)
+            case other:
+                raise CapabilityMismatchError(
+                    f"massed_compute launched an instance without a uuid: {other}",
+                    provider=self._name,
+                )
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
-        """Massed Compute has no tags, so the instance name carries the compute id.
+        """Massed Compute has no tags, so the instance name carries the compute id and the node's claim.
 
         It is the only carrier there is, and it is what makes a machine created by
         a process that died before it could commit the uuid findable at all.
@@ -167,7 +170,7 @@ class MassedComputeProvider:
             instances: list[dict[str, Any]] = response.json().get("runningInstances", [])
 
         mine = (data for data in instances if str(data.get("name") or "").startswith(binding["prefix"]))
-        found = (machine for data in mine if (machine := _machine(data)))
+        found = (machine for data in mine if (machine := _machine(data, binding["prefix"])))
         return {machine.id: machine for machine in found}
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
@@ -222,32 +225,6 @@ class MassedComputeProvider:
         keys: list[dict[str, Any]] = listed.json().get("sshKeys", [])
         return next((str(key["id"]) for key in keys if key.get("name") == name), None)
 
-    async def _launch(self, client: httpx.AsyncClient, binding: Binding) -> Machine:
-        response = await client.post(
-            LAUNCH_PATH,
-            json={
-                "productName": binding["product"],
-                "regionName": ANY_REGION,
-                "imageId": binding["image_id"],
-                "instanceName": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
-                "sshKeys": [binding["ssh_key_name"]],
-            },
-        )
-        if response.is_error:
-            raise CapabilityMismatchError(
-                f"massed_compute refused the launch: {response.status_code} {response.text}",
-                provider=self._name,
-            )
-
-        match response.json().get("response"):
-            case str() as instance_id if instance_id:
-                return Machine(id=instance_id, state="pending")
-            case other:
-                raise CapabilityMismatchError(
-                    f"massed_compute launched an instance without a uuid: {other}",
-                    provider=self._name,
-                )
-
 
 def _prefix(compute_id: str) -> str:
     return f"skyward-{compute_id}-"
@@ -258,7 +235,7 @@ def _key_name(compute_id: str) -> str:
     return f"skyward{re.sub(r'[^a-zA-Z0-9]', '', compute_id)}"
 
 
-def _machine(data: Mapping[str, Any]) -> Machine | None:
+def _machine(data: Mapping[str, Any], prefix: str) -> Machine | None:
     """Massed Compute reports an address before the box has finished booting.
 
     ``os_booted`` is the flag that says the image came up, and it is the one the
@@ -280,6 +257,7 @@ def _machine(data: Mapping[str, Any]) -> Machine | None:
         state=state,
         host=host,
         user=str(data.get("username") or DEFAULT_USER),
+        node=claimed(data.get("name"), prefix),
     )
 
 

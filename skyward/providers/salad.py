@@ -26,18 +26,16 @@ the daemon's — so :meth:`allows_cluster_formation` stays false and a compute
 here is a fleet of independent nodes.
 
 A group is found by listing the project and matching the compute's prefix, never
-by reading the binding back. The binding is written after the group is created,
-and a launch waits on Salad to allocate before it returns, so the window between
-a group existing and the daemon having written it down is minutes wide — and a
-group nobody wrote down is a container nothing can name and nothing will ever
-stop. The name carries the compute, and the listing is the record.
+by reading the binding back: a group is named for the compute and the node it
+was launched for before Salad is asked for it, so a launch whose reply is lost
+still leaves a group the listing names, and the daemon writes the id down from
+there. The name carries the compute and the claim, and the listing is the record.
 """
 
 import asyncio
 import contextlib
 import re
-import secrets
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -58,7 +56,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import Salad
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -269,31 +267,26 @@ class SaladProvider:
             "storage": max(1024**3, self._config.storage_gb * 1024**3),
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Create one container group per machine, and wait for Salad to place them.
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Create one container group, named for the compute and the node.
 
-        The wait is what lets a GPU class that has nothing to sell be answered with
-        another one: a group Salad never allocates is a launch that failed, and the
-        caller tries the next offer. Nothing is written into the binding — the group
-        carries the compute in its name, which is what the listing matches on.
+        The name is the identity: it is minted here, so a request whose reply is
+        lost still leaves a group the listing matches. Nothing waits for Salad to
+        allocate — a group it never places is reported by :meth:`machines` as one
+        still waiting, and the control plane's provision deadline is what gives up
+        on it.
         """
-        compute_id = _binding_text(binding, "compute_id")
-        minted: list[str] = []
+        group_name = _group_name(_binding_text(binding, "compute_id"), node)
         try:
-            for _ in range(count):
-                group_name = _group_name(compute_id)
-                await self._sdk.container_groups.create_container_group(
-                    self._group_body(group_name, binding),
-                    self._organization,
-                    self._project,
-                )
-                minted.append(group_name)
-            await self._allocated(tuple(minted), min_count)
-        except BaseException:
-            await self._discard_all(minted)
-            raise
-
-        return binding, tuple(Machine(id=group_name, state="pending", user=SSH_USER) for group_name in minted)
+            await self._sdk.container_groups.create_container_group(
+                self._group_body(group_name, binding),
+                self._organization,
+                self._project,
+            )
+        except ApiError as error:
+            if error.status != 409:
+                raise
+        return Machine(id=group_name, state="pending", user=SSH_USER, node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         """What Salad has under this compute's prefix, and how far along each of it is.
@@ -304,12 +297,14 @@ class SaladProvider:
         up — so it gives up at its deadline and the replacement pulls the same image
         again.
         """
+        prefix = _prefix(_binding_text(binding, "compute_id"))
         machines: dict[str, Machine] = {}
         for group_name, dns in await self._groups(binding):
             instances = await self._instances(group_name)
             if instances is None:
                 continue
             instance = next(iter(instances), None)
+            node = claimed(group_name, prefix)
             if _state(instance) != "running" or not dns:
                 machines[group_name] = Machine(
                     id=group_name,
@@ -317,6 +312,7 @@ class SaladProvider:
                     user=SSH_USER,
                     progress=_progress(instance),
                     completion=_completion(instance),
+                    node=node,
                 )
                 continue
             bridge = await _bridge(group_name, dns)
@@ -326,6 +322,7 @@ class SaladProvider:
                 host="127.0.0.1",
                 port=bridge.port,
                 user=SSH_USER,
+                node=node,
             )
         return machines
 
@@ -350,39 +347,12 @@ class SaladProvider:
             if (name := _text(getattr(group, "name", None)) or "").startswith(prefix)
         )
 
-    async def _allocated(self, group_names: tuple[str, ...], min_count: int) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._config.allocation_timeout
-        allocated: set[str] = set()
-        while len(allocated) < min_count:
-            for group_name in group_names:
-                if group_name not in allocated and await self._instances(group_name):
-                    allocated.add(group_name)
-            if len(allocated) >= min_count:
-                return
-            if loop.time() >= deadline:
-                raise CapabilityMismatchError(
-                    f"salad did not allocate {min_count} container instance(s)",
-                    provider=self._name,
-                )
-            await asyncio.sleep(self._config.poll_interval)
-
     async def _discard(self, group_name: str) -> None:
         try:
             await self._sdk.container_groups.delete_container_group(self._organization, self._project, group_name)
         except ApiError as error:
             if error.status != 404:
                 raise
-
-    async def _discard_all(self, group_names: Sequence[str]) -> None:
-        """Take back what a failed launch created, without burying why it failed.
-
-        Best effort on purpose: the reason the launch failed is what the caller has
-        to act on, and a group this could not delete is still one the listing finds.
-        """
-        for group_name in group_names:
-            with contextlib.suppress(Exception):
-                await self._discard(group_name)
 
     def _group_body(self, group_name: str, binding: Binding) -> ContainerGroupCreationRequest:
         resources = CreateContainerResourceRequirements(
@@ -502,11 +472,12 @@ def _prefix(compute_id: str) -> str:
     Salad has no tags, so the name is the only thing an adapter controls and can
     match an account-wide listing on. It is how a compute recognises its own.
     """
-    return re.sub(r"[^a-z0-9-]", "-", f"skyward-{compute_id.lower()}").strip("-")[:54].rstrip("-")
+    return re.sub(r"[^a-z0-9-]", "-", f"skyward-{compute_id.lower()}").strip("-")[:44].rstrip("-") + "-"
 
 
-def _group_name(compute_id: str) -> str:
-    return f"{_prefix(compute_id)}-{secrets.token_hex(4)}"
+def _group_name(compute_id: str, node: str) -> str:
+    """The prefix and the node's claim, within the 63 characters a group name is allowed."""
+    return f"{_prefix(compute_id)}{node}"[:63].rstrip("-")
 
 
 def _progress(instance: object) -> str:

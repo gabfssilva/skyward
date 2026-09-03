@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -7,7 +7,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine
+from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import VastAI
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -150,42 +150,31 @@ class VastAIProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Rent one ask per machine, walking down the list when an ask is taken from under us.
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Rent the first ask that will have us, walking down the list when one is taken from under us.
 
         A bundle is a listing, not a reservation: between the search and the PUT
         another tenant can have it, and the only answer to that is the next ask
         with the same hardware.
         """
         async with self._client() as client:
-            asks = await self._asks(client, binding, market)
+            for ask in await self._asks(client, binding, market):
+                if (machine := await self._rent(client, binding, ask, market, node)) is not None:
+                    return machine
 
-            machines: list[Machine] = []
-            for ask in asks:
-                if len(machines) == count:
-                    break
-                if (machine := await self._rent(client, binding, ask, market)) is not None:
-                    machines.append(machine)
-
-            if len(machines) < min_count:
-                await self._destroy(client, tuple(machine.id for machine in machines))
-                raise CapabilityMismatchError(
-                    f"vastai could rent {len(machines)} of {min_count} required {binding['gpu_name']} machines",
-                    provider=self._name,
-                )
-
-        return binding, tuple(machines)
+        raise CapabilityMismatchError(f"vastai has no {binding['gpu_name']} ask left to rent", provider=self._name)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        prefix = f"{binding['label']}-"
         async with self._client() as client:
             response = await client.get("/api/v0/instances/", params={"owner": "me"})
             response.raise_for_status()
             instances = response.json().get("instances") or []
 
         found = (
-            _machine(instance)
+            _machine(instance, prefix)
             for instance in instances
-            if instance.get("label") == binding["label"]
+            if str(instance.get("label") or "").startswith(prefix)
         )
         return {machine.id: machine for machine in found if machine is not None}
 
@@ -267,13 +256,15 @@ class VastAIProvider:
         ]
         return sorted(asks, key=lambda ask: ask.get(price) or float("inf"))
 
-    async def _rent(self, client: httpx.AsyncClient, binding: Binding, ask: dict[str, Any], market: Market) -> Machine | None:
+    async def _rent(
+        self, client: httpx.AsyncClient, binding: Binding, ask: dict[str, Any], market: Market, node: str
+    ) -> Machine | None:
         body: dict[str, Any] = {
             "client_id": "me",
             "image": binding["image"],
             "disk": binding["disk_gb"],
             "runtype": "ssh_direc" if binding["direct"] else "ssh_proxy",
-            "label": binding["label"],
+            "label": f"{binding['label']}-{node}",
             "onstart": ONSTART.format(public_key=binding["public_key"]),
         }
 
@@ -289,7 +280,7 @@ class VastAIProvider:
         created = response.json()
         match created.get("new_contract") or created.get("id"):
             case int() | str() as contract:
-                return Machine(id=str(contract), state="pending")
+                return Machine(id=str(contract), state="pending", node=node)
             case _:
                 return None
 
@@ -307,10 +298,11 @@ def _blob(public_key: str) -> str:
     return parts[1] if len(parts) >= 2 else public_key.strip()
 
 
-def _machine(instance: dict[str, Any]) -> Machine | None:
+def _machine(instance: dict[str, Any], prefix: str) -> Machine | None:
     machine_id = str(instance["id"])
     ports = instance.get("ports") or {}
     mapped = (ports.get("22/tcp") or [{}])[0].get("HostPort")
+    node = claimed(instance.get("label"), prefix)
 
     match (instance.get("public_ipaddr"), mapped):
         case (str() as address, int() | str() as mapped_port) if address:
@@ -322,6 +314,6 @@ def _machine(instance: dict[str, Any]) -> Machine | None:
         case "exited" | "error" | "destroyed":
             return None
         case "running" if host:
-            return Machine(id=machine_id, state="running", host=host, port=port)
+            return Machine(id=machine_id, state="running", host=host, port=port, node=node)
         case _:
-            return Machine(id=machine_id, state="pending")
+            return Machine(id=machine_id, state="pending", node=node)

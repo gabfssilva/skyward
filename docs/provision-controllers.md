@@ -112,7 +112,7 @@ When the provider reports a machine as gone, the corresponding node becomes `los
 
 `Connector` is responsible for the live connection that cannot be stored in SQLite. It reconnects every node whose row says it is connecting, bootstrapping, or ready. This is required after a daemon restart and when a second process attaches to a Compute created elsewhere.
 
-The connector waits until the current cohort has addresses before starting the runtime. The runtime receives the rank-ordered peer list, image, plugins, executor settings, user-code blob, and mounted volumes. It reports bootstrap phases and readiness back to the control plane.
+The connector starts the runtime as soon as the machine can be logged into. The runtime receives the rank-ordered peer list, image, plugins, executor settings, user-code blob, and mounted volumes. It reports bootstrap phases and readiness back to the control plane.
 
 The Compute becomes ready when the number of ready nodes reaches the lower bound. The remaining nodes may join later if the target count is higher. A task broadcast is admitted against the ready set at submission; later nodes do not receive executions for that task.
 

@@ -500,8 +500,6 @@ with sky.Compute(
 | `image` | `str or None` | `None` | Container image override. |
 | `storage_gb` | `int` | `50` | Container storage in GB. |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-| `allocation_timeout` | `float` | `300.0` | Seconds to wait for a container to be placed. |
-| `poll_interval` | `float` | `2.0` | Seconds between allocation status checks. |
 
 ## Novita
 

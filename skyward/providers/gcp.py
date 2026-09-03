@@ -27,8 +27,7 @@ import base64
 import json
 import re
 import time
-import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -57,6 +56,7 @@ signature, and a second cache for the one call per compute that needs it.
 """
 
 COMPUTE_LABEL = "skyward-compute"
+NODE_LABEL = "skyward-node"
 NODE_TAG = "skyward-node"
 
 GPU_IMAGE = "projects/deeplearning-platform-release/global/images/family/common-cu128-ubuntu-2204-nvidia-570"
@@ -408,19 +408,26 @@ class GCPProvider:
 
         return binding
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with self._api() as client, asyncio.TaskGroup() as group:
-            launched = [group.create_task(self._insert(client, binding, market)) for _ in range(count)]
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Create one instance, under a name chosen here rather than by GCP.
 
-        results = [task.result() for task in launched]
-        machines = tuple(machine for machine, _ in results if machine)
-        if len(machines) < min_count:
-            refused = "; ".join(reason for _, reason in results if reason)
+        The name is the identity: it is what `instances.delete` takes, and it is
+        known before the call is made, so a request whose reply is lost still
+        leaves a machine that :meth:`machines` finds by its labels. A 409 is that
+        very request, arriving a second time.
+        """
+        name = f"skyward-{node}"
+        async with self._api() as client:
+            response = await client.post(
+                f"/projects/{binding['project']}/zones/{binding['zone']}/instances",
+                json=_instance_body(name, binding, market, node),
+            )
+        if response.status_code >= 400 and response.status_code != 409:
             raise CapabilityMismatchError(
-                f"gcp launched {len(machines)} of {min_count} machines in {binding['zone']}: {refused}",
+                f"gcp refused the instance in {binding['zone']}: {response.status_code} {response.text[:400]}",
                 provider=self._name,
             )
-        return binding, machines
+        return Machine(id=name, state="pending", node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         async with self._api() as client:
@@ -493,27 +500,6 @@ class GCPProvider:
             _accept(await client.put(path, json={"state": "INACTIVE"}), 404)
             _accept(await client.delete(path), 404)
 
-    async def _insert(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> tuple[Machine | None, str | None]:
-        """Create one instance, under a name chosen here rather than by GCP.
-
-        The name is the identity: it is what `instances.delete` takes, and it is
-        known before the call is made, so a request whose reply is lost still
-        leaves a machine that :meth:`machines` finds by its label.
-
-        A refusal comes back as its text rather than as an exception: one machine
-        out of stock must not cancel the siblings that were granted, and the
-        caller's ``min_count`` is the only thing entitled to call that fatal.
-        """
-        name = f"skyward-{uuid.uuid4().hex[:16]}"
-        response = await client.post(
-            f"/projects/{binding['project']}/zones/{binding['zone']}/instances",
-            json=_instance_body(name, binding, market),
-        )
-        if response.status_code >= 400 and response.status_code != 409:
-            return None, f"{response.status_code} {response.text[:400]}"
-
-        return Machine(id=name, state="pending"), None
-
     async def _delete(self, client: httpx.AsyncClient, binding: Binding, machine_id: str) -> None:
         response = await client.delete(
             f"/projects/{binding['project']}/zones/{binding['zone']}/instances/{machine_id}"
@@ -521,7 +507,7 @@ class GCPProvider:
         _accept(response, 404)
 
 
-def _instance_body(name: str, binding: Binding, market: Market) -> dict[str, Any]:
+def _instance_body(name: str, binding: Binding, market: Market, node: str) -> dict[str, Any]:
     """The instance GCP is asked for, as one JSON document.
 
     v1 went through an instance template plus `bulkInsert`; a template is a
@@ -544,7 +530,7 @@ def _instance_body(name: str, binding: Binding, market: Market) -> dict[str, Any
     body: dict[str, Any] = {
         "name": name,
         "machineType": f"zones/{binding['zone']}/machineTypes/{binding['machine_type']}",
-        "labels": {COMPUTE_LABEL: binding["label"]},
+        "labels": {COMPUTE_LABEL: binding["label"], NODE_LABEL: node},
         "tags": {"items": [NODE_TAG]},
         "disks": [
             {
@@ -598,7 +584,13 @@ def _machine(item: Mapping[str, Any]) -> Machine | None:
         case _:
             state = "pending"
 
-    return Machine(id=str(item["name"]), state=state, host=host, private_host=private_host)
+    return Machine(
+        id=str(item["name"]),
+        state=state,
+        host=host,
+        private_host=private_host,
+        node=(item.get("labels") or {}).get(NODE_LABEL),
+    )
 
 
 def _accept(response: httpx.Response, *tolerated: int) -> None:

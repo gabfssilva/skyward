@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,6 +31,7 @@ MIB = 1024
 
 COMPUTE_TAG = "skyward:compute"
 MANAGED_TAG = "skyward:managed"
+NODE_TAG = "skyward:node"
 IMAGE_TAG = "skyward:image"
 WARM_NAME = "skyward-warm-{tag}"
 SSH_USER = "ubuntu"
@@ -248,6 +249,8 @@ class AWSProvider:
                 vpc = await self._vpc(ec2)
                 subnets = await self._subnets(ec2, vpc, offer.instance_type)
 
+            zone = await self._zone(ec2, offer.instance_type, subnets, spec.nodes.initial)
+
             async with asyncio.TaskGroup() as group:
                 key = group.create_task(self._key_pair(ec2, name, public_key))
                 image = group.create_task(self._image(session, region, offer))
@@ -272,6 +275,7 @@ class AWSProvider:
             "key_name": key.result(),
             "security_group_id": security_group_id,
             "subnets": subnets,
+            "az": zone,
             "user": self._config.username or SSH_USER,
             "disk_gb": self._config.disk_gb,
             "instance_profile_arn": self._config.instance_profile_arn,
@@ -279,74 +283,46 @@ class AWSProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Ask an EC2 Fleet for the machines, and pin the compute to the zone it chose.
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Ask an EC2 Fleet for one machine, in the zone the compute was bound to.
 
-        Fleet places the whole request into a single availability zone, choosing it
-        across the candidate subnets by the spot allocation strategy rather than by a
-        blind walk — a zone that has capacity beats the first zone in a list. The
-        compute is pinned to that zone from the first launch on, because a peer in
-        another zone pays for its own traffic and cannot reach the others on a private
-        address.
+        Fleet rather than ``run_instances`` because it is the one call that buys spot
+        and on-demand the same way, in the one zone the binding names — chosen at
+        :meth:`initialize`, so that twenty launches in flight all land where their
+        peers can reach them on a private address.
 
         The launch template lives only for the length of the call: Fleet takes no
         inline instance config, so the shape is written to a template, spent once, and
         deleted whether or not the fleet came up.
         """
         subnets: Mapping[str, str] = binding["subnets"]
-        pinned: str | None = binding.get("az")
-        candidate = {pinned: subnets[pinned]} if pinned else subnets
+        zone: str = binding["az"]
 
         session = self._session()
         async with session.client("ec2", region_name=binding["region"], config=self._client_config()) as ec2:
             template = await ec2.create_launch_template(
-                LaunchTemplateName=f"skyward-{uuid.uuid4().hex[:8]}",
-                LaunchTemplateData=_template(binding),
+                LaunchTemplateName=f"skyward-{node}-{uuid.uuid4().hex[:6]}",
+                LaunchTemplateData=_template(binding, node),
             )
             template_id = str(template["LaunchTemplate"]["LaunchTemplateId"])
 
             try:
-                fleet = await ec2.create_fleet(**_fleet(binding, market, template_id, candidate, count, min_count))
+                fleet = await ec2.create_fleet(**_fleet(binding, market, template_id, {zone: subnets[zone]}))
                 ids = [iid for spec in fleet.get("Instances", []) for iid in spec.get("InstanceIds", [])]
-                if len(ids) < min_count:
+                if not ids:
                     errors = "; ".join(
                         f"{error.get('ErrorCode')}: {error.get('ErrorMessage')}"
                         for error in fleet.get("Errors", [])
                     )
                     raise CapabilityMismatchError(
-                        f"fleet launched {len(ids)}/{count} {binding['instance_type']} instances: {errors}",
+                        f"fleet launched no {binding['instance_type']} instance in {zone}: {errors}",
                         provider=self._name,
                     )
-
-                described = await self._describe(ec2, ids)
-                landed = next(
-                    (raw["Placement"]["AvailabilityZone"] for raw in described if raw.get("Placement")),
-                    pinned,
-                )
-                machines = tuple(_machine(raw, binding["user"]) for raw in described)
-                return {**binding, "az": landed}, machines
+                return Machine(id=ids[0], state="pending", user=binding["user"], node=node)
             finally:
                 with suppress(ClientError):
                     await ec2.delete_launch_template(LaunchTemplateId=template_id)
 
-    async def _describe(self, ec2: EC2Client, ids: list[str]) -> Sequence[Mapping[str, Any]]:
-        """Read the fleet's instances back, past the window where a fresh id is not yet describable.
-
-        A ``create_fleet`` that has just returned an id is ahead of the eventual
-        consistency of ``describe_instances``, which answers ``InvalidInstanceID.NotFound``
-        for a second or two. The zone the fleet landed in is only knowable from the
-        instance, so the read is retried rather than guessed.
-        """
-        for attempt in range(5):
-            try:
-                response = await ec2.describe_instances(InstanceIds=ids)
-            except ClientError as error:
-                if _code(error) != "InvalidInstanceID.NotFound" or attempt == 4:
-                    raise
-                await asyncio.sleep(2.0)
-                continue
-            return [raw for reservation in response["Reservations"] for raw in reservation["Instances"]]
-        return []
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         found: dict[str, Machine] = {}
@@ -603,6 +579,42 @@ class AWSProvider:
             )
         return usable
 
+    async def _zone(self, ec2: EC2Client, instance_type: str, subnets: Mapping[str, str], capacity: int) -> str:
+        """The zone every machine of the compute goes in, decided once, before any of them exists.
+
+        Peers in different zones pay for their own traffic and cannot reach each other
+        on a private address, so a compute lives in one zone — and with every launch
+        in flight at once, nobody's launch can be the one that picks it. The pick is
+        made here, from the spot placement score: the same capacity signal Fleet
+        would use, asked for the whole pool at once rather than one machine at a time.
+        The score speaks in zone ids, and a subnet is in a zone name, so the ids are
+        translated. An account that may not ask, or a class the score has nothing to
+        say about, takes the first zone that sells the type; a launch refused there is
+        the region fallback's to answer.
+        """
+        if len(subnets) == 1:
+            return next(iter(subnets))
+
+        try:
+            scored = await ec2.get_spot_placement_scores(
+                InstanceTypes=[instance_type],
+                TargetCapacity=max(1, capacity),
+                SingleAvailabilityZone=True,
+                RegionNames=[ec2.meta.region_name],
+            )
+            zones = await ec2.describe_availability_zones(
+                ZoneIds=[str(score["AvailabilityZoneId"]) for score in scored.get("SpotPlacementScores", []) if score.get("AvailabilityZoneId")],
+            )
+        except ClientError:
+            return next(iter(subnets))
+
+        names = {str(zone["ZoneId"]): str(zone["ZoneName"]) for zone in zones.get("AvailabilityZones", [])}
+        ranked = sorted(scored.get("SpotPlacementScores", []), key=lambda score: int(score.get("Score") or 0), reverse=True)
+        return next(
+            (names[zone_id] for score in ranked if (zone_id := str(score.get("AvailabilityZoneId") or "")) in names and names[zone_id] in subnets),
+            next(iter(subnets)),
+        )
+
     async def _image(self, session: aioboto3.Session, region: str, offer: Offer) -> str:
         """The AMI id: the config's own, or the current one from SSM."""
         return self._config.ami or await self._latest(session, region, offer)
@@ -636,12 +648,13 @@ class AWSProvider:
             return str(response["Parameter"]["Value"])
 
 
-def _template(binding: Binding) -> RequestLaunchTemplateDataTypeDef:
+def _template(binding: Binding, node: str) -> RequestLaunchTemplateDataTypeDef:
     """The instance shape, minus what Fleet varies per subnet.
 
     ``ImageId`` and ``InstanceType`` live in the fleet overrides, not here, because
     Fleet is the thing choosing the subnet and needs the pair alongside each one.
-    Everything a machine of this compute shares is what remains.
+    Everything a machine of this compute shares is what remains — plus the one
+    thing it does not share, the node's claim, which rides as a tag.
     """
     template: RequestLaunchTemplateDataTypeDef = {
         "KeyName": binding["key_name"],
@@ -660,7 +673,7 @@ def _template(binding: Binding) -> RequestLaunchTemplateDataTypeDef:
         }],
         "TagSpecifications": [{
             "ResourceType": "instance",
-            "Tags": _tags(f"skyward-{binding['compute_id']}", binding["compute_id"]),
+            "Tags": [*_tags(f"skyward-{node}", binding["compute_id"]), {"Key": NODE_TAG, "Value": node}],
         }],
         "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
         "InstanceInitiatedShutdownBehavior": "terminate",
@@ -670,14 +683,8 @@ def _template(binding: Binding) -> RequestLaunchTemplateDataTypeDef:
     return template
 
 
-def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[str, str], count: int, min_count: int) -> dict[str, Any]:
-    """An instant fleet: the machines come back with the call, not through a callback.
-
-    ``SingleAvailabilityZone`` is what makes the whole request land together, so that
-    the compute can be pinned to one zone and its peers stay on a private network.
-    ``MinTargetCapacity`` is the partial-readiness floor — a fleet that can bring up
-    ``min_count`` is worth taking, one that cannot is a failure.
-    """
+def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[str, str]) -> dict[str, Any]:
+    """An instant fleet of one: the machine comes back with the call, not through a callback."""
     spot = market == "spot"
     overrides = [
         {"SubnetId": subnet, "InstanceType": binding["instance_type"], "ImageId": binding["image"]}
@@ -690,22 +697,22 @@ def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[
             "Overrides": overrides,
         }],
         "TargetCapacitySpecification": {
-            "TotalTargetCapacity": count,
+            "TotalTargetCapacity": 1,
             "DefaultTargetCapacityType": "spot" if spot else "on-demand",
-            "SpotTargetCapacity": count if spot else 0,
-            "OnDemandTargetCapacity": 0 if spot else count,
+            "SpotTargetCapacity": 1 if spot else 0,
+            "OnDemandTargetCapacity": 0 if spot else 1,
         },
         "SpotOptions": {
             "AllocationStrategy": binding.get("allocation_strategy") or FLEET_STRATEGY,
             "SingleAvailabilityZone": True,
             "SingleInstanceType": True,
-            "MinTargetCapacity": min_count,
+            "MinTargetCapacity": 1,
         },
         "OnDemandOptions": {
             "AllocationStrategy": "lowest-price",
             "SingleAvailabilityZone": True,
             "SingleInstanceType": True,
-            "MinTargetCapacity": min_count,
+            "MinTargetCapacity": 1,
         },
     }
 
@@ -724,6 +731,7 @@ def _machine(raw: Mapping[str, Any], user: str) -> Machine:
         host=raw.get("PublicIpAddress"),
         user=user,
         private_host=raw.get("PrivateIpAddress"),
+        node=next((str(tag["Value"]) for tag in raw.get("Tags", []) if tag.get("Key") == NODE_TAG), None),
     )
 
 

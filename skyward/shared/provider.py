@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import timedelta
 from typing import Any, ClassVar, Literal, Protocol, Self, runtime_checkable
 
@@ -16,6 +16,17 @@ compute outlives the process that started it, so this cannot live in memory.
 """
 
 type MachineState = Literal["pending", "running"]
+
+
+def claimed(name: object, prefix: str) -> str | None:
+    """The claim a machine's name carries, for the providers whose only tag is the name.
+
+    The name is the compute's prefix followed by the claim :meth:`Provider.launch`
+    was handed, and nothing else; what follows the prefix is the claim. A name that
+    does not start with the prefix is not this compute's, and one that ends with
+    it carries no claim.
+    """
+    return name[len(prefix):] or None if isinstance(name, str) and name.startswith(prefix) else None
 
 
 class Machine(Struct, frozen=True):
@@ -65,6 +76,14 @@ class Machine(Struct, frozen=True):
         count it. It is the number and not the sentence, so that a terminal can
         draw it; the deadline reads it as part of the same token, since an image
         that is 10% pulled and one that is 90% pulled are not the same news.
+    node : str | None
+        The claim :meth:`Provider.launch` was handed, read back off the machine —
+        a tag, a label, the tail of its name. It is how a machine is matched to
+        the row that asked for it without anybody having remembered the id:
+        the row is written before the provider is called, the claim is on the
+        machine from the moment it exists, and the control plane joins the two
+        whenever it next looks. Absent on a machine that carries no claim,
+        which is a machine of this compute that no row will ever own.
     """
 
     id: str
@@ -76,6 +95,7 @@ class Machine(Struct, frozen=True):
     password: str | None = None
     progress: str | None = None
     completion: float | None = None
+    node: str | None = None
 
 
 @runtime_checkable
@@ -199,34 +219,41 @@ class Provider(Catalog, Protocol):
         """
         ...
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Ask for ``count`` machines, accepting as few as ``min_count``.
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Ask for one machine, claimed for one node.
+
+        Called once per node, and for every node of a compute at the same time:
+        twenty rows asking is twenty launches in flight against one binding. So
+        nothing that has to be decided once — a zone, a network, a key — is
+        decided here; :meth:`initialize` did that, and a launch only reads it.
 
         Parameters
         ----------
         binding : Binding
-            As returned by :meth:`initialize`, or by the previous launch.
+            As returned by :meth:`initialize`.
         market : Market
-            Which market to buy these machines on, decided per launch rather than
+            Which market to buy this machine on, decided per launch rather than
             per compute: ``spot_if_available`` tries spot first and, on a node whose
             spot launch is refused, calls again for on-demand. The binding is shared
             and market-neutral; the market that a launch is billed at is this, not
             anything baked into the binding. A provider with one market only is
             handed that one and ignores it.
-        count : int
-            How many machines are wanted.
-        min_count : int
-            How few are still worth having. Partial readiness — a fleet request
-            that would rather come back with four machines than with nothing.
+        node : str
+            The claim to write on the machine — into a tag, a label, or its name,
+            whatever the provider lets an adapter read back off an account-wide
+            listing. Opaque, and safe for a hostname: lowercase, digits, hyphens.
+            :meth:`machines` reports it back as :attr:`Machine.node`, and that is
+            what joins the machine to its row when this call's reply is lost.
 
         Returns
         -------
-        tuple[Binding, Sequence[Machine]]
-            The machines come back already identified: one that was created but
-            whose id was never learned is a machine that is billed and cannot be
-            found. The binding comes back because provisioning teaches the adapter
-            things — the availability zone the fleet actually landed in, and which
-            every later machine now has to be pinned to.
+        Machine
+            With the provider's id, which is the other half of the mapping the
+            row records: node id on one side, provider id on the other. The
+            claim is what makes the mapping recoverable when this reply is lost
+            — :meth:`machines` reports the same machine under the same claim,
+            and the id is written from there. Pending is fine; what became of
+            the machine is :meth:`machines`' to say.
         """
         ...
 

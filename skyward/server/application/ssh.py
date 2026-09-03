@@ -60,6 +60,9 @@ class Ssh(Protocol):
 
     async def close(self) -> None: ...
 
+    @property
+    def connected(self) -> bool: ...
+
 
 class SshChannel:
     """One SSH connection, held open, that reconnects on its own.
@@ -131,6 +134,7 @@ class SshChannel:
                         return
                     except asyncssh.PermissionDenied as exc:
                         last = str(exc)
+                        logger.debug("{}: refused the key for {}, retrying", self._host, self._user)
                         refused = refused if refused is not None else clock()
                         if clock() - refused >= AUTH_GRACE:
                             self._fail(last)
@@ -141,15 +145,27 @@ class SshChannel:
                         await asyncio.sleep(self._retry_delay)
                     except (OSError, asyncssh.Error) as exc:
                         last = str(exc)
+                        logger.debug("{}: not answering yet: {}", self._host, exc)
                         refused = None
                         await asyncio.sleep(self._retry_delay)
 
         self._fail(last)
         raise SshUnavailableError(f"{self._host}: unreachable after {self._connect_timeout}s: {last}")
 
+    @property
+    def connected(self) -> bool:
+        """Whether the link is up right now, as opposed to healing or gone.
+
+        Between a drop and the reconnect the forwards are down too, so a caller
+        that dials a port through this channel would be refused. What the daemon
+        does with the machine in that window is wait, not give up on it.
+        """
+        return self._conn is not None and self._up.is_set() and self._failure is None and not self._closed
+
     async def run(self, command: str, *, timeout: float | None = None) -> Result:
         async def execute(conn: asyncssh.SSHClientConnection) -> Result:
             result = await conn.run(command, timeout=timeout, check=False)
+            logger.debug("{}: {} → {}", self._host, _short(command), result.exit_status or 0)
             return Result(
                 exit_code=result.exit_status or 0,
                 stdout=str(result.stdout or ""),
@@ -162,6 +178,7 @@ class SshChannel:
         async def write(conn: asyncssh.SSHClientConnection) -> None:
             async with conn.start_sftp_client() as sftp, sftp.open(path, "wb") as remote:
                 await remote.write(content)
+            logger.debug("{}: wrote {} ({} bytes)", self._host, path, len(content))
 
         await self._attempt(write)
 
@@ -206,17 +223,25 @@ class SshChannel:
         Ends when the command ends, or when the link drops. Resuming across a
         reconnect is the caller's business, because only the caller knows where
         it got to.
+
+        A drop is an end, not an error: asyncssh hands the reader the exception
+        the connection died of, and a caller following a file wants the iteration
+        to stop, not a stack trace from inside a library it never called.
         """
         conn = await self._ready()
-        async with conn.create_process(command) as process:
-            while line := await process.stdout.readline():
-                yield line.rstrip("\n")
+        try:
+            async with conn.create_process(command) as process:
+                while line := await process.stdout.readline():
+                    yield line.rstrip("\n")
+        except (asyncssh.ChannelOpenError, asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
+            return
 
     async def forward(self, remote_port: int, remote_host: str = "127.0.0.1") -> int:
         """Open a local port onto a port on the machine, and keep it open."""
         conn = await self._ready()
         local_port = await self._listen(conn, remote_host, remote_port)
         self._forwards[remote_host, remote_port] = local_port
+        logger.debug("{}: 127.0.0.1:{} now reaches {}:{}", self._host, local_port, remote_host, remote_port)
         return local_port
 
     async def open_connection(self, remote_host: str, remote_port: int) -> Channel:
@@ -349,3 +374,9 @@ class SshChannel:
             with contextlib.suppress(Exception):
                 listener.close()
         self._listeners = []
+
+
+def _short(command: str) -> str:
+    """A command as one line of log: the head of it, on one line."""
+    single = " ".join(command.split())
+    return single if len(single) <= 160 else f"{single[:157]}..."

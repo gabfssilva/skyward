@@ -74,23 +74,29 @@ def forget() -> None:
     PID_FILE.unlink(missing_ok=True)
 
 
-def environment(database: Path | None) -> dict[str, str]:
-    """This process's environment, plus the database the daemon is to open."""
-    if database is None:
-        return dict(os.environ)
-    return {**os.environ, "SKYWARD_DATABASE": str(database)}
+def environment(database: Path | None, log_level: str | None = None) -> dict[str, str]:
+    """This process's environment, plus what the daemon is to open and how loudly.
+
+    Both travel as variables rather than as arguments because the daemon is not
+    called, it is spawned: uvicorn imports the factory, and the factory is the only
+    thing in a position to read them.
+    """
+    return {
+        **os.environ,
+        **({"SKYWARD_DATABASE": str(database)} if database is not None else {}),
+        **({"SKYWARD_LOG_LEVEL": log_level} if log_level is not None else {}),
+    }
 
 
-def serve(host: str, port: int, database: Path | None = None) -> None:
+def serve(host: str, port: int, database: Path | None = None, log_level: str | None = None) -> None:
     """Run the daemon here, ending with whoever started it."""
     import uvicorn
 
-    if database is not None:
-        os.environ["SKYWARD_DATABASE"] = str(database)
+    os.environ.update(environment(database, log_level))
     uvicorn.run(TARGET, host=host, port=port, factory=True, timeout_graceful_shutdown=GRACEFUL_SECONDS)
 
 
-def spawn(host: str, port: int, database: Path | None = None) -> int:
+def spawn(host: str, port: int, database: Path | None = None, log_level: str | None = None) -> int:
     """Start a daemon in a session of its own and return its pid.
 
     Detached deliberately: a control plane that dies with the terminal — or with
@@ -122,7 +128,7 @@ def spawn(host: str, port: int, database: Path | None = None) -> int:
         stdin=subprocess.DEVNULL,
         start_new_session=True,
         close_fds=True,
-        env=environment(database),
+        env=environment(database, log_level),
     )
     return process.pid
 

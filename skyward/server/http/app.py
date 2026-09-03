@@ -47,8 +47,10 @@ from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import SkywardError
-from skyward.shared.observability import LogConfig, setup_logging
+from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import ConsoleEvent, Event, MetricEvent, PhaseEvent, PhaseMark
+
+logger = logger.bind(component="daemon")
 
 TICK_SECONDS = 5
 METER_SECONDS = 10
@@ -222,6 +224,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             await asyncio.sleep(TICK_SECONDS)
             await svc.tasks.expire()
             computes, tasks = await svc.reconciler.unsettled()
+            logger.debug("tick: {} unsettled computes, {} unsettled tasks", len(computes), len(tasks))
             for compute_id in computes:
                 app.emit("compute.changed", compute_id=compute_id)
             for task_id in tasks:
@@ -323,6 +326,6 @@ def daemon() -> Litestar:
     logs go: ``create_app`` is imported into the user's process by the embedded client,
     and a guest does not get to install sinks on the host application's behalf.
     """
-    setup_logging(LogConfig())
+    setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL"))))
     database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
     return create_app(services(), database=database)

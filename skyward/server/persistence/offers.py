@@ -88,8 +88,11 @@ class OfferCache:
         return fresh == 0
 
     async def _refresh(self, row: ProviderRow) -> None:
+        log = logger.bind(provider=row.name)
+        log.debug("catalogue is stale, fetching")
         adapter = await self._providers.adapter(row.id)
         offers = [offer async for offer in adapter.offers()]
+        log.info("{} offers", len(offers))
 
         async with OfferRow._meta.db.transaction(transaction_type=TransactionType.immediate):
             await OfferRow.delete().where(OfferRow.provider_id == row.id).run()

@@ -19,9 +19,12 @@ from skyward.server.application.source import resolve
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import LIVE, NodeStore
+from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Node, NodeState
 from skyward.worker import plugins, worker
+
+logger = logger.bind(component="connector")
 
 HELD: tuple[NodeState, ...] = ("connecting", "bootstrapping", "ready")
 """States that mean somebody should be holding a live connection to this machine."""
@@ -52,17 +55,21 @@ class Connector:
         machine that is already working is adopt it — see
         :meth:`skyward.server.application.node.Node._serving`.
         """
+        log = logger.bind(compute_id=compute_id, node_id=node_id)
         compute = await self._computes.get(compute_id)
         infrastructure = await self._computes.infrastructure(compute_id)
         if not infrastructure.private_key:
+            log.debug("nothing to log in with yet: the compute has no key")
             return
 
         nodes = await self._nodes.of(compute_id)
         node = next((candidate for candidate in nodes if candidate.id == node_id), None)
-        if node is None or node.state not in HELD or not node.provider_binding:
+        if node is None:
+            log.debug("no such row")
             return
 
-        if not _photographable(nodes):
+        if node.state not in HELD or not node.provider_binding:
+            log.debug("not connectable: {} and {} a machine", node.state, "with" if node.provider_binding else "without")
             return
 
         source = await resolve(compute.spec.image.skyward)
@@ -72,7 +79,10 @@ class Connector:
             await runtime.retopology(node_id, _peers(nodes))
             return
         if not runtime.claim(node_id):
+            log.debug("another connect already has it")
             return
+
+        log.info("taking hold of rank {} at {}", node.rank, node.address)
 
         try:
             includes = compute.spec.image.includes_sha256
@@ -114,28 +124,14 @@ class Connector:
         await self._runtimes.detach(compute_id, node_id)
 
 
-def _photographable(nodes: tuple[Node, ...]) -> bool:
-    """Whether the world can be described yet.
-
-    Nobody starts until every machine of the cohort has an address, because what a
-    worker is handed is the whole peer list and its own index into it — and a worker
-    started while a peer was still booting would be told the world has two machines
-    in it when it has three. It would not fail: it would run, and shard a third of
-    the data into nowhere.
-
-    So the first node waits for the last one. The cost is the slowest machine's boot
-    time, paid once; the alternative is a silently wrong answer.
-    """
-    return all(node.address for node in nodes if node.state in LIVE)
-
-
 def _peers(nodes: tuple[Node, ...]) -> tuple[str, ...]:
     """Every address the workers can use to reach each other, in rank order.
 
-    This is what a distributed job is handed as its world, and it is a photograph
-    taken when the compute started. A node added later is not in the list the earlier
-    ones were given, so anything that divides work by the size of the world — a
-    broadcast, a shard, a collective — is talking about the compute it started with.
+    A photograph of the world as it is now, not as it will be: a node is started as
+    soon as it can be logged into, with whichever peers have an address at that
+    moment, and told again through :meth:`Runtime.retopology` each time the world
+    changes. The pool is dynamic and the workers are written for that; what decides
+    when work may start is the compute reaching ``min``, not the last machine booting.
 
     Only live nodes count. A node that failed or was preempted keeps its row, and its
     address, until somebody sends the terminate it is still owed — but it is not part

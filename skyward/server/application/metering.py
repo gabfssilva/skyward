@@ -16,7 +16,10 @@ from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import now
 from skyward.shared import codec
+from skyward.shared.observability import logger
 from skyward.shared.schemas import BillingUnit, CostEvent, Event, Node
+
+logger = logger.bind(component="metering")
 
 UNIT_SECONDS: dict[BillingUnit, int] = {"second": 1, "minute": 60, "hour": 3600}
 
@@ -58,12 +61,8 @@ class Meter:
         for compute_id in await self._computes.live():
             nodes = await self._nodes.of(compute_id)
             metered = [node for node in nodes if node.launched_at is not None]
-            payload = await codec.json(Event).encode(
-                CostEvent(
-                    compute=compute_id,
-                    cost=round(sum(accrued(node, at) for node in metered), 6),
-                    nodes=sum(1 for node in metered if node.terminated_at is None),
-                    at=at,
-                )
-            )
+            cost = round(sum(accrued(node, at) for node in metered), 6)
+            billing = sum(1 for node in metered if node.terminated_at is None)
+            logger.bind(compute_id=compute_id).debug("{} machines billing, ${:.4f} so far", billing, cost)
+            payload = await codec.json(Event).encode(CostEvent(compute=compute_id, cost=cost, nodes=billing, at=at))
             await self._events.publish("compute.cost", payload, compute=compute_id)

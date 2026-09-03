@@ -176,10 +176,10 @@ def describe_a_pod_the_cloud_refuses_to_deploy() -> None:
         transport = httpx.MockTransport(lambda _: httpx.Response(status, json=body))
 
         async with httpx.AsyncClient(transport=transport) as client:
-            answer = await provider._deploy(client, binding, "on_demand")
+            with pytest.raises(Exception) as refusal:
+                await provider._deploy(client, binding, "on_demand", "nod-1")
 
-        assert isinstance(answer, Exception), "a refusal is what a deploy hands back, not a machine"
-        return answer
+        return refusal.value
 
     async def it_says_which_of_the_two_refusals_it_was() -> None:
         out_of_stock = await _refused(400, {"detail": "There are no longer any instances available with the requested specifications.", "status": 400})
@@ -200,7 +200,7 @@ def describe_a_pod_as_runpod_reports_it() -> None:
     def it_is_reachable_once_a_public_port_is_published_for_its_ssh() -> None:
         machine = _machine({
             "id": "4vkil6xz1jd8tr",
-            "name": "skyward-cmp_a275b416888f-5ac8247f",
+            "name": "skyward-cmp_a275b416888f-nod-5ac8247f",
             "status": "RUNNING",
             "runtime": None,
             "publicIp": None,
@@ -210,11 +210,12 @@ def describe_a_pod_as_runpod_reports_it() -> None:
                 "proxy": {"host": "ssh.runpod.io", "port": 22, "username": "4vkil6xz1jd8tr-64411c41", "command": "ssh ..."},
                 "direct": {"host": "69.30.119.250", "port": 10465, "username": "root", "command": "ssh ..."},
             },
-        })
+        }, "skyward-cmp_a275b416888f-")
 
         assert machine is not None
         assert machine.state == "running"
         assert (machine.host, machine.port) == ("69.30.119.250", 10465)
+        assert machine.node == "nod-5ac8247f", "the claim it was launched under, read back off its name"
 
     def it_is_asked_for_with_the_flag_that_publishes_the_port() -> None:
         deploy = _deploy_input(
@@ -228,8 +229,10 @@ def describe_a_pod_as_runpod_reports_it() -> None:
                 "public_key": "ssh-ed25519 AAAA",
             },
             "on_demand",
+            "nod-1",
         )
 
+        assert deploy["name"] == "skyward-cmp_1-nod-1", "the claim rides in the only field runpod lets an adapter read back"
         assert deploy["startSsh"] is True, "without it runpod publishes no port and the node is unreachable"
         assert "22/tcp" in deploy["ports"], "and the flag alone is not enough"
         assert deploy["env"]["SKYWARD_PUBLIC_KEY"] == "ssh-ed25519 AAAA", "the compute's key travels in a variable of its own"
@@ -243,7 +246,7 @@ def describe_a_pod_as_runpod_reports_it() -> None:
             "runtime": None,
             "globalNetworking": {"enabled": False},
             "ssh": {"proxy": {"host": "ssh.runpod.io", "port": 22, "username": "x", "command": "ssh ..."}, "direct": None},
-        })
+        }, "skyward-cmp_1-")
 
         assert machine is not None
         assert machine.state == "pending", "the proxy is an interactive shell, not somewhere a node can be bootstrapped"
@@ -251,4 +254,4 @@ def describe_a_pod_as_runpod_reports_it() -> None:
 
     @pytest.mark.parametrize("status", ["EXITED", "ERROR", "TERMINATED"])
     def it_is_reported_gone_once_it_has_stopped(status: str) -> None:
-        assert _machine({"id": "jj4obfs25b0xig", "status": status}) is None
+        assert _machine({"id": "jj4obfs25b0xig", "status": status}, "skyward-cmp_1-") is None

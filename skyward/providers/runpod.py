@@ -1,7 +1,6 @@
 import asyncio
 import re
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -10,7 +9,7 @@ import msgspec
 
 from skyward.shared.accelerators import CATALOG, resolve
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, Mount
+from skyward.shared.provider import Binding, Machine, Mount, claimed
 from skyward.shared.providers import RunPod
 from skyward.shared.schemas import ComputeSpec, Market, Offer, Volume
 from skyward.worker import bootstrap
@@ -329,25 +328,16 @@ class RunPodProvider:
             "bid_per_gpu": round(offer.spot_price * multiplier / gpu_count, 4) if offer.spot_price else None,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with httpx.AsyncClient(timeout=self._timeout) as client, asyncio.TaskGroup() as group:
-            attempts = [group.create_task(self._deploy(client, binding, market)) for _ in range(count)]
-
-        results = [task.result() for task in attempts]
-        machines = tuple(result for result in results if isinstance(result, Machine))
-        if len(machines) < min_count:
-            raise ExceptionGroup(
-                f"runpod deployed {len(machines)} pods, {min_count} were required",
-                [result for result in results if isinstance(result, Exception)],
-            )
-        return binding, machines
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            return await self._deploy(client, binding, market, node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         """Find the compute's pods by name.
 
         RunPod has no tags or labels on a pod: the name is the only field an
         adapter controls and can filter an account-wide listing on, so the
-        compute id is carried in it.
+        compute id and the node's claim are carried in it.
         """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.get(f"{API_URL}/pods", headers=self._headers)
@@ -355,7 +345,7 @@ class RunPodProvider:
             pods = (response.json() or {}).get("pods") or []
 
         found = (
-            _machine(pod)
+            _machine(pod, binding["prefix"])
             for pod in pods
             if str(pod.get("name") or "").startswith(binding["prefix"])
         )
@@ -447,20 +437,17 @@ class RunPodProvider:
                     for pod_id in orphans:
                         group.create_task(self._destroy(client, pod_id))
 
-    async def _deploy(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine | Exception:
-        """Deploy one pod, trying each image candidate, and hand a failure back rather than raise it.
+    async def _deploy(self, client: httpx.AsyncClient, binding: Binding, market: Market, node: str) -> Machine:
+        """Deploy one pod, trying each image candidate.
 
-        A launch of ``count`` pods is allowed to come back with fewer, so one host
-        refusing the bid must not cancel its siblings — which is what raising inside the
-        task group would do. The candidates are ordered newest-CUDA first; a host that
-        has no driver for the top image is retried against the next before the pod is
-        counted as lost.
+        The candidates are ordered newest-CUDA first; a host that has no driver for
+        the top image is retried against the next before the launch is refused.
         """
         candidates = binding.get("image_candidates") or [binding["image"]]
         error: Exception = RuntimeError("runpod produced no image candidate to deploy")
 
         for image in candidates:
-            deploy = _deploy_input(binding, market, image)
+            deploy = _deploy_input(binding, market, node, image)
             try:
                 response = await client.post(f"{API_URL}/pods", json=deploy, headers=self._headers)
                 response.raise_for_status()
@@ -471,11 +458,11 @@ class RunPodProvider:
 
             match data:
                 case {"id": str(pod_id)}:
-                    return Machine(id=pod_id, state="pending")
+                    return Machine(id=pod_id, state="pending", node=node)
                 case _:
                     error = RuntimeError(f"runpod REST create returned no pod: {data}")
 
-        return error
+        raise error
 
     async def _destroy(self, client: httpx.AsyncClient, machine_id: str) -> None:
         response = await client.delete(f"{API_URL}/pods/{machine_id}", headers=self._headers)
@@ -511,7 +498,7 @@ def _detail(response: httpx.Response) -> str:
             return response.text.strip()
 
 
-def _deploy_input(binding: Binding, market: Market, image: str | None = None) -> dict[str, Any]:
+def _deploy_input(binding: Binding, market: Market, node: str, image: str | None = None) -> dict[str, Any]:
     """Build a PodCreateInput from RunPod's official REST OpenAPI.
 
     Reads the knob keys with defaults rather than by subscript: a binding is
@@ -542,7 +529,7 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
     normalized_ports = ports.split(",") if isinstance(ports, str) else list(ports)
 
     deploy: dict[str, Any] = {
-        "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+        "name": f"{binding['prefix']}{node}",
         "image": image or binding["image"],
         "args": f"bash -c '{ENTRYPOINT}'",
         "gpu": {"id": binding["gpu_type_id"], "count": binding["gpu_count"]},
@@ -664,7 +651,7 @@ def _extract_tag_version(tag: str) -> tuple[int, int, int]:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
 
 
-def _machine(pod: Mapping[str, Any]) -> Machine | None:
+def _machine(pod: Mapping[str, Any], prefix: str) -> Machine | None:
     """A pod that has stopped is reported as gone.
 
     A stopped pod cannot be made to run again by anything the control plane does,
@@ -691,4 +678,5 @@ def _machine(pod: Mapping[str, Any]) -> Machine | None:
                 host=host,
                 port=int(direct.get("port") or 22),
                 private_host=networking.get("internalDns") or networking.get("ip") or None,
+                node=claimed(pod.get("name"), prefix),
             )

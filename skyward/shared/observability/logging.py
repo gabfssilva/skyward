@@ -66,6 +66,26 @@ def _patcher(record: logging.LogRecord) -> None:
     record.__dict__["_ctx"] = _context(record)
 
 
+def level(name: str | None) -> LogLevel:
+    """The level a name asks for, or ``INFO`` when it names none this understands.
+
+    The console is the only sink a level applies to — the file always takes
+    ``DEBUG``, because the thing worth reading after a failure is the detail
+    nobody wanted on their terminal while it was happening.
+    """
+    match (name or "").strip().upper():
+        case "TRACE":
+            return "TRACE"
+        case "DEBUG":
+            return "DEBUG"
+        case "WARNING":
+            return "WARNING"
+        case "ERROR":
+            return "ERROR"
+        case _:
+            return "INFO"
+
+
 def setup_logging(config: LogConfig) -> list[int]:
     """Install the configured sinks and return their ids, for ``teardown_logging``."""
     logger.remove()

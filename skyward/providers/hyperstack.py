@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -9,7 +8,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, MachineState, Mount
+from skyward.shared.provider import Binding, Machine, MachineState, Mount, claimed
 from skyward.shared.providers import Hyperstack
 from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
 from skyward.worker import bootstrap
@@ -28,7 +27,6 @@ CPU_RAM_RATE = "RAM (cpu-only-flavors)"
 
 SSH_USER = "ubuntu"
 SSH_RULE = ("tcp", 22, 22, "0.0.0.0/0")
-BATCH = 20
 
 
 class HyperstackProvider:
@@ -153,22 +151,25 @@ class HyperstackProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """The region is already pinned by the environment, so provisioning teaches the binding nothing.
-
-        A batch that fails after another has succeeded leaks nothing: the VMs it did
-        create sit in the compute's environment, and :meth:`machines` hands them back.
-        """
-        async with asyncio.TaskGroup() as group:
-            batches = [group.create_task(self._create(binding, size)) for size in _batches(count)]
-
-        machines = tuple(machine for batch in batches for machine in batch.result())
-        if len(machines) < min_count:
-            raise CapabilityMismatchError(
-                f"hyperstack created {len(machines)} of {count} VMs in {binding['region']}",
-                provider=self._name,
-            )
-        return binding, machines
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """One VM, named for the node: Hyperstack numbers the VMs of a ``count`` request off one name, so a node is one call."""
+        created = await self._request(
+            "POST",
+            VMS_PATH,
+            {
+                "name": f"{binding['name']}-{node}",
+                "environment_name": binding["name"],
+                "image_name": binding["image"],
+                "flavor_name": binding["flavor"],
+                "key_name": binding["name"],
+                "count": 1,
+                "assign_floating_ip": True,
+            },
+        )
+        vm = next(iter(created.get("instances", [])), None)
+        if vm is None:
+            raise CapabilityMismatchError(f"hyperstack created no VM in {binding['region']}", provider=self._name)
+        return Machine(id=str(vm["id"]), state="pending", user=SSH_USER, node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         """Two ways of recognising the compute's VMs, because both of them are the same tag.
@@ -176,6 +177,7 @@ class HyperstackProvider:
         A Hyperstack VM has no label. What it does carry is the environment it was
         created in and the name it was given, and both are derived from ``compute_id``:
         a VM is this compute's whichever of the two the account-wide listing reports.
+        The node's claim is the tail of the name.
         """
         listed = await self._request("GET", VMS_PATH)
         vms = [
@@ -186,7 +188,7 @@ class HyperstackProvider:
 
         await self._firewall(vms)
 
-        found = (_machine(vm) for vm in vms)
+        found = (_machine(vm, f"{binding['name']}-") for vm in vms)
         return {machine.id: machine for machine in found if machine is not None}
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
@@ -232,31 +234,6 @@ class HyperstackProvider:
         async with asyncio.timeout(timeout):
             while await self._environment_id(str(binding["name"])) is not None:
                 await asyncio.sleep(interval)
-
-    async def _create(self, binding: Binding, count: int) -> tuple[Machine, ...]:
-        """The VM name is the compute's, suffixed: a node is one create call, and names collide.
-
-        Hyperstack numbers the VMs of a single ``count`` request off the name it was
-        given, so anything derived from the compute alone would be handed to every node
-        of it.
-        """
-        created = await self._request(
-            "POST",
-            VMS_PATH,
-            {
-                "name": f"{binding['name']}-{uuid.uuid4().hex[:8]}",
-                "environment_name": binding["name"],
-                "image_name": binding["image"],
-                "flavor_name": binding["flavor"],
-                "key_name": binding["name"],
-                "count": count,
-                "assign_floating_ip": True,
-            },
-        )
-        return tuple(
-            Machine(id=str(vm["id"]), state="pending", user=SSH_USER)
-            for vm in created.get("instances", [])
-        )
 
     async def _firewall(self, vms: Sequence[Mapping[str, Any]]) -> None:
         """A Hyperstack VM comes up with no ingress at all — SSH and peer traffic are opened here.
@@ -387,12 +364,7 @@ def _belongs(vm: Mapping[str, Any], name: str) -> bool:
     return environment == name or str(vm.get("name") or "").startswith(f"{name}-")
 
 
-def _batches(count: int) -> tuple[int, ...]:
-    full, rest = divmod(count, BATCH)
-    return (BATCH,) * full + ((rest,) if rest else ())
-
-
-def _machine(vm: Mapping[str, Any]) -> Machine | None:
+def _machine(vm: Mapping[str, Any], prefix: str) -> Machine | None:
     def at(state: MachineState) -> Machine:
         return Machine(
             id=str(vm["id"]),
@@ -400,6 +372,7 @@ def _machine(vm: Mapping[str, Any]) -> Machine | None:
             host=vm.get("floating_ip") or None,
             user=SSH_USER,
             private_host=vm.get("fixed_ip") or None,
+            node=claimed(vm.get("name"), prefix),
         )
 
     match str(vm.get("status") or "").upper():

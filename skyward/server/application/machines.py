@@ -108,7 +108,6 @@ class Machines:
         self._blobs = blobs
         self._events = events
         self._binding = asyncio.Lock()
-        self._fleet: dict[str, asyncio.Lock] = {}
         self._baked: set[tuple[str, str]] = set()
         """Which compute has already had which environment offered to the provider, once."""
         self._progress: dict[str, tuple[str | None, datetime]] = {}
@@ -117,34 +116,47 @@ class Machines:
     async def create(self, compute_id: str, node_id: str) -> None:
         """Buy the machine one row is asking for, and write down what we got.
 
-        The state is read again under the fleet lock. A launch takes tens of
-        seconds and every tick re-offers the row while it runs, so a wake that
-        read ``requested`` before the lock and bought on it would buy a second
-        machine for a node about to have one — a machine no row points at, that
-        no terminate will ever find, and that bills until someone notices.
+        Every row is bought on its own task, and the tasks run together: what had
+        to be settled before the first machine was settled once in :meth:`bind`,
+        and a launch only reads it. The machine is claimed for the row before the
+        provider is called, so a reply that never arrives is not a machine lost —
+        :meth:`resolve` finds it by the claim and writes the id the reply would
+        have carried.
+
+        The state is read once more after the binding, because a tick that fired
+        while the binding was being made has offered the row to somebody who may
+        already have bought on it.
         """
+        log = logger.bind(compute_id=compute_id, node_id=node_id)
         compute = await self._computes.get(compute_id)
         node = await self._nodes.get(compute_id, node_id)
         if node.state != "requested":
+            log.debug("not buying: the row is {}", node.state)
             return
 
         infrastructure = await self.bind(compute)
         adapter = await self.adapter(infrastructure.provider_id)
 
-        async with self._fleet_lock(compute_id):
-            node = await self._nodes.get(compute_id, node_id)
-            if node.state != "requested":
-                return
+        node = await self._nodes.get(compute_id, node_id)
+        if node.state != "requested":
+            log.debug("not buying: the row became {} while the compute was being bound", node.state)
+            return
 
-            infrastructure = await self._computes.infrastructure(compute_id)
-            placed, machine, market = await self._place(adapter, compute, infrastructure)
+        infrastructure = await self._computes.infrastructure(compute_id)
+        log.debug("buying one machine on {}", adapter.kind)
+        placed, machine, sold = await self._place(adapter, compute, infrastructure, claim(node_id))
 
-            if placed != infrastructure:
-                await self._computes.bind(compute_id, placed)
+        await self._nodes.launched(node_id, machine, offer=placed.offer, market=sold)
+        log.bind(instance_id=machine.id).info(
+            "bought a {} on the {} market in {}",
+            placed.offer.instance_type if placed.offer else adapter.kind,
+            sold,
+            placed.offer.region if placed.offer and placed.offer.region else "the bound region",
+        )
 
-            await self._nodes.launched(node_id, machine, offer=placed.offer, market=market)
-
-    async def _place(self, adapter: Provider, compute: Compute, infrastructure: Infrastructure) -> tuple[Infrastructure, Machine, Market]:
+    async def _place(
+        self, adapter: Provider, compute: Compute, infrastructure: Infrastructure, node: str
+    ) -> tuple[Infrastructure, Machine, Market]:
         """Buy one machine, and if the bound region will not sell one, find one that will.
 
         Two nested fallbacks. Within a region, ``markets`` is tried in order — this is
@@ -155,38 +167,51 @@ class Machines:
         and the region that refused is released so it does not leak the network it
         briefly held.
 
-        The region is a decision the first placed node makes and the rest inherit: the
-        winning infrastructure is returned for ``create`` to commit, so the next node
-        reads a binding already pointing at the region that sold, and only its markets
-        are tried. Only when every region has refused does the compound failure escape,
-        and the tick offers the row again.
+        The region is a decision one refused node makes and the rest inherit. Twenty
+        nodes refused together are twenty candidates to move the compute, and one
+        move is all it needs: the walk is taken under the binding lock, after reading
+        the binding back, and a node that finds it already moved buys where the
+        winner did rather than move it again. Only when every region has refused does
+        the compound failure escape, and the tick offers the row again.
         """
         failures: list[Exception] = []
 
-        if bought := await self._buy(adapter, infrastructure, failures):
-            binding, machine, sold = bought
-            return msgspec.structs.replace(infrastructure, binding=binding), machine, sold
+        if bought := await self._buy(adapter, infrastructure, node, failures):
+            machine, sold = bought
+            return infrastructure, machine, sold
 
-        tried = {infrastructure.offer_id}
-        for offer in await market.rank(compute.spec, self._offers):
-            if offer.id in tried:
-                continue
-            tried.add(offer.id)
+        async with self._binding:
+            current = await self._computes.infrastructure(compute.id)
+            if current.offer_id != infrastructure.offer_id:
+                logger.bind(compute_id=compute.id).debug("the compute moved while this node was being refused; following it")
+                return await self._place(adapter, compute, current, node)
 
-            relocated = await self._relocate(adapter, compute, infrastructure, offer)
-            if bought := await self._buy(adapter, relocated, failures):
-                binding, machine, sold = bought
-                await self._abandon(adapter, infrastructure)
-                return msgspec.structs.replace(relocated, binding=binding), machine, sold
-            await self._abandon(adapter, relocated)
+            tried = {infrastructure.offer_id}
+            for offer in await market.rank(compute.spec, self._offers):
+                if offer.id in tried:
+                    continue
+                tried.add(offer.id)
+
+                logger.bind(compute_id=compute.id, provider=offer.provider_name).info(
+                    "no market here would sell; trying {} in {}",
+                    offer.instance_type,
+                    offer.region or "another region",
+                )
+                relocated = await self._relocate(adapter, compute, infrastructure, offer)
+                if bought := await self._buy(adapter, relocated, node, failures):
+                    machine, sold = bought
+                    await self._computes.bind(compute.id, relocated)
+                    await self._abandon(adapter, infrastructure)
+                    return relocated, machine, sold
+                await self._abandon(adapter, relocated)
 
         if not failures:
             raise CapabilityMismatchError(f"{adapter.kind} was bound with no market to buy on")
         raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
 
     async def _buy(
-        self, adapter: Provider, infrastructure: Infrastructure, failures: list[Exception]
-    ) -> tuple[Binding, Machine, Market] | None:
+        self, adapter: Provider, infrastructure: Infrastructure, node: str, failures: list[Exception]
+    ) -> tuple[Machine, Market] | None:
         """Try each market the binding allows, in order; the first that sells wins.
 
         A launch that raises is the signal to try the next market. When none sell, the
@@ -196,13 +221,12 @@ class Machines:
         """
         for option in infrastructure.markets:
             try:
-                binding, machines = await adapter.launch(infrastructure.binding, option, count=1, min_count=1)
+                machine = await adapter.launch(infrastructure.binding, option, node)
             except Exception as failure:
+                logger.debug("{} refused a {} machine: {}", adapter.kind, option, failure)
                 failures.append(failure)
                 continue
-            if machines:
-                return binding, machines[0], option
-            failures.append(CapabilityMismatchError(f"{adapter.kind} accepted the {option} request and returned no machine"))
+            return machine, option
         return None
 
     async def _relocate(self, adapter: Provider, compute: Compute, infrastructure: Infrastructure, offer: Offer) -> Infrastructure:
@@ -289,6 +313,12 @@ class Machines:
                 volumes=mount.phases,
             )
             await self._computes.bind(compute.id, infrastructure)
+            logger.bind(compute_id=compute.id, provider=offer.provider_name).info(
+                "bound to {} in {}, buying on {}",
+                offer.instance_type,
+                offer.region or "the account's default region",
+                " then ".join(infrastructure.markets) or "no market",
+            )
 
             stored = await self._computes.infrastructure(compute.id)
             if stored.private_key != private:
@@ -395,6 +425,7 @@ class Machines:
         self._baked.add((compute_id, tag))
         try:
             if await adapter.baked(infrastructure.binding, tag) is None:
+                logger.bind(compute_id=compute_id, instance_id=node.machine).info("baking this environment into {}", tag)
                 await adapter.bake(infrastructure.binding, node.machine, tag)
         except Exception:
             logger.bind(compute_id=compute_id).warning("could not bake {} into an image", node.machine, exc_info=True)
@@ -427,13 +458,14 @@ class Machines:
         broken bootstrap or a partitioned network: the node is no longer usable, and
         it becomes a deficit like any other.
 
-        A machine the provider reports and no row claims is a machine we created and
-        failed to record. It is handed to the oldest row still waiting for one, which
-        is the only interpretation available and the only one that does not leak it —
-        but only under the fleet lock, so a machine a concurrent ``create`` has
-        launched and not yet written down is not mistaken for one a dead process left
-        behind. Without it, adoption races the launch that owns the machine and hands
-        it to the wrong row, which is one machine on two ranks and another on none.
+        Every machine the provider reports carries the claim it was launched under,
+        and the claim names a row. A row that has no id yet and whose claim is on a
+        machine is a launch whose reply this process never saw — a crash, a restart,
+        a timeout — and the id is written here, exactly as ``create`` would have. A
+        machine whose claim names no row still alive is nobody's: the row it was
+        bought for is gone, and nothing but this will ever stop it billing. Nothing
+        here is decided from memory; the store and the listing are the whole truth,
+        which is what lets this run while twenty launches are in flight.
         """
         infrastructure = await self._computes.infrastructure(compute.id)
         if not infrastructure.provider_id:
@@ -444,48 +476,70 @@ class Machines:
 
         adapter = await self.adapter(infrastructure.provider_id)
 
-        async with self._fleet_lock(compute.id):
-            nodes = await self._nodes.of(compute.id)
-            pending = [node for node in nodes if node.state in ("requested", "provisioning")]
-            watched = [node for node in nodes if node.state in ("connecting", "bootstrapping", "ready")]
+        nodes = await self._nodes.of(compute.id)
+        pending = [node for node in nodes if node.state in ("requested", "provisioning")]
+        watched = [node for node in nodes if node.state in ("connecting", "bootstrapping", "ready")]
 
-            observed = await adapter.machines(infrastructure.binding)
+        observed = await adapter.machines(infrastructure.binding)
+        logger.bind(compute_id=compute.id).debug(
+            "the provider has {} machines under this binding; {} still without an address, {} being held",
+            len(observed),
+            len(pending),
+            len(watched),
+        )
 
-            if isinstance(adapter, Preemptible):
-                claimed_ids = tuple(node.machine for node in nodes if node.machine)
-                if claimed_ids:
-                    watched_by_machine = {node.machine: node for node in watched}
-                    warned = await adapter.interruptions(infrastructure.binding, claimed_ids)
-                    for machine_id, reason in warned.items():
-                        if node := watched_by_machine.get(machine_id):
-                            await self._lost(node, reason)
+        if isinstance(adapter, Preemptible):
+            claimed_ids = tuple(node.machine for node in nodes if node.machine)
+            if claimed_ids:
+                watched_by_machine = {node.machine: node for node in watched}
+                warned = await adapter.interruptions(infrastructure.binding, claimed_ids)
+                for machine_id, reason in warned.items():
+                    if node := watched_by_machine.get(machine_id):
+                        await self._lost(node, reason)
 
-            claimed = {node.machine for node in nodes if node.machine}
-            orphans = [machine for machine_id, machine in observed.items() if machine_id not in claimed]
+        by_claim = {machine.node: machine for machine in observed.values() if machine.node}
+        deadline = compute.spec.options.provision_timeout
 
-            for node in pending:
-                if node.machine is None and orphans:
-                    market_guess = infrastructure.markets[0] if infrastructure.markets else None
-                    await self._nodes.launched(node.id, orphans.pop(0), offer=infrastructure.offer, market=market_guess)
-                    logger.bind(node_id=node.id).warning("adopted a machine nobody had written down")
-                    continue
+        for node in pending:
+            if node.machine is None and (machine := by_claim.get(claim(node.id))):
+                market_guess = infrastructure.markets[0] if infrastructure.markets else None
+                await self._nodes.launched(node.id, machine, offer=infrastructure.offer, market=market_guess)
+                logger.bind(compute_id=compute.id, node_id=node.id, instance_id=machine.id).info(
+                    "found the machine bought for rank {} before its reply arrived", node.rank
+                )
+                node = msgspec.structs.replace(node, machine=machine.id)
 
-                deadline = compute.spec.options.provision_timeout
+            match observed.get(node.machine or ""):
+                case Machine(state="running") as machine if machine.host or machine.private_host:
+                    self._progress.pop(node.id, None)
+                    await self._nodes.reachable(node.id, machine)
+                    logger.bind(compute_id=compute.id, node_id=node.id, instance_id=machine.id).info(
+                        "reachable at {}", machine.host or machine.private_host
+                    )
+                case None if node.machine and _settled(node):
+                    await self._lost(node, "the provider no longer has it")
+                case Machine() as machine if await self._stalled(node, machine, deadline):
+                    await self._lost(node, _unaddressed(machine, deadline))
+                case _:
+                    pass
 
-                match observed.get(node.machine or ""):
-                    case Machine(state="running") as machine if machine.host or machine.private_host:
-                        self._progress.pop(node.id, None)
-                        await self._nodes.reachable(node.id, machine)
-                    case None if node.machine and _settled(node):
-                        await self._lost(node, "the provider no longer has it")
-                    case Machine() as machine if await self._stalled(node, machine, deadline):
-                        await self._lost(node, _unaddressed(machine, deadline))
-                    case _:
-                        pass
-
-            for node in watched:
-                if node.machine and node.machine not in observed and _settled(node):
+        for node in watched:
+            match observed.get(node.machine or ""):
+                case None if node.machine and _settled(node):
                     await self._lost(node, "the machine went away")
+                case Machine(state="running") as machine if _moved(node, machine):
+                    logger.bind(compute_id=compute.id, node_id=node.id, instance_id=machine.id).info(
+                        "now reached at {}:{}; logging in again", machine.host or machine.private_host, machine.port
+                    )
+                    await self._nodes.reachable(node.id, machine)
+                case _:
+                    pass
+
+        owned = {node.machine for node in nodes if node.machine} | {claim(node.id) for node in nodes if node.state != "deleted"}
+        strays = tuple(machine.id for machine in observed.values() if machine.id not in owned and machine.node not in owned)
+        if strays:
+            logger.bind(compute_id=compute.id).warning("terminating {} machine(s) no row of this compute owns: {}", len(strays), ", ".join(strays))
+            await adapter.terminate(infrastructure.binding, strays)
 
     async def terminate(self, compute_id: str, node_id: str) -> None:
         """Stop paying for it. Idempotent by nature: a machine already gone is a no-op."""
@@ -496,6 +550,7 @@ class Machines:
         infrastructure = await self._computes.infrastructure(compute_id)
         if node.machine and infrastructure.provider_id:
             adapter = await self.adapter(infrastructure.provider_id)
+            logger.bind(compute_id=compute_id, node_id=node_id, instance_id=node.machine).info("terminating")
             await adapter.terminate(infrastructure.binding, (node.machine,))
 
         await self._nodes.observe(node_id, "deleted")
@@ -507,6 +562,7 @@ class Machines:
             return
 
         adapter = await self.adapter(infrastructure.provider_id)
+        logger.bind(compute_id=compute_id).info("releasing what {} held for it", adapter.kind)
         await adapter.release(infrastructure.binding)
 
     async def adapter(self, provider_id: str | None) -> Provider:
@@ -514,16 +570,6 @@ class Machines:
         if not isinstance(adapter, Provider):
             raise CapabilityMismatchError(f"{adapter.kind} can quote hardware but cannot provision it")
         return adapter
-
-    def _fleet_lock(self, compute_id: str) -> asyncio.Lock:
-        """One machine bought or adopted at a time, per compute.
-
-        Launching and orphan-adoption both write a node's machine, and the emitter
-        runs them as separate tasks. Serialized, an adoption sweep only ever sees
-        machines that are either recorded or genuinely lost — never one a launch is
-        halfway through claiming.
-        """
-        return self._fleet.setdefault(compute_id, asyncio.Lock())
 
     async def _stalled(self, node: Node, machine: Machine, deadline: float) -> bool:
         """A machine that was bought, is there, and has stopped getting closer.
@@ -568,6 +614,7 @@ class Machines:
         if machine.progress is None:
             return
 
+        logger.bind(node_id=node.id, instance_id=machine.id).debug("{}", progressed(machine.progress, machine.completion))
         payload = ProgressEvent(compute=node.compute_id, node=node.id, progress=machine.progress, completion=machine.completion)
         await self._events.publish("node.progress", await codec.json(Event).encode(payload), compute=node.compute_id)
 
@@ -579,14 +626,35 @@ class Machines:
         is discovered — the reconciler learns of it as a row already in ``lost``,
         with nothing left to say about which machine went missing or why.
         """
+        logger.bind(compute_id=node.compute_id, node_id=node.id).warning("giving up on rank {}: {}", node.rank, why)
         self._progress.pop(node.id, None)
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
         payload = NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why)
         await self._events.record("node.lost", await codec.json(Event).encode(payload), compute=node.compute_id)
 
 
+def claim(node_id: str) -> str:
+    """The row's id as a provider will carry it: a hostname-safe token, written on the machine at launch.
+
+    What :meth:`Machines.resolve` matches :attr:`Machine.node` against. Row ids are
+    ``nod_`` and hex; the underscore is the one character a hostname will not take.
+    """
+    return node_id.lower().replace("_", "-")
+
+
 def _settled(node: Node) -> bool:
     return (now() - node.created_at).total_seconds() > DOUBT_SECONDS
+
+
+def _moved(node: Node, machine: Machine) -> bool:
+    """Whether the machine is reached somewhere other than where the row says.
+
+    Most providers never move a machine. One that reaches its machines through a
+    relay it stands up itself hands out a new door every time the daemon starts,
+    and a row that remembers the old one is a machine nobody can log into any more.
+    """
+    held = node.provider_binding
+    return (machine.host, machine.private_host, machine.port) != (held.get("host"), held.get("private_host"), held.get("port"))
 
 
 def _token(machine: Machine) -> str | None:

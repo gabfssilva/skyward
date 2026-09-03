@@ -1,6 +1,5 @@
 import asyncio
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -8,7 +7,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import TensorDock
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -160,51 +159,13 @@ class TensorDockProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        """Create ``count`` VMs, keeping whatever ``min_count`` of them came up.
-
-        Gathered rather than grouped: a TaskGroup cancels its siblings on the first
-        failure, which is the opposite of partial readiness. A create that fails
-        after the VM exists is not lost — the name carries the compute id, so the
-        next :meth:`machines` finds it and the control plane adopts it.
-        """
-        created = await asyncio.gather(
-            *(self._create(binding) for _ in range(count)), return_exceptions=True,
-        )
-        machines = tuple(item for item in created if isinstance(item, Machine))
-        if len(machines) >= min_count:
-            return binding, machines
-
-        failures = [item for item in created if isinstance(item, BaseException)]
-        if not failures:
-            raise CapabilityMismatchError(
-                f"tensordock created {len(machines)} of the {min_count} machines needed", provider=self._name,
-            )
-        raise failures[0]
-
-    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
-        listed = await self._request("GET", INSTANCES_PATH)
-        found = (
-            _machine(instance)
-            for instance in listed.get("data", {}).get("instances", [])
-            if str(instance.get("name") or "").startswith(binding["prefix"])
-        )
-        return {machine.id: machine for machine in found if machine is not None}
-
-    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
-        async with asyncio.TaskGroup() as group:
-            for machine_id in machine_ids:
-                group.create_task(self._delete(machine_id))
-
-    async def release(self, binding: Binding) -> None:
-        """Nothing to give back: :meth:`initialize` created nothing."""
-
-    async def _create(self, binding: Binding) -> Machine:
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """Create one VM, named for the node: a reply that is lost still leaves a VM :meth:`machines` finds."""
         body = {
             "data": {
                 "type": "virtualmachine",
                 "attributes": {
-                    "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+                    "name": f"{binding['prefix']}{node}",
                     "type": "virtualmachine",
                     "image": binding["image"],
                     "resources": {
@@ -227,7 +188,24 @@ class TensorDockProvider:
 
         if not (instance_id := str(instance.get("id") or "")):
             raise CapabilityMismatchError("tensordock created an instance and named no id", provider=self._name)
-        return Machine(id=instance_id, state="pending", user=SSH_USER)
+        return Machine(id=instance_id, state="pending", user=SSH_USER, node=node)
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        listed = await self._request("GET", INSTANCES_PATH)
+        found = (
+            _machine(instance, binding["prefix"])
+            for instance in listed.get("data", {}).get("instances", [])
+            if str(instance.get("name") or "").startswith(binding["prefix"])
+        )
+        return {machine.id: machine for machine in found if machine is not None}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        async with asyncio.TaskGroup() as group:
+            for machine_id in machine_ids:
+                group.create_task(self._delete(machine_id))
+
+    async def release(self, binding: Binding) -> None:
+        """Nothing to give back: :meth:`initialize` created nothing."""
 
     async def _delete(self, machine_id: str) -> None:
         await self._request("DELETE", f"{INSTANCES_PATH}/{machine_id}", allow=(404,))
@@ -246,7 +224,7 @@ class TensorDockProvider:
             return response.json() if response.content else {}
 
 
-def _machine(instance: Mapping[str, Any]) -> Machine | None:
+def _machine(instance: Mapping[str, Any], prefix: str) -> Machine | None:
     """A VM as TensorDock reports it, or nothing at all if it is on its way out.
 
     TensorDock keeps a stopped or failed VM in the listing, and the control plane
@@ -270,6 +248,7 @@ def _machine(instance: Mapping[str, Any]) -> Machine | None:
         host=instance.get("ipAddress") or None,
         port=int(ssh.get("external_port") or 22),
         user=SSH_USER,
+        node=claimed(instance.get("name"), prefix),
     )
 
 

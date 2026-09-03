@@ -27,8 +27,6 @@ The API key can come from `SALAD_API_KEY`. `organization` and `project` can come
 | `image` | a CUDA runtime image | Base image, overridden by `Image(base=...)`. An image that already carries sshd, curl and websocat is used as is; otherwise it must be Debian or Ubuntu based, because the container command installs them with `apt-get`. |
 | `storage_gb` | `50` | Container storage. Salad's floor is 1 GiB. |
 | `request_timeout` | `30` | Seconds for one Salad API call. |
-| `allocation_timeout` | `300` | Seconds to wait for a created group to get an instance before the group is deleted and another offer is tried. |
-| `poll_interval` | `2` | Seconds between allocation polls. |
 
 Salad prices GPU classes by container priority. Skyward exposes the selected priority as an on-demand offer; it is billed per second. `spot` allocation is not available.
 

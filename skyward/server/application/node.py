@@ -74,6 +74,7 @@ class Node:
             raise ValueError(f"machine {machine.id} has no address to connect to")
 
         self._machine = machine
+        self._log = logger.bind(compute_id=compute, instance_id=machine.id)
         self._compute = compute
         self._image = image
         self._source = source
@@ -134,6 +135,11 @@ class Node:
         return "" if self._machine.user == "root" else "sudo "
 
     @property
+    def linked(self) -> bool:
+        """Whether the channel to the machine is up right now."""
+        return self._ssh.connected
+
+    @property
     def peer(self) -> str:
         """Where the other machines reach this one."""
         return self._machine.private_host or self._machine.host or ""
@@ -146,10 +152,13 @@ class Node:
     async def _run(self) -> None:
         try:
             self._listener("connecting", None)
+            self._log.debug("dialling {}@{}:{}", self._machine.user, self._machine.host, self._machine.port)
             await self._ssh.connect()
+            self._log.debug("logged in")
             self._monitor = asyncio.create_task(self._watch())
 
             if await self._serving():
+                self._log.info("a worker is already running here; adopting it")
                 self.tunnel = await self._ssh.forward(worker.PORT)
                 self._ready()
                 return
@@ -164,7 +173,7 @@ class Node:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.bind(instance_id=self._machine.id).warning("node failed: {}", exc)
+            self._log.warning("node failed: {}", exc)
             self._listener("failed", str(exc))
 
     async def _arm_timeout(self) -> None:
@@ -183,6 +192,7 @@ class Node:
         worker, and how long a bootstrap may take is already its own timeout's
         question.
         """
+        self._log.info("ready on rank {}, reached through 127.0.0.1:{}", self._rank, self.tunnel)
         self._listener("ready", None)
         if command := self._health_command:
             self._probe = asyncio.create_task(self._health(command))
@@ -203,6 +213,7 @@ class Node:
         return result.exit_code == 0
 
     async def _bootstrap(self) -> None:
+        self._log.debug("bootstrapping from {} with {} wheel(s)", self._source.argument, len(self._source.wheels))
         await self._ssh.run(f"{self._sudo}mkdir -p {SKYWARD_DIR} && {self._sudo}chown {self._machine.user} {SKYWARD_DIR}")
         for wheel in self._source.wheels:
             await self._ssh.put(f"{SKYWARD_DIR}/{wheel.name}", wheel.data)
@@ -266,6 +277,7 @@ class Node:
                 *health.items(),
             )
         )
+        self._log.debug("starting the worker: rank {} of {} peers, {} slots on {}", self._rank, len(self.peers), self._concurrency, self._executor)
         await self._ssh.run(
             f"nohup {self._sudo}env {environment} sh -c "
             f'"[ -f {bootstrap.ENV} ] && . {bootstrap.ENV}; exec {bootstrap.PYTHON} -m skyward.worker.worker" '
@@ -322,12 +334,14 @@ class Node:
         node's failure is recorded from that string. Left alone, a machine that ran
         out of time is a row that says it failed and will not say at what.
         """
+        self._log.debug("waiting for {}, up to {:.0f}s", phase, timeout)
         try:
             async with asyncio.timeout(timeout):
                 if error := await self._waiter(phase):
                     raise BootstrapFailedError(error)
         except TimeoutError:
             raise BootstrapFailedError(f"{phase} did not finish within {timeout:.0f}s") from None
+        self._log.debug("{} finished", phase)
 
     def _waiter(self, phase: str) -> asyncio.Future[str | None]:
         if phase not in self._reached:
@@ -374,6 +388,7 @@ class Node:
                 continue
 
             failures += 1
+            self._log.warning("health check failed {} of {} times: {}", failures, self._health_failures, result.stderr.strip() or command)
             if failures >= self._health_failures:
                 self._listener("lost", f"health check failed {failures} times: {result.stderr.strip() or command}")
                 return
@@ -387,6 +402,7 @@ class Node:
             case Health(reason=reason):
                 self._listener("lost", reason)
             case Phase() as reached:
+                self._log.debug("phase {} {}{}", reached.phase, reached.event, f": {reached.error}" if reached.error else "")
                 self._phase(reached.event, reached.phase, reached.error)
                 match reached:
                     case Phase(event="completed", phase=phase):

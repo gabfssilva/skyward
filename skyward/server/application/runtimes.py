@@ -157,6 +157,7 @@ class Runtime:
         Its tunnel is cleared so the live cluster stops routing to it at once.
         """
         if node := self.nodes.get(node_id):
+            logger.bind(compute_id=self.compute, node_id=node_id).debug("letting go of the connection")
             await node.close()
             node.tunnel = None
             self._refresh()
@@ -166,6 +167,18 @@ class Runtime:
     @property
     def ready(self) -> tuple[str, ...]:
         return tuple(node_id for node_id, node in self.nodes.items() if node.tunnel)
+
+    @property
+    def reachable(self) -> tuple[str, ...]:
+        """The ready nodes whose link is up this instant.
+
+        A ready node with its SSH channel mid-reconnect is a worker that is alive
+        and cannot be dialled: the tunnel to it is a local port nobody is
+        listening on until the channel is back. Some providers cut every link on
+        a clock — Salad's gateway ends a connection after about two hundred
+        seconds — so this is a state a node visits regularly, not a failure.
+        """
+        return tuple(node_id for node_id in self.ready if self.nodes[node_id].linked)
 
     async def system(self, node_id: str | None = None) -> casty.Client:
         """The client, dialling every worker through its own tunnel.
@@ -201,6 +214,7 @@ class Runtime:
                 if not seeds:
                     raise RuntimeError(f"compute {self.compute} has no ready node to connect to")
 
+                logger.bind(compute_id=self.compute).debug("dialling the workers through {} seed(s)", len(seeds))
                 self._refresh()
                 self._systems[key] = await casty.connect(
                     seeds,
@@ -246,6 +260,7 @@ class Runtime:
         if node is None or node.peers == peers or node_id not in self.ready:
             return
 
+        logger.bind(compute_id=self.compute, node_id=node_id).debug("telling the worker the world is now {} nodes", len(peers))
         system = await self.system(node_id)
         await system.service(worker.Control, at=await self.member(node_id)).topology(peers)
         node.peers = peers
@@ -482,6 +497,9 @@ class Runtimes:
         )
         runtime.track(node_id, node)
         await node.start()
+        logger.bind(compute_id=runtime.compute, node_id=node_id, instance_id=machine.id).debug(
+            "node started: rank {}, {} peers, {} seed(s)", rank, len(peers), len(seeds)
+        )
 
     async def detach(self, compute: str, node_id: str) -> None:
         """Close this daemon's live connection to one node before it is terminated."""
@@ -490,6 +508,7 @@ class Runtimes:
 
     async def close(self, compute: str) -> None:
         if runtime := self._runtimes.pop(compute, None):
+            logger.bind(compute_id=compute).debug("closing {} live connection(s)", len(runtime.nodes))
             await runtime.close()
 
     async def shutdown(self) -> None:

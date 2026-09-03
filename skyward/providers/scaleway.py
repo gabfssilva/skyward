@@ -1,6 +1,5 @@
 import asyncio
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -22,6 +21,7 @@ VOLUMES_PATH = "/block/v1alpha1/zones/{zone}/volumes"
 SSH_KEYS_PATH = "/iam/v1alpha1/ssh-keys"
 
 COMPUTE_TAG = "skyward.compute"
+NODE_TAG = "skyward.node"
 
 GIB = 1024**3
 GB = 1_000_000_000
@@ -159,19 +159,9 @@ class ScalewayProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with self._client() as client, asyncio.TaskGroup() as group:
-            created = [group.create_task(self._create(client, binding)) for _ in range(count)]
-
-        results = [task.result() for task in created]
-        machines = tuple(result for result in results if isinstance(result, Machine))
-
-        if len(machines) < min_count:
-            await self.terminate(binding, tuple(machine.id for machine in machines))
-            failure = next((result for result in results if isinstance(result, Exception)), None)
-            raise failure or CapabilityMismatchError(f"scaleway launched {len(machines)} of {min_count} machines")
-
-        return binding, machines
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        async with self._client() as client:
+            return await self._create(client, binding, node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         """Find the compute's servers by their tag, and trust the tag over the filter.
@@ -222,7 +212,7 @@ class ScalewayProvider:
             if deleted.status_code != 404:
                 deleted.raise_for_status()
 
-    async def _create(self, client: httpx.AsyncClient, binding: Binding) -> Machine | Exception:
+    async def _create(self, client: httpx.AsyncClient, binding: Binding, node: str) -> Machine:
         """Create one server, power it on, and undo the half of it that succeeded.
 
         Scaleway creates a server stopped: one that is never powered on is still a
@@ -236,13 +226,13 @@ class ScalewayProvider:
             created = await client.post(
                 servers,
                 json={
-                    "name": f"skyward-{uuid.uuid4().hex[:12]}",
+                    "name": f"skyward-{node}",
                     "commercial_type": binding["commercial_type"],
                     "image": binding["image_id"],
                     "project": binding["project_id"],
                     "dynamic_ip_required": True,
                     "volumes": {},
-                    "tags": ["skyward", _tag(binding["compute_id"])],
+                    "tags": ["skyward", _tag(binding["compute_id"]), f"{NODE_TAG}={node}"],
                 },
             )
             created.raise_for_status()
@@ -254,11 +244,11 @@ class ScalewayProvider:
             powered.raise_for_status()
 
             return _machine(server)
-        except httpx.HTTPError as error:
+        except httpx.HTTPError:
             if machine_id:
                 with suppress(Exception):
                     await self.terminate(binding, (machine_id,))
-            return error
+            raise
 
 
 def _tag(compute_id: str) -> str:
@@ -267,12 +257,14 @@ def _tag(compute_id: str) -> str:
 
 def _machine(server: Mapping[str, Any]) -> Machine:
     public = server.get("public_ip") or next(iter(server.get("public_ips") or []), {})
+    node = next((tag.removeprefix(f"{NODE_TAG}=") for tag in server.get("tags") or [] if tag.startswith(f"{NODE_TAG}=")), None)
 
     return Machine(
         id=server["id"],
         state="running" if server.get("state") == "running" else "pending",
         host=public.get("address") or None,
         private_host=server.get("private_ip") or None,
+        node=node,
     )
 
 

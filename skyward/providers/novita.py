@@ -1,6 +1,5 @@
 import asyncio
-import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -8,7 +7,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine
+from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Novita
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -136,28 +135,16 @@ class NovitaProvider:
             "min_cuda_version": self._config.min_cuda_version,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with (
-            httpx.AsyncClient(
-                base_url=BASE_URL,
-                timeout=self._config.request_timeout,
-                headers=self._headers(),
-            ) as client,
-            asyncio.TaskGroup() as group,
-        ):
-            attempts = [group.create_task(self._create(client, binding, market)) for _ in range(count)]
-
-        results = [task.result() for task in attempts]
-        machines = tuple(result for result in results if isinstance(result, Machine))
-        if len(machines) < min_count:
-            raise ExceptionGroup(
-                f"novita created {len(machines)} instances, {min_count} were required",
-                [result for result in results if isinstance(result, Exception)],
-            )
-        return binding, machines
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        async with httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=self._config.request_timeout,
+            headers=self._headers(),
+        ) as client:
+            return await self._create(client, binding, market, node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
-        """Novita has no tags, so the instance name carries the compute id.
+        """Novita has no tags, so the instance name carries the compute id and the node's claim.
 
         The list endpoint is not trusted for connection details — the proxy's
         host, port and password are only reliably on the instance detail — so the
@@ -184,7 +171,7 @@ class NovitaProvider:
                 detailed = [group.create_task(self._detail(client, instance_id)) for instance_id in mine]
 
         instances = [instance for task in detailed if (instance := task.result())]
-        found = (_machine(instance) for instance in instances)
+        found = (_machine(instance, prefix) for instance in instances)
         return {machine.id: machine for machine in found if machine is not None}
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
@@ -205,17 +192,10 @@ class NovitaProvider:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
-    async def _create(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine | Exception:
-        """Create one instance, and hand a failure back rather than raise it.
-
-        A launch of ``count`` instances is allowed to come back with fewer, and a
-        product that has run out of hosts refuses one request at a time: raising
-        inside the task group would cancel the siblings that did get a host, whose
-        ids would then be lost while they billed.
-        """
+    async def _create(self, client: httpx.AsyncClient, binding: Binding, market: Market, node: str) -> Machine:
         body: dict[str, Any] = {
             "productId": binding["product_id"],
-            "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+            "name": f"{binding['prefix']}{node}",
             "imageUrl": binding["image"],
             "gpuNum": binding["gpu_num"],
             "rootfsSize": binding["rootfs_gb"],
@@ -226,21 +206,17 @@ class NovitaProvider:
         if min_cuda := binding["min_cuda_version"]:
             body["minCudaVersion"] = min_cuda
 
-        try:
-            response = await client.post(CREATE_PATH, json=body)
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            return error
-
+        response = await client.post(CREATE_PATH, json=body)
+        response.raise_for_status()
         created = response.json() or {}
 
         match created:
             case {"error": error} | {"message": error} if error:
-                return RuntimeError(f"novita refused the instance: {error}")
+                raise CapabilityMismatchError(f"novita refused the instance: {error}", provider=self._name)
             case {"id": str(instance_id)} | {"instanceId": str(instance_id)} if instance_id:
-                return Machine(id=instance_id, state="pending")
+                return Machine(id=instance_id, state="pending", node=node)
             case _:
-                return RuntimeError(f"novita created an instance without an id: {created}")
+                raise CapabilityMismatchError(f"novita created an instance without an id: {created}", provider=self._name)
 
     async def _list(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
         instances: list[dict[str, Any]] = []
@@ -276,18 +252,19 @@ class NovitaProvider:
         response.raise_for_status()
 
 
-def _machine(instance: dict[str, Any]) -> Machine | None:
+def _machine(instance: dict[str, Any], prefix: str) -> Machine | None:
     if instance.get("status") in GONE:
         return None
 
     ssh = instance.get("connectComponentSSH") or {}
     password = ssh.get("password") or instance.get("sshPassword")
     host, port = _endpoint(ssh.get("sshCommand"))
+    node = claimed(instance.get("name"), prefix)
 
     if instance.get("status") != "running" or not host:
-        return Machine(id=instance["id"], state="pending", password=password)
+        return Machine(id=instance["id"], state="pending", password=password, node=node)
 
-    return Machine(id=instance["id"], state="running", host=host, port=port, password=password)
+    return Machine(id=instance["id"], state="running", host=host, port=port, password=password, node=node)
 
 
 def _endpoint(ssh_command: str | None) -> tuple[str | None, int]:

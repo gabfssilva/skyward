@@ -1,7 +1,6 @@
 import asyncio
 import re
-import uuid
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -9,7 +8,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine
+from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Vultr
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -173,17 +172,24 @@ class VultrProvider:
             "bare_metal": bare_metal,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        path, _, created = _endpoint(binding)
+        prefix = f"{binding['label']}-"
+        body: dict[str, Any] = {
+            "region": binding["region"],
+            "plan": binding["plan"],
+            "os_id": binding["os_id"],
+            "label": f"{prefix}{node}",
+            "hostname": f"{prefix}{node}",
+            "sshkey_id": [binding["ssh_key_id"]],
+            **({"preemptible": True} if market == "spot" else {}),
+        }
+
         async with self._client() as client:
-            created = await asyncio.gather(
-                *(self._create(client, binding, market) for _ in range(count)), return_exceptions=True,
-            )
+            response = await client.post(path, json=body)
+            response.raise_for_status()
 
-        machines = tuple(item for item in created if isinstance(item, Machine))
-        if len(machines) < min_count:
-            raise next(item for item in created if isinstance(item, BaseException))
-
-        return binding, machines
+        return _machine(response.json()[created], prefix)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         path, listed, _ = _endpoint(binding)
@@ -191,7 +197,7 @@ class VultrProvider:
 
         async with self._client() as client:
             found = [
-                _machine(data)
+                _machine(data, prefix)
                 async for data in self._pages(client, path, listed)
                 if str(data.get("label") or "").startswith(prefix)
             ]
@@ -244,24 +250,6 @@ class VultrProvider:
         response.raise_for_status()
         return str(response.json()["ssh_key"]["id"])
 
-    async def _create(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine:
-        path, _, created = _endpoint(binding)
-        name = f"{binding['label']}-{uuid.uuid4().hex[:8]}"
-        body: dict[str, Any] = {
-            "region": binding["region"],
-            "plan": binding["plan"],
-            "os_id": binding["os_id"],
-            "label": name,
-            "hostname": name,
-            "sshkey_id": [binding["ssh_key_id"]],
-            **({"preemptible": True} if market == "spot" else {}),
-        }
-
-        response = await client.post(path, json=body)
-        response.raise_for_status()
-
-        return _machine(response.json()[created])
-
     async def _delete(self, client: httpx.AsyncClient, path: str) -> None:
         response = await client.delete(path)
         if response.status_code != 404:
@@ -288,7 +276,7 @@ def _endpoint(binding: Binding) -> tuple[str, str, str]:
     return BARE_METALS if binding["bare_metal"] else INSTANCES
 
 
-def _machine(data: dict[str, Any]) -> Machine:
+def _machine(data: dict[str, Any], prefix: str) -> Machine:
     host = _routable(data.get("main_ip"))
     ready = data.get("status") == "active" and data.get("power_status") == "running"
 
@@ -297,6 +285,7 @@ def _machine(data: dict[str, Any]) -> Machine:
         state="running" if ready and host else "pending",
         host=host,
         private_host=_routable(data.get("internal_ip")),
+        node=claimed(data.get("label"), prefix),
     )
 
 

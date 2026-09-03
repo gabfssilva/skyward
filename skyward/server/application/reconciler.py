@@ -130,6 +130,7 @@ class Reconciler:
         spec's decision and the provider's capability, so it is asked of machines and
         settled there.
         """
+        logger.bind(compute_id=compute_id, node_id=node_id).debug("node reports {}{}", state, f": {error}" if error else "")
         await self._nodes.observe(
             node_id,
             state,
@@ -149,7 +150,10 @@ class Reconciler:
         if compute.status.state == "deleted":
             return
 
+        log = logger.bind(compute_id=compute.id)
+
         if abandoned(compute) and compute.spec.delete_on_exit:
+            log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
             await self._record("compute.abandoned", ComputeAbandoned(compute=compute.id))
             compute = await self._computes.get(compute.id)
@@ -158,13 +162,30 @@ class Reconciler:
 
         nodes = await self._nodes.of(compute.id)
         alive = [node for node in nodes if node.state in LIVE]
-        buy, spare = demand(compute, nodes, await self._tasks.load(compute.id))
+        load = await self._tasks.load(compute.id)
+        buy, spare = demand(compute, nodes, load)
+        lower, upper = bounds(compute.spec)
+        surplus = await self._surplus(compute, alive, spare)
+
+        log.debug(
+            "pass: {} alive within [{}, {}], {} in the queue, nodes {} — buy {}, {} over the target, draining {}",
+            len(alive),
+            lower,
+            upper,
+            load,
+            census(nodes),
+            buy,
+            max(spare, 0),
+            len(surplus),
+        )
 
         for _ in range(buy):
             node = await self._nodes.request(compute.id, compute.generation)
+            log.bind(node_id=node.id).info("wants one more machine")
             await self._announce("requested", compute.id, node.id)
 
-        for node in await self._surplus(compute, alive, spare):
+        for node in surplus:
+            log.bind(node_id=node.id).info("draining rank {}: it is not needed any more", node.rank)
             await self._nodes.observe(node.id, "draining")
             await self._announce("draining", compute.id, node.id)
 
@@ -279,6 +300,7 @@ class Reconciler:
                 ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
             )
             await self._record("compute.deleted", ComputeEvent(compute=compute.id, state="deleted"))
+            logger.bind(compute_id=compute.id).info("deleted: every machine is gone and the binding is released")
             return
 
         lower, _ = bounds(compute.spec)
@@ -296,6 +318,9 @@ class Reconciler:
                 nodes_total=len(live),
             ),
         )
+
+        if state != was:
+            logger.bind(compute_id=compute.id).info("{} → {}, {} of {} nodes ready", was, state, len(ready), len(live))
 
         if state == "ready" and was != "ready":
             await self._generations.apply(compute.id, compute.generation)
@@ -330,6 +355,12 @@ class Reconciler:
         interleaved would each write the deficit the other is already writing.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
+
+
+def census(nodes: Sequence[Node]) -> str:
+    """What the rows say, counted by state — the one line that says where a pass stands."""
+    counted = Counter(node.state for node in nodes)
+    return ", ".join(f"{count} {state}" for state, count in sorted(counted.items())) or "none"
 
 
 def abandoned(compute: Compute) -> bool:

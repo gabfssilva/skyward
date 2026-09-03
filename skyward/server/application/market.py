@@ -11,7 +11,10 @@ from typing import NamedTuple
 
 from skyward.server.persistence.offers import OfferCache
 from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.observability import logger
 from skyward.shared.schemas import Allocation, ComputeSpec, Market, Offer
+
+logger = logger.bind(component="market")
 
 
 class Buy(NamedTuple):
@@ -36,7 +39,16 @@ async def pick(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, Market]:
     if not candidates:
         raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
 
-    return _cheapest(candidates, spec.allocation)
+    buy = _cheapest(candidates, spec.allocation)
+    logger.bind(provider=buy.offer.provider_name).info(
+        "picked {} in {} on the {} market at ${:.3f}/h, out of {} ways to buy",
+        buy.offer.instance_type,
+        buy.offer.region or "the account's default region",
+        buy.market,
+        buy.price,
+        len(candidates),
+    )
+    return buy.offer, buy.market
 
 
 async def rank(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, ...]:
@@ -90,6 +102,13 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
             for buy in _buys(offer, spec.allocation)
             if wanted.max_hourly_cost is None or buy.price <= wanted.max_hourly_cost
         ]
+        logger.debug(
+            "{}: {} offers on the shelf, {} fit the spec, {} ways to buy them",
+            wanted.provider.kind,
+            len(page.items),
+            len(fitting),
+            len(buys),
+        )
         if buys and spec.selection == "first":
             return buys
         candidates.extend(buys)
@@ -131,8 +150,7 @@ def _buys(offer: Offer, allocation: Allocation) -> list[Buy]:
             return [buy for buy in (spot, on_demand) if buy]
 
 
-def _cheapest(buys: list[Buy], allocation: Allocation) -> tuple[Offer, Market]:
+def _cheapest(buys: list[Buy], allocation: Allocation) -> Buy:
     """``spot_if_available`` prefers the spot market; every other allocation prefers the price."""
     preferred = [buy for buy in buys if buy.market == "spot"] if allocation == "spot_if_available" else []
-    buy = min(preferred or buys, key=lambda buy: buy.price)
-    return buy.offer, buy.market
+    return min(preferred or buys, key=lambda buy: buy.price)

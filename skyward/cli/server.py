@@ -31,6 +31,7 @@ from skyward.cli._client import HOST, PORT, call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
 from skyward.server import daemon
+from skyward.shared.observability import LogLevel
 from skyward.shared.schemas import Liveness
 
 POLL_SECONDS = 0.2
@@ -91,6 +92,7 @@ def start(
     foreground: Annotated[bool, Parameter(help="Stay attached to the terminal")] = False,
     timeout: Annotated[float, Parameter(help="Seconds to wait for the daemon to answer")] = 30.0,
     database: Annotated[Path | None, Parameter(help="SQLite path (default: ~/.skyward/skyward.sqlite)")] = None,
+    log_level: Annotated[LogLevel | None, Parameter(help="Console verbosity (the log file always takes DEBUG)")] = None,
 ) -> None:
     """Start the Skyward daemon.
 
@@ -106,19 +108,22 @@ def start(
         How long to wait for liveness before giving up on a detached start.
     database
         The SQLite file the daemon keeps its state in.
+    log_level
+        How much the daemon says on its console. ``DEBUG`` is every decision the
+        control plane takes; the file under ``~/.skyward/logs`` gets that either way.
     """
     if not daemon.installed():
         raise SystemExit(daemon.MISSING)
 
     if foreground:
-        daemon.serve(host, port, database)
+        daemon.serve(host, port, database, log_level)
         return
 
     if (running := daemon.pid()) and daemon.alive(running):
         raise SystemExit(f"already running (pid {running}) — sky server stop")
 
     daemon.forget()
-    process = daemon.spawn(host, port, database)
+    process = daemon.spawn(host, port, database, log_level)
 
     if not _wait_live(f"http://{host}:{port}", timeout):
         if daemon.alive(process):

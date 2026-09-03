@@ -1,6 +1,5 @@
 import asyncio
-import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -8,7 +7,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine
+from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import JarvisLabs
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -151,29 +150,37 @@ class JarvisLabsProvider:
             "instance_timeout": self._config.instance_timeout,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with asyncio.TaskGroup() as group:
-            created = [group.create_task(self._create(binding)) for _ in range(count)]
-
-        machines: list[Machine] = []
-        refusals: list[Exception] = []
-        for task in created:
-            match task.result():
-                case Machine() as machine:
-                    machines.append(machine)
-                case Exception() as refusal:
-                    refusals.append(refusal)
-
-        if len(machines) < min_count:
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        """A create that reached the backend and whose answer did not reach us is not lost: the name carries the claim."""
+        created = await self._request(
+            "POST",
+            f"/templates/{binding['template']}/create",
+            base_url=_region_url(binding["region"]),
+            json={
+                "gpu_type": binding["gpu_type"],
+                "num_gpus": binding["num_gpus"],
+                "hdd": binding["storage_gb"],
+                "region": binding["region"],
+                "name": f"{_prefix(binding['compute_id'])}{node}",
+                "is_reserved": True,
+                "duration": "hour",
+                "disk_type": "ssd",
+                "http_ports": "",
+                "script_id": None,
+                "script_args": "",
+                "fs_id": None,
+                "arguments": "",
+            },
+        )
+        if not (machine_id := created.get("machine_id")):
             raise CapabilityMismatchError(
-                f"jarvislabs created {len(machines)} of the {min_count} machines the compute cannot do without",
+                f"jarvislabs accepted the create and named no machine: {_message(created)}",
                 provider=self._name,
-            ) from next(iter(refusals), None)
-
-        return binding, tuple(machines)
+            )
+        return Machine(id=str(machine_id), state="pending", node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
-        """Jarvis Labs has no tags, so the compute id rides in the instance name.
+        """Jarvis Labs has no tags, so the compute id and the node's claim ride in the instance name.
 
         The name is the only field the backend echoes back that we get to write,
         which makes it the only way to recognize a machine we created and never
@@ -191,12 +198,12 @@ class JarvisLabsProvider:
                 provider=self._name,
             )
 
-        prefix = f"{NAME_PREFIX}-{binding['compute_id']}-"
+        prefix = _prefix(binding["compute_id"])
         found = (
             machine
             for entry in fetched.get("instances", [])
             if str(entry.get("name") or entry.get("instance_name") or "").startswith(prefix)
-            if (machine := _machine(entry))
+            if (machine := _machine(entry, prefix))
         )
         return {machine.id: machine for machine in found}
 
@@ -271,48 +278,6 @@ class JarvisLabsProvider:
             case _:
                 return None
 
-    async def _create(self, binding: Binding) -> Machine | Exception:
-        """One refusal out of several is a smaller fleet, not a failed launch — hence ``min_count``.
-
-        The refusal is carried back instead of raised so that one backend saying no
-        does not cancel the siblings that said yes, and so that ``launch`` can chain
-        it: "created 0 of 1" is not a diagnosis, and "no free H100 in EU1" is.
-
-        A create that reached the backend and whose answer did not reach us is not
-        lost: the name carries the compute id, and :meth:`machines` finds it.
-        """
-        name = f"{NAME_PREFIX}-{binding['compute_id']}-{uuid.uuid4().hex[:6]}"
-        try:
-            created = await self._request(
-                "POST",
-                f"/templates/{binding['template']}/create",
-                base_url=_region_url(binding["region"]),
-                json={
-                    "gpu_type": binding["gpu_type"],
-                    "num_gpus": binding["num_gpus"],
-                    "hdd": binding["storage_gb"],
-                    "region": binding["region"],
-                    "name": name,
-                    "is_reserved": True,
-                    "duration": "hour",
-                    "disk_type": "ssd",
-                    "http_ports": "",
-                    "script_id": None,
-                    "script_args": "",
-                    "fs_id": None,
-                    "arguments": "",
-                },
-            )
-        except httpx.HTTPError as refusal:
-            return refusal
-
-        if not (machine_id := created.get("machine_id")):
-            return CapabilityMismatchError(
-                f"jarvislabs accepted the create and named no machine: {_message(created)}",
-                provider=self._name,
-            )
-        return Machine(id=str(machine_id), state="pending")
-
     async def _request(
         self,
         method: str,
@@ -350,16 +315,21 @@ def _message(payload: object) -> str:
             return "unexpected error"
 
 
-def _machine(entry: Mapping[str, Any]) -> Machine | None:
+def _prefix(compute_id: str) -> str:
+    return f"{NAME_PREFIX}-{compute_id}-"
+
+
+def _machine(entry: Mapping[str, Any], prefix: str) -> Machine | None:
     host, port = _endpoint(entry)
+    node = claimed(entry.get("name") or entry.get("instance_name"), prefix)
 
     match str(entry.get("status") or ""):
         case "Failed":
             return None
         case "Running" if host:
-            return Machine(id=str(entry["machine_id"]), state="running", host=host, port=port)
+            return Machine(id=str(entry["machine_id"]), state="running", host=host, port=port, node=node)
         case _:
-            return Machine(id=str(entry["machine_id"]), state="pending")
+            return Machine(id=str(entry["machine_id"]), state="pending", node=node)
 
 
 def _endpoint(entry: Mapping[str, Any]) -> tuple[str | None, int]:

@@ -231,8 +231,6 @@ class Salad(Provider, frozen=True, kw_only=True):
     image: str | None = None
     storage_gb: int = 50
     request_timeout: int = 30
-    allocation_timeout: float = 300.0
-    poll_interval: float = 2.0
 
     @property
     def countries(self) -> tuple[str, ...]:

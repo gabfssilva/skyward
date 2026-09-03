@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -6,7 +6,7 @@ import httpx
 import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import Lambda
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
@@ -111,7 +111,7 @@ class LambdaProvider:
             "ssh_key_name": name,
         }
 
-    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
         launched = await self._request(
             "POST",
             "/instance-operations/launch",
@@ -119,26 +119,23 @@ class LambdaProvider:
                 "region_name": binding["region"],
                 "instance_type_name": binding["instance_type"],
                 "ssh_key_names": [binding["ssh_key_name"]],
-                "quantity": count,
-                "name": binding["name"],
+                "quantity": 1,
+                "name": f"{binding['name']}-{node}",
             },
         )
         ids: list[str] = launched["data"]["instance_ids"]
+        if not ids:
+            raise CapabilityMismatchError(f"lambda launched no instance in {binding['region']}", provider=self._name)
 
-        if len(ids) < min_count:
-            raise CapabilityMismatchError(
-                f"lambda launched {len(ids)} of {count} instances in {binding['region']}",
-                provider=self._name,
-            )
-
-        return binding, tuple(Machine(id=machine_id, state="pending", user=SSH_USER) for machine_id in ids)
+        return Machine(id=ids[0], state="pending", user=SSH_USER, node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        prefix = f"{binding['name']}-"
         listed = await self._request("GET", "/instances")
         found = (
-            _machine(entry)
+            _machine(entry, prefix)
             for entry in listed.get("data", [])
-            if entry.get("name") == binding["name"]
+            if str(entry.get("name") or "").startswith(prefix)
         )
         return {machine.id: machine for machine in found if machine is not None}
 
@@ -239,7 +236,7 @@ def _same_key(listed: str, public_key: str) -> bool:
     return listed.split()[:2] == public_key.split()[:2] and bool(listed)
 
 
-def _machine(entry: Mapping[str, Any]) -> Machine | None:
+def _machine(entry: Mapping[str, Any], prefix: str) -> Machine | None:
     def at(state: MachineState) -> Machine:
         return Machine(
             id=str(entry["id"]),
@@ -247,6 +244,7 @@ def _machine(entry: Mapping[str, Any]) -> Machine | None:
             host=entry.get("ip") or None,
             user=SSH_USER,
             private_host=entry.get("private_ip") or None,
+            node=claimed(entry.get("name"), prefix),
         )
 
     match entry.get("status"):
