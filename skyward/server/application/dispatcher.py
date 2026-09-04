@@ -22,9 +22,10 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import ComputeNotAcceptingError
+from skyward.shared.events import Event, TaskEvent
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Error, Event, Execution, ExecutionState, Task, TaskEvent
+from skyward.shared.schemas import Error, Execution, ExecutionState, Task
 from skyward.worker import worker
 
 logger = logger.bind(component="dispatcher")

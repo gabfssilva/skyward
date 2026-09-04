@@ -26,11 +26,11 @@ with sky.Compute(provider=sky.AWS(), nodes=4, callbacks=(observer,)) as pool:
     train(data) >> pool
 ```
 
-`Event` is a tagged union — `ComputeEvent`, `NodeEvent`, `PhaseEvent`, `ConsoleEvent`, `ProgressEvent`, `MetricEvent`, `CostEvent`, `TaskEvent`, `ComputeAbandoned` — so `match` is the whole dispatch mechanism. There is no registration API to learn: one callable, one `match`, and the cases you did not write fall through.
+`Event` is a tagged union — one struct per compute fact (`ComputeReady`, `ComputeProvisioning`, `ComputeDegraded`, `ComputeDeleting`, `ComputeDeleted`, `ComputeBound`, `ComputeAbandoned`, …), plus `NodeEvent`, `PhaseEvent`, `ConsoleEvent`, `ProgressEvent`, `MetricEvent`, `CostEvent`, `TaskEvent` — so `match` is the whole dispatch mechanism. There is no registration API to learn: one callable, one `match`, and the cases you did not write fall through.
 
 Three properties make callbacks safe to lean on:
 
-- **The stream replays.** The event log starts at the compute's creation and the subscription reads it from the beginning, so a callback registered at construction still sees the provisioning and bootstrap it could not possibly have been early enough for. This is why `callbacks=` is a constructor argument: the pool provisions inside `__enter__`, and by the time your code runs inside the `with` block, the interesting part already happened.
+- **The stream replays.** The event log starts at the compute's creation and the subscription reads it from the beginning, so a callback registered at construction still sees the provisioning and bootstrap it could not possibly have been early enough for. And every change of the compute's state is in it: the daemon writes the state and the event that moved it in one transaction, so there is no transition a callback can miss. This is why `callbacks=` is a constructor argument: the pool provisions inside `__enter__`, and by the time your code runs inside the `with` block, the interesting part already happened.
 - **Callbacks run off the event loop.** They are dispatched from the pool's background thread, in registration order, and never sit between your script and its tasks. A slow callback delays the next event, not the training run.
 - **A callback that raises is reported and skipped.** The exception is printed to stderr and the stream carries on. A broken observer must not take the run with it.
 
@@ -39,7 +39,7 @@ Three properties make callbacks safe to lean on:
 The second argument is the fold: every event that has passed, accumulated into one immutable `ComputeView`. It answers the question an event alone cannot — a `ConsoleEvent` does not know whether the compute is `ready`; the view does.
 
 ```python
-compute.state            # "requested" → "provisioning" → "ready" → ... one ComputeState word
+compute.state            # "requested" → "provisioning" ⇄ "ready" → ... one ComputeState word, moved by the same table the daemon uses
 compute.cost             # accrued so far, from the cost gauge
 compute.errors           # tuple[str, ...] — what has gone wrong, most recent last
 compute.nodes            # tuple[NodeView, ...]
@@ -69,7 +69,7 @@ with sky.Compute.attached("training") as pool:
         match event:
             case sky.TaskEvent(task=task, state="failed"):
                 alert(task)
-            case sky.ComputeEvent(state="deleted"):
+            case sky.ComputeDeleted():
                 break
 ```
 

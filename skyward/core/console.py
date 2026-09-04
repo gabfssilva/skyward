@@ -22,22 +22,24 @@ from typing import Literal, Protocol, TextIO, assert_never
 
 from skyward.core.client import Client
 from skyward.core.view import ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
+from skyward.shared.events import (
+    ComputeDegraded,
+    ComputeDeleted,
+    ComputeDeleting,
+    ComputeProvisioning,
+    ComputeReady,
+    ConsoleEvent,
+    Event,
+    NodeEvent,
+    ProgressEvent,
+    TaskEvent,
+    name,
+    progressed,
+)
 from skyward.shared.schemas import (
     Compute as ComputeResource,
 )
-from skyward.shared.schemas import (
-    ComputeEvent,
-    ConsoleEvent,
-    Event,
-    Function,
-    Node,
-    NodeEvent,
-    Page,
-    ProgressEvent,
-    Task,
-    TaskEvent,
-    progressed,
-)
+from skyward.shared.schemas import Function, Node, Page, Task
 
 type ConsoleMode = Literal["rich", "log"]
 
@@ -253,10 +255,10 @@ def render(event: Event, color: bool = False) -> str | None:
             return f"{_who(node, color)} {_sep(color)} {_badge(state, color)} {_dim(error, color)}"
         case NodeEvent(node=node, state=state):
             return f"{_who(node, color)} {_sep(color)} {_badge(state, color)}"
-        case ComputeEvent(compute=compute, state="degraded" as state, error=error):
-            return f"{_who(compute, color)} {_sep(color)} {_badge(state, color)} {_dim(error or 'failed', color)}"
-        case ComputeEvent(compute=compute, state="provisioning" | "ready" | "deleted" as state):
-            return f"{_who(compute, color)} {_sep(color)} {_badge(state, color)}"
+        case ComputeDegraded(compute=compute, error=error):
+            return f"{_who(compute, color)} {_sep(color)} {_badge('degraded', color)} {_dim(error, color)}"
+        case ComputeProvisioning(compute=compute) | ComputeReady(compute=compute) | ComputeDeleting(compute=compute) | ComputeDeleted(compute=compute):
+            return f"{_who(compute, color)} {_sep(color)} {_badge(name(event).removeprefix('compute.'), color)}"
         case _:
             return None
 

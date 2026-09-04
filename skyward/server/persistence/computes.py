@@ -5,10 +5,27 @@ from typing import Any
 
 import msgspec
 from msgspec import Struct, field
+from piccolo.columns import Column
 
+from skyward.server.persistence.db import transaction
+from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.store import after, digest, ident, now, once, packed, unpacked
 from skyward.server.persistence.tables import ComputeRow, GenerationRow
+from skyward.shared import lifecycle
 from skyward.shared.errors import ComputeNotResizableError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
+from skyward.shared.events import (
+    ComputeCreated,
+    ComputeDegraded,
+    ComputeDeleted,
+    ComputeDeleting,
+    ComputeProvisioning,
+    ComputeReady,
+    ComputeReleaseFailed,
+    Event,
+    GenerationCreated,
+    LeaseClaimed,
+    LeaseReleased,
+)
 from skyward.shared.provider import Binding
 from skyward.shared.schemas import (
     Compute,
@@ -29,8 +46,16 @@ from skyward.shared.schemas import (
 from skyward.shared.tls import Authority
 from skyward.worker import plugins
 
-LIVE: tuple[ComputeState, ...] = ("requested", "provisioning", "recovering", "ready", "degraded", "deleting")
+LIVE: tuple[ComputeState, ...] = ("requested", "provisioning", "ready", "degraded", "deleting")
 """The states in which a compute still has something owed to it."""
+
+ATTEMPTS = 3
+"""How many times :meth:`ComputeStore.apply` re-reads a row that moved under it before giving up.
+
+The window is the one between reading the row and the conditional write, and
+what lands in it is a lease renewal or a binding — writes about other columns.
+Three is generous for a loop that never contends with itself for long.
+"""
 
 
 class Infrastructure(Struct, frozen=True):
@@ -70,6 +95,58 @@ class Infrastructure(Struct, frozen=True):
 
 
 class ComputeStore:
+    """The computes, and the one way their state moves.
+
+    Every write of ``status_state`` goes through :meth:`apply`, which consults the
+    lifecycle table, writes the state the event leads to, and records the event in
+    the same transaction. There is no way to move a compute without saying so, which
+    is the property a watcher of the stream is promised.
+    """
+
+    def __init__(self, events: EventStore) -> None:
+        self._events = events
+
+    async def apply(self, compute_id: str, event: Event) -> bool:
+        """Apply one event to the compute, and say whether its state moved.
+
+        The row is read fresh and written conditionally on the revision that read
+        saw — an optimistic lock around exactly the read-decide-write, and no wider,
+        because the revision is also bumped by writes that have nothing to do with
+        the state (a lease renewal, a binding) and a caller holding an older one
+        would conflict with those for no reason. A row that moved between the read
+        and the write is read again; a transition is always computed against the
+        state the row is actually in.
+
+        Three outcomes, by what the table says. A move writes the state and the
+        event together. A repeat — an event leading where the row already is —
+        writes the columns the event carries and records nothing: the reconciler
+        says ``ready`` to a ready compute on every pass, and that is not news. A
+        fact records the event and touches no state.
+        """
+        for _ in range(ATTEMPTS):
+            row = await self._row(compute_id)
+            state = lifecycle.compute(msgspec.convert(row.status_state, ComputeState), event)
+            moved = state is not None and state != row.status_state
+            columns = await _observed(event)
+            live = None
+
+            async with transaction():
+                if moved or columns:
+                    landed = await ComputeRow.update({
+                        **columns,
+                        ComputeRow.status_state: state or row.status_state,
+                        ComputeRow.revision: row.revision + 1,
+                    }).where((ComputeRow.id == row.id) & (ComputeRow.revision == row.revision)).returning(ComputeRow.id).run()
+                    if not landed:
+                        continue
+                live = await self._events.written(event, compute=row.id) if moved or state is None else None
+
+            if live is not None:
+                self._events.deliver(live)
+            return moved
+
+        raise RevisionConflictError(f"compute {compute_id} kept moving while {type(event).__name__} was applied", current=None)
+
     async def create(self, body: ComputeCreate, idempotency_key: str) -> tuple[Compute, bool]:
         """Write the definition down, and say plainly when the name is not free.
 
@@ -95,6 +172,7 @@ class ComputeStore:
                 created_at=now(),
             ).save().run()
             await self.freeze(compute, 1, body.spec)
+            await self.apply(compute, ComputeCreated(compute=compute))
             return compute
 
         compute_id, created = await once("compute.create", idempotency_key, body, insert)
@@ -161,15 +239,17 @@ class ComputeStore:
         await row.save().run()
 
         await self.freeze(row.id, row.generation, spec)
+        await self.apply(row.id, GenerationCreated(compute=row.id, number=row.generation))
         return await self.get(row.id)
 
     async def delete(self, ref: str, expected_revision: int, idempotency_key: str) -> Compute:
-        """Write the intent, and nothing else.
+        """Write the intent, and say that it was written.
 
         Nothing is torn down here. The reconciler destroys the infrastructure and
         only calls the compute ``deleted`` once the provider confirms it is gone —
         a store that marked it deleted on the way out would be a store that lies
-        about the bill.
+        about the bill. What is written is ``deleting``, through :meth:`apply`, so
+        the answer to this request already says so and so does the stream.
         """
 
         async def mark() -> str:
@@ -178,8 +258,8 @@ class ComputeStore:
 
             row.spec = await packed(spec)
             row.revision += 1
-            row.status_state = "deleting"
             await row.save().run()
+            await self.apply(row.id, ComputeDeleting(compute=row.id, nodes_ready=row.status_nodes_ready, nodes_total=row.status_nodes_total))
             return row.id
 
         compute_id, _ = await once("compute.delete", idempotency_key, None, mark)
@@ -200,10 +280,13 @@ class ComputeStore:
         if held and row.lease_owner != claim.owner:
             raise LeaseHeldError(f"compute {row.id} is owned by {row.lease_owner}", owner=row.lease_owner)
 
+        renewal = held and row.lease_owner == claim.owner
         row.lease_owner = claim.owner
         row.lease_expires_at = expires
         row.revision += 1
         await row.save().run()
+        if not renewal:
+            await self.apply(row.id, LeaseClaimed(compute=row.id, owner=claim.owner))
 
         return Lease(owner=claim.owner, expires_at=expires)
 
@@ -213,6 +296,7 @@ class ComputeStore:
         row.lease_expires_at = None
         row.revision += 1
         await row.save().run()
+        await self.apply(row.id, LeaseReleased(compute=row.id))
 
     async def infrastructure(self, compute_id: str) -> Infrastructure:
         row = await self._row(compute_id)
@@ -257,18 +341,6 @@ class ComputeStore:
             ComputeRow.volumes: await packed(infrastructure.volumes),
             ComputeRow.revision: ComputeRow.revision + 1,
         }).where((ComputeRow.id == compute_id) & guard).run()
-
-    async def observe(self, compute_id: str, status: ComputeStatus) -> None:
-        """Write what was seen. Only the reconciler calls this."""
-        await ComputeRow.update({
-            ComputeRow.status_state: status.state,
-            ComputeRow.status_observed_generation: status.observed_generation,
-            ComputeRow.status_nodes_ready: status.nodes_ready,
-            ComputeRow.status_nodes_total: status.nodes_total,
-            ComputeRow.status_drift: await packed(status.drift),
-            ComputeRow.status_error: await packed(status.last_error) if status.last_error else None,
-            ComputeRow.revision: ComputeRow.revision + 1,
-        }).where(ComputeRow.id == compute_id).run()
 
     async def live(self) -> tuple[str, ...]:
         """Every compute that still owes something — the sweep's worklist."""
@@ -336,6 +408,7 @@ class GenerationStore:
             await row.save().run()
 
             await self._computes.freeze(row.id, row.generation, spec)
+            await self._computes.apply(row.id, GenerationCreated(compute=row.id, number=row.generation))
             return f"{row.id}:{row.generation}"
 
         generation_id, _ = await once("generation.create", idempotency_key, body, branch)
@@ -347,6 +420,33 @@ class GenerationStore:
         await GenerationRow.update({GenerationRow.applied: True}).where(
             (GenerationRow.compute_id == compute) & (GenerationRow.number == number),
         ).run()
+
+
+async def _observed(event: Event) -> dict[Column, Any]:
+    """The status columns an event carries with it.
+
+    The event is the observation: what the reconciler counted is on it, and the
+    columns are a projection of it, not a second thing the caller has to say.
+    """
+    match event:
+        case ComputeProvisioning(nodes_ready=ready, nodes_total=total, generation=generation) | ComputeReady(
+            nodes_ready=ready, nodes_total=total, generation=generation
+        ):
+            return {
+                ComputeRow.status_nodes_ready: ready,
+                ComputeRow.status_nodes_total: total,
+                ComputeRow.status_observed_generation: generation,
+                ComputeRow.status_error: None,
+            }
+        case ComputeDeleting(nodes_ready=ready, nodes_total=total):
+            return {ComputeRow.status_nodes_ready: ready, ComputeRow.status_nodes_total: total}
+        case ComputeDeleted():
+            return {ComputeRow.status_nodes_ready: 0, ComputeRow.status_nodes_total: 0, ComputeRow.status_error: None}
+        case ComputeDegraded(error=error) | ComputeReleaseFailed(error=error):
+            failure = Error(code="capability_mismatch", message=error, retryable=True)
+            return {ComputeRow.status_error: await packed(failure)}
+        case _:
+            return {}
 
 
 async def _to_compute(row: ComputeRow) -> Compute:

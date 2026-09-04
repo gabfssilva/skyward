@@ -33,23 +33,10 @@ from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.shared import codec
 from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.events import ComputeAdopted, ComputeBound, Event, NodeEvent, ProgressEvent, StraysTerminated, progressed
 from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
-from skyward.shared.schemas import (
-    Compute,
-    ComputeSpec,
-    Endpoint,
-    Error,
-    Event,
-    Image,
-    Market,
-    Node,
-    NodeEvent,
-    Offer,
-    ProgressEvent,
-    Volume,
-    progressed,
-)
+from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
 from skyward.shared.tls import authority
 from skyward.worker import bootstrap
 
@@ -201,6 +188,7 @@ class Machines:
                 if bought := await self._buy(adapter, relocated, node, failures):
                     machine, sold = bought
                     await self._computes.bind(compute.id, relocated)
+                    await self._computes.apply(compute.id, _bound(compute.id, offer, relocated.markets, previous=infrastructure.offer_id))
                     await self._abandon(adapter, infrastructure)
                     return relocated, machine, sold
                 await self._abandon(adapter, relocated)
@@ -323,8 +311,10 @@ class Machines:
             stored = await self._computes.infrastructure(compute.id)
             if stored.private_key != private:
                 logger.warning("compute {} was bound by another daemon; adopting its binding", compute.id)
+                await self._computes.apply(compute.id, ComputeAdopted(compute=compute.id))
                 await self._abandon(adapter, infrastructure)
                 return stored
+            await self._computes.apply(compute.id, _bound(compute.id, offer, infrastructure.markets))
             return infrastructure
 
     async def _mount(self, adapter: Provider, spec: ComputeSpec, binding: Binding) -> Mount:
@@ -540,6 +530,7 @@ class Machines:
         if strays:
             logger.bind(compute_id=compute.id).warning("terminating {} machine(s) no row of this compute owns: {}", len(strays), ", ".join(strays))
             await adapter.terminate(infrastructure.binding, strays)
+            await self._computes.apply(compute.id, StraysTerminated(compute=compute.id, machines=strays))
 
     async def terminate(self, compute_id: str, node_id: str) -> None:
         """Stop paying for it. Idempotent by nature: a machine already gone is a no-op."""
@@ -631,6 +622,17 @@ class Machines:
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
         payload = NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why)
         await self._events.record("node.lost", await codec.json(Event).encode(payload), compute=node.compute_id)
+
+
+def _bound(compute_id: str, offer: Offer, markets: tuple[Market, ...], previous: str | None = None) -> ComputeBound:
+    return ComputeBound(
+        compute=compute_id,
+        offer=offer.id,
+        instance_type=offer.instance_type,
+        region=offer.region,
+        markets=markets,
+        previous=previous,
+    )
 
 
 def claim(node_id: str) -> str:

@@ -114,12 +114,13 @@ def describe_a_compute_that_asks_for_many_machines() -> None:
     async def it_buys_them_all_at_once(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
         provider = Gated()
-        computes, nodes, blobs = ComputeStore(), NodeStore(), BlobStore()
-        machines = Machines(computes, nodes, Providers(provider), Offers(), blobs, EventStore())  # type: ignore[arg-type]
+        events = EventStore()
+        computes, nodes, blobs = ComputeStore(events), NodeStore(), BlobStore()
+        machines = Machines(computes, nodes, Providers(provider), Offers(), blobs, events)  # type: ignore[arg-type]
         requested: list[str] = []
         wake = Wakeup()
         wake.bind(lambda event, **payload: requested.append(payload["node_id"]) if event == "node.requested" else None)
-        reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, EventStore(), wake)
+        reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, wake)
 
         spec = ComputeSpec(
             specs=(Spec(provider=ProviderRef(kind="gated"), accelerator="a100", accelerator_count=1),),

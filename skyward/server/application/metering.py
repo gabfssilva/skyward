@@ -16,8 +16,9 @@ from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import now
 from skyward.shared import codec
+from skyward.shared.events import CostEvent, Event
 from skyward.shared.observability import logger
-from skyward.shared.schemas import BillingUnit, CostEvent, Event, Node
+from skyward.shared.schemas import BillingUnit, Node
 
 logger = logger.bind(component="metering")
 

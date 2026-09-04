@@ -7,6 +7,8 @@ from msgspec import Struct
 
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
+from skyward.shared import codec
+from skyward.shared.events import Event, name
 
 type Record = tuple[int, str, bytes]
 
@@ -45,6 +47,18 @@ class EventStore:
         self._feeds: set[asyncio.Queue[Live | None]] = set()
 
     async def record(self, event_type: str, payload: bytes, compute: str | None = None, task: str | None = None) -> int:
+        live = await self.append(event_type, payload, compute, task)
+        self.deliver(live)
+        return live.sequence or 0
+
+    async def append(self, event_type: str, payload: bytes, compute: str | None = None, task: str | None = None) -> Live:
+        """Write the row and say nothing yet.
+
+        The half of :meth:`record` that belongs inside a transaction. What comes back
+        is handed to :meth:`deliver` once the transaction has committed — a
+        subscriber told of an event that is then rolled back has been told a lie the
+        replay will never repeat, and a cursor past it would skip what did happen.
+        """
         row = EventRow(
             type=event_type,
             compute_id=compute,
@@ -53,12 +67,16 @@ class EventStore:
             created_at=now(),
         )
         await row.save().run()
+        return Live(sequence=row.sequence, type=event_type, payload=payload, compute=compute, task=task)
 
-        live = Live(sequence=row.sequence, type=event_type, payload=payload, compute=compute, task=task)
+    async def written(self, event: Event, compute: str | None = None, task: str | None = None) -> Live:
+        """An event as a typed struct, appended under the frame name it goes out as."""
+        return await self.append(name(event), await codec.json(Event).encode(event), compute, task)
+
+    def deliver(self, live: Live) -> None:
+        """Hand a committed event to whoever is listening."""
         for feed in tuple(self._feeds):
             self._offer(feed, live)
-
-        return row.sequence
 
     async def publish(self, event_type: str, payload: bytes, compute: str | None = None) -> None:
         """Say it once, to whoever is listening, and keep no record.

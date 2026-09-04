@@ -29,8 +29,9 @@ from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import ComputeRow
 from skyward.shared.errors import ComputeNotConnectedError, NameTakenError
+from skyward.shared.events import ComputeDeleted, ComputeDeleting
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, ComputeStatus, Image, Node
+from skyward.shared.schemas import Compute, ComputeCreate, Image, Node
 
 pytestmark = pytest.mark.local
 
@@ -38,7 +39,7 @@ pytestmark = pytest.mark.local
 def describe_naming_a_compute() -> None:
     async def it_is_refused_when_another_compute_already_has_the_name(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
-        store = ComputeStore()
+        store = ComputeStore(EventStore())
         first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
 
         with pytest.raises(NameTakenError) as refused:
@@ -49,7 +50,7 @@ def describe_naming_a_compute() -> None:
 
     async def it_lets_two_computes_go_unnamed(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
-        store = ComputeStore()
+        store = ComputeStore(EventStore())
 
         first, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="first")
         second, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="second")
@@ -71,7 +72,8 @@ def describe_listing_computes() -> None:
         store = await _store(tmp_path)
         running, _ = await store.create(ComputeCreate(spec=SPEC, name="running"), idempotency_key="k1")
         gone, _ = await store.create(ComputeCreate(spec=SPEC, name="gone"), idempotency_key="k2")
-        await store.observe(gone.id, ComputeStatus(state="deleted", observed_generation=1, nodes_ready=0, nodes_total=0))
+        await store.apply(gone.id, ComputeDeleting(compute=gone.id, nodes_ready=0, nodes_total=0))
+        await store.apply(gone.id, ComputeDeleted(compute=gone.id))
 
         live = await store.list(None, 50, None, None, True)
         finished = await store.list(None, 50, None, None, False)
@@ -244,7 +246,7 @@ def describe_a_spec_written_under_the_old_vocabulary() -> None:
         """A row from before ``NodeBounds.desired`` became ``initial`` must still decode."""
         database = tmp_path / "skyward.sqlite"
         await connect(database)
-        store = ComputeStore()
+        store = ComputeStore(EventStore())
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="aged")
         await ComputeRow.raw(
             "UPDATE computes SET spec = json_remove(json_set(spec, '$.nodes.desired', "
@@ -253,7 +255,7 @@ def describe_a_spec_written_under_the_old_vocabulary() -> None:
 
         await connect(database)
 
-        mended = await ComputeStore().get(compute.id)
+        mended = await ComputeStore(EventStore()).get(compute.id)
         assert mended.spec.nodes == SPEC.nodes
 
 
@@ -268,7 +270,7 @@ async def _bought(
     one entry per listing; the last one is repeated once they run out.
     """
     await connect(database)
-    computes, nodes, providers = ComputeStore(), NodeStore(), ProviderStore()
+    computes, nodes, providers = ComputeStore(EventStore()), NodeStore(), ProviderStore()
     spec = msgspec.structs.replace(SPEC, options=msgspec.structs.replace(SPEC.options, provision_timeout=provision_timeout))
     compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="bought")
     await computes.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"prefix": "skyward-"}))
@@ -301,7 +303,7 @@ async def _listing(progress: deque[tuple[str, float | None]]) -> dict[str, Machi
 
 async def _store(tmp_path: Path) -> ComputeStore:
     await connect(tmp_path / "skyward.sqlite")
-    return ComputeStore()
+    return ComputeStore(EventStore())
 
 
 def _runtime(cluster: bool = True) -> Runtime:

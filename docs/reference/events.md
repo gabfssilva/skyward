@@ -42,13 +42,11 @@ Two kinds of event ride the same feed.
 
 Every payload is a flat JSON object carrying a `type` tag. All of them carry `compute`; the ones about a node carry `node`, and the ones about a task carry `task`.
 
-The tag is coarser than the `event:` name — ten node states share one payload shape, and so do four task outcomes:
+For a compute the `event:` name and the `type` tag are the same word, one per fact. For a node or a task the tag is coarser than the name — ten node states share one payload shape, and so do four task outcomes:
 
 | `event:` | `type` |
 |---|---|
-| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |
-| `compute.abandoned` | `compute.abandoned` |
-| `compute.cost` | `compute.cost` |
+| `compute.{fact}` — see below | the same name |
 | `node.{state}` | `node.state` |
 | `node.console` | `node.console` |
 | `node.phase` | `node.phase` |
@@ -59,13 +57,28 @@ Filter on the name; decode on the tag. The name is what `types` matches, and the
 
 ### Compute
 
-| Event | When |
-|-------|------|
-| `compute.ready` | Enough nodes are ready to satisfy the lower bound, and it was not ready before |
-| `compute.degraded` | A capability mismatch was hit; carries `error` |
-| `compute.deleted` | The compute's machines are gone |
-| `compute.abandoned` | Nothing has held the compute and `delete_on_exit` was set, so it is being deleted |
-| `compute.cost` | *Published.* Accrued cost so far: `cost`, `nodes`, `at` |
+Every change of a compute's `status.state` is one of the events below — the daemon has no way to move the state without recording the event that moved it, in the same transaction. Five of them move the state; the rest are facts that move nothing. An event that leads to the state the compute is already in is not recorded again: the reconciler says `ready` to a ready compute on every pass, and that is not news.
+
+| Event | Moves to | When |
+|-------|----------|------|
+| `compute.created` | — | The definition was accepted; the compute exists in `requested` |
+| `compute.bound` | — | An offer was chosen: `offer`, `instance_type`, `region`, `markets`; `previous` when a region refused and the compute followed the next offer |
+| `compute.adopted` | — | Another daemon bound the compute first and this one is carrying on under its binding |
+| `compute.provisioning` | `provisioning` | Fewer nodes answer than the floor asks for: `nodes_ready`, `nodes_total`, `generation`. Said again on the way back down |
+| `compute.ready` | `ready` | Enough nodes are ready to satisfy the floor: `nodes_ready`, `nodes_total`, `generation` |
+| `compute.degraded` | `degraded` | A reconcile pass broke; carries `error`. Once per transition, not once per failing tick |
+| `compute.generation.created` | — | A new definition was frozen: `number` |
+| `compute.generation.applied` | — | The machines reflect that definition: `number` |
+| `compute.lease.claimed` | — | A process took ownership: `owner`. Renewals are not said |
+| `compute.lease.released` | — | The owner let go without asking for anything to be destroyed |
+| `compute.abandoned` | — | Nothing has held the compute and `delete_on_exit` was set, so it is being deleted |
+| `compute.deleting` | `deleting` | Destruction was asked for: `nodes_ready`, `nodes_total` |
+| `compute.release_failed` | — | Every machine is gone but the provider would not release the binding yet; carries `error` |
+| `compute.strays_terminated` | — | Machines under the compute that no row owns were terminated: `machines` |
+| `compute.deleted` | `deleted` | The machines are gone and the binding is released |
+| `compute.cost` | — | *Published.* Accrued cost so far: `cost`, `nodes`, `at` |
+
+The state machine is `requested → provisioning ⇄ ready`, either of which may fall to `degraded` and come back; anything before deletion may go to `deleting`, and only `deleting` goes to `deleted`. The table is `skyward.shared.lifecycle.COMPUTE`, and it is the same table the client folds the stream by.
 
 ### Node
 

@@ -26,8 +26,9 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import EventRow
+from skyward.shared.events import NodeEvent, ProgressEvent
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import ComputeCreate, Error, Node, NodeEvent, ProgressEvent
+from skyward.shared.schemas import ComputeCreate, Error, Node
 
 pytestmark = pytest.mark.local
 
@@ -35,7 +36,8 @@ pytestmark = pytest.mark.local
 async def given(database: Path) -> tuple[NodeStore, EventStore, Node]:
     """One compute with one node asked for, in a database of this test's own."""
     await connect(database)
-    computes, nodes, events = ComputeStore(), NodeStore(), EventStore()
+    events = EventStore()
+    computes, nodes = ComputeStore(events), NodeStore()
     compute, _ = await computes.create(ComputeCreate(spec=SPEC), idempotency_key="given")
     return nodes, events, await nodes.request(compute.id, compute.generation)
 
@@ -43,7 +45,7 @@ async def given(database: Path) -> tuple[NodeStore, EventStore, Node]:
 def machines_for(nodes: NodeStore, events: EventStore) -> Machines:
     providers = ProviderStore()
     return Machines(
-        computes=ComputeStore(),
+        computes=ComputeStore(events),
         nodes=nodes,
         providers=providers,
         offers=OfferCache(providers),

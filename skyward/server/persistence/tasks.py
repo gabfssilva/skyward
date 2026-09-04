@@ -34,7 +34,7 @@ from skyward.shared.schemas import (
     TaskState,
 )
 
-ACCEPTING: tuple[ComputeState, ...] = ("requested", "provisioning", "recovering", "ready", "degraded")
+ACCEPTING: tuple[ComputeState, ...] = ("requested", "provisioning", "ready", "degraded")
 
 PENDING: tuple[ExecutionState, ...] = ("created", "assigned", "dispatching", "accepted", "started", "cancel_requested")
 

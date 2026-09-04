@@ -23,25 +23,28 @@ from types import MappingProxyType
 
 import msgspec
 
-from skyward.shared.schemas import (
-    Compute as ComputeResource,
-)
-from skyward.shared.schemas import (
-    ComputeAbandoned,
-    ComputeEvent,
-    ComputeState,
+from skyward.shared import lifecycle
+from skyward.shared.events import (
+    ComputeDegraded,
+    ComputeReleaseFailed,
     ConsoleEvent,
     CostEvent,
     Event,
     MetricEvent,
-    Node,
     NodeEvent,
-    NodeState,
-    Page,
     PhaseEvent,
     ProgressEvent,
-    Task,
     TaskEvent,
+)
+from skyward.shared.schemas import (
+    Compute as ComputeResource,
+)
+from skyward.shared.schemas import (
+    ComputeState,
+    Node,
+    NodeState,
+    Page,
+    Task,
     TaskEventState,
     TaskState,
 )
@@ -139,7 +142,13 @@ type EventCallback = Callable[[Event, ComputeView], None]
 
 
 def observe(view: ComputeView, event: Event) -> ComputeView:
-    """The fold: one event in, the view after it out."""
+    """The fold: one event in, the view after it out.
+
+    A compute event moves the state to wherever the lifecycle table says it leads —
+    the same table the daemon moved the row by, read without the origin check,
+    because a replay from the log's beginning is folded into a view the API may
+    already have hydrated past it.
+    """
     match event:
         case MetricEvent(node=node, name=name, value=value):
             return _sample(view, node, name, value)
@@ -153,12 +162,12 @@ def observe(view: ComputeView, event: Event) -> ComputeView:
             return _spoken(view, node, content)
         case NodeEvent(node=node, state=state, error=error):
             return _transition(_noted(view, error), node, state, error)
-        case ComputeEvent(state=state, error=error):
-            return replace(_noted(view, error), state=state)
         case TaskEvent(task=task, state=state):
             return _tasked(view, task, state)
-        case ComputeAbandoned():
-            return view
+        case ComputeDegraded(error=error) | ComputeReleaseFailed(error=error):
+            return replace(_noted(view, error), state=lifecycle.leads(event) or view.state)
+        case _:
+            return replace(view, state=lifecycle.leads(event) or view.state)
 
 
 def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> ComputeView:

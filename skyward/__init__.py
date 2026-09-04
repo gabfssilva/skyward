@@ -69,21 +69,32 @@ if TYPE_CHECKING:
         stream,
     )
     from skyward.shared import observability, time
-    from skyward.shared.schemas import (
+    from skyward.shared.events import (
         ComputeAbandoned,
-        ComputeEvent,
-        ComputeState,
+        ComputeAdopted,
+        ComputeBound,
+        ComputeCreated,
+        ComputeDegraded,
+        ComputeDeleted,
+        ComputeDeleting,
+        ComputeProvisioning,
+        ComputeReady,
+        ComputeReleaseFailed,
         ConsoleEvent,
         CostEvent,
         Event,
+        GenerationApplied,
+        GenerationCreated,
+        LeaseClaimed,
+        LeaseReleased,
         MetricEvent,
         NodeEvent,
-        NodeState,
         PhaseEvent,
         ProgressEvent,
+        StraysTerminated,
         TaskEvent,
-        TaskState,
     )
+    from skyward.shared.schemas import ComputeState, NodeState, TaskState
     from skyward.worker import metrics, plugins, storage
     from skyward.worker.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
     from skyward.worker.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
@@ -100,27 +111,40 @@ job is to run somebody's training loop.
 SHARED = ("Consistency", "DistributedRegistry", "barrier", "counter", "dict", "lock", "queue", "registry", "set")
 """The compute's own state, out of ``skyward.worker.distributed``. Same reason."""
 
-SCHEMAS = (
+EVENTS = (
     "ComputeAbandoned",
-    "ComputeEvent",
-    "ComputeState",
+    "ComputeAdopted",
+    "ComputeBound",
+    "ComputeCreated",
+    "ComputeDegraded",
+    "ComputeDeleted",
+    "ComputeDeleting",
+    "ComputeProvisioning",
+    "ComputeReady",
+    "ComputeReleaseFailed",
     "ConsoleEvent",
     "CostEvent",
     "Event",
+    "GenerationApplied",
+    "GenerationCreated",
+    "LeaseClaimed",
+    "LeaseReleased",
     "MetricEvent",
     "NodeEvent",
-    "NodeState",
     "PhaseEvent",
     "ProgressEvent",
+    "StraysTerminated",
     "TaskEvent",
-    "TaskState",
 )
-"""The event stream's vocabulary, out of ``skyward.shared.schemas``.
+"""The event stream's vocabulary, out of ``skyward.shared.events``.
 
 What a ``callbacks=`` handler matches on. Resolved from ``shared`` rather than
 ``core`` because the events are wire types — msgspec and the standard library,
 nothing a bare node could not import.
 """
+
+SCHEMAS = ("ComputeState", "NodeState", "TaskState")
+"""The state words, out of ``skyward.shared.schemas``, for the same reason."""
 
 __all__ = [
     "AWS",
@@ -128,7 +152,15 @@ __all__ = [
     "CallbackWriter",
     "Compute",
     "ComputeAbandoned",
-    "ComputeEvent",
+    "ComputeAdopted",
+    "ComputeBound",
+    "ComputeCreated",
+    "ComputeDegraded",
+    "ComputeDeleted",
+    "ComputeDeleting",
+    "ComputeProvisioning",
+    "ComputeReady",
+    "ComputeReleaseFailed",
     "ComputeState",
     "ComputeView",
     "Consistency",
@@ -141,6 +173,8 @@ __all__ = [
     "EventCallback",
     "Executor",
     "GCP",
+    "GenerationApplied",
+    "GenerationCreated",
     "Group",
     "HealthChecker",
     "Hyperstack",
@@ -148,6 +182,8 @@ __all__ = [
     "Info",
     "JarvisLabs",
     "Lambda",
+    "LeaseClaimed",
+    "LeaseReleased",
     "MassedCompute",
     "MetricEvent",
     "MetricSpec",
@@ -170,6 +206,7 @@ __all__ = [
     "SkywardError",
     "Spec",
     "Storage",
+    "StraysTerminated",
     "Streaming",
     "TaskEvent",
     "TaskFailedError",
@@ -218,6 +255,8 @@ def __getattr__(name: str) -> object:
             value = importlib.import_module(f"skyward.worker.{name}")
         case "Storage":
             value = importlib.import_module("skyward.worker.storage").Storage
+        case _ if name in EVENTS:
+            value = getattr(importlib.import_module("skyward.shared.events"), name)
         case _ if name in SCHEMAS:
             value = getattr(importlib.import_module("skyward.shared.schemas"), name)
         case _ if name in RUNTIME:

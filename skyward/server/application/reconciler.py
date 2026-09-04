@@ -27,29 +27,28 @@ from datetime import timedelta
 from math import ceil
 from time import monotonic
 
-import msgspec
-
 from skyward.server.application.machines import Machines
 from skyward.server.persistence.computes import ComputeStore, GenerationStore
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import LIVE, NodeStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared import codec
+from skyward.shared import codec, lifecycle
 from skyward.shared.errors import NotFoundError, SkywardError
-from skyward.shared.observability import logger
-from skyward.shared.schemas import (
-    Compute,
+from skyward.shared.events import (
     ComputeAbandoned,
-    ComputeEvent,
-    ComputeSpec,
-    ComputeStatus,
-    Error,
+    ComputeDegraded,
+    ComputeDeleted,
+    ComputeDeleting,
+    ComputeProvisioning,
+    ComputeReady,
+    ComputeReleaseFailed,
     Event,
-    Node,
+    GenerationApplied,
     NodeEvent,
-    NodeState,
 )
+from skyward.shared.observability import logger
+from skyward.shared.schemas import Compute, ComputeSpec, Error, Node, NodeState
 from skyward.worker import plugins
 
 logger = logger.bind(component="reconciler")
@@ -116,7 +115,7 @@ class Reconciler:
                 pass
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
-                await self._degrade(compute_id, exc)
+                await self._computes.apply(compute_id, ComputeDegraded(compute=compute_id, error=str(exc)))
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What the node's own lifecycle reported, and what follows from it.
@@ -154,8 +153,9 @@ class Reconciler:
 
         if abandoned(compute) and compute.spec.delete_on_exit:
             log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
+            await self._computes.apply(compute.id, ComputeAbandoned(compute=compute.id))
+            compute = await self._computes.get(compute.id)
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
-            await self._record("compute.abandoned", ComputeAbandoned(compute=compute.id))
             compute = await self._computes.get(compute.id)
 
         await self._machines.resolve(compute, await self._nodes.of(compute.id))
@@ -279,6 +279,12 @@ class Reconciler:
         return idle
 
     async def _status(self, compute: Compute) -> None:
+        """Say what the count came to. The store decides whether that is news.
+
+        The event carries the observation — how many answer, of how many — and
+        the state it leads to is the table's to say. Most passes say what the last
+        one said, and those write the counts and record nothing.
+        """
         nodes = await self._nodes.of(compute.id)
         live = [node for node in nodes if node.state in LIVE]
         ready = [node for node in live if node.state == "ready"]
@@ -290,59 +296,35 @@ class Reconciler:
             except SkywardError as error:
                 if not error.retryable:
                     raise
-                await self._computes.observe(
-                    compute.id,
-                    ComputeStatus(state="deleting", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
-                )
+                await self._computes.apply(compute.id, ComputeReleaseFailed(compute=compute.id, error=error.message))
                 return
-            await self._computes.observe(
-                compute.id,
-                ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
-            )
-            await self._record("compute.deleted", ComputeEvent(compute=compute.id, state="deleted"))
+            await self._computes.apply(compute.id, ComputeDeleted(compute=compute.id))
             logger.bind(compute_id=compute.id).info("deleted: every machine is gone and the binding is released")
             return
 
         lower, _ = bounds(compute.spec)
-        was = compute.status.state
-        state = "ready" if len(ready) >= lower else "provisioning"
+        counted = {"compute": compute.id, "nodes_ready": len(ready), "nodes_total": len(live)}
         if compute.spec.desired == "deleted":
-            state = "deleting"
+            event = ComputeDeleting(**counted)
+        elif len(ready) >= lower:
+            event = ComputeReady(**counted, generation=compute.generation)
+        else:
+            event = ComputeProvisioning(**counted, generation=compute.generation)
 
-        await self._computes.observe(
-            compute.id,
-            ComputeStatus(
-                state=state,
-                observed_generation=compute.generation,
-                nodes_ready=len(ready),
-                nodes_total=len(live),
-            ),
-        )
+        if not await self._computes.apply(compute.id, event):
+            return
 
-        if state != was:
-            logger.bind(compute_id=compute.id).info("{} → {}, {} of {} nodes ready", was, state, len(ready), len(live))
+        logger.bind(compute_id=compute.id).info("{} → {}, {} of {} nodes ready", compute.status.state, lifecycle.leads(event), len(ready), len(live))
 
-        if state == "ready" and was != "ready":
+        if isinstance(event, ComputeReady):
             await self._generations.apply(compute.id, compute.generation)
-            await self._record("compute.ready", ComputeEvent(compute=compute.id, state="ready"))
+            await self._computes.apply(compute.id, GenerationApplied(compute=compute.id, number=compute.generation))
             self._wake("compute.dispatch", compute_id=compute.id)
 
     async def _announce(self, state: NodeState, compute_id: str, node_id: str, record: bool = True) -> None:
         self._wake(f"node.{state}", compute_id=compute_id, node_id=node_id)
         if record:
             await self._record(f"node.{state}", NodeEvent(compute=compute_id, node=node_id, state=state))
-
-    async def _degrade(self, compute_id: str, exc: Exception) -> None:
-        compute = await self._computes.get(compute_id)
-        await self._computes.observe(
-            compute_id,
-            msgspec.structs.replace(
-                compute.status,
-                state="degraded",
-                last_error=Error(code="capability_mismatch", message=str(exc), retryable=True),
-            ),
-        )
-        await self._record("compute.degraded", ComputeEvent(compute=compute_id, state="degraded", error=str(exc)))
 
     async def _record(self, name: str, payload: Event) -> None:
         await self._events.record(name, await codec.json(Event).encode(payload), compute=payload.compute)

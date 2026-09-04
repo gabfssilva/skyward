@@ -15,6 +15,7 @@ import pytest
 from skyward.server.application.mock import SPEC
 from skyward.server.persistence.computes import ComputeStore, GenerationStore
 from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
 from skyward.shared.errors import ComputeNotResizableError
 from skyward.shared.schemas import Compute, ComputeCreate, ComputeSpecPatch, NodeBounds, PluginRef
 from tests.conftest import cli
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.local
 async def given(database: Path, *plugins: str) -> tuple[ComputeStore, Compute]:
     """A compute in a database of this test's own, carrying the plugins named."""
     await connect(database)
-    store = ComputeStore()
+    store = ComputeStore(EventStore())
     spec = msgspec.structs.replace(SPEC, plugins=tuple(PluginRef(kind=kind) for kind in plugins))
     compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="given")
     return store, compute

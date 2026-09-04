@@ -51,7 +51,6 @@
         "type": "object"
       },
       "ComputeAbandoned": {
-        "description": "Nothing renewed the lease and ``delete_on_exit`` was set, so it is going away.\n\nIts own fact rather than a compute state, because a lapsed lease is not a\nfailure \u2014 it is what a client exiting looks like from in here.",
         "properties": {
           "compute": {
             "type": "string"
@@ -66,6 +65,80 @@
           "type"
         ],
         "title": "ComputeAbandoned",
+        "type": "object"
+      },
+      "ComputeAdopted": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.adopted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "type"
+        ],
+        "title": "ComputeAdopted",
+        "type": "object"
+      },
+      "ComputeBound": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "instance_type": {
+            "type": "string"
+          },
+          "markets": {
+            "items": {
+              "enum": [
+                "spot",
+                "on_demand"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "offer": {
+            "type": "string"
+          },
+          "previous": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "region": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "compute.bound",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "instance_type",
+          "markets",
+          "offer",
+          "region",
+          "type"
+        ],
+        "title": "ComputeBound",
         "type": "object"
       },
       "ComputeCreate": {
@@ -91,46 +164,163 @@
         "title": "ComputeCreate",
         "type": "object"
       },
-      "ComputeEvent": {
-        "description": "A compute reached a state worth saying out loud.\n\nCarried by ``compute.ready``, ``compute.degraded`` and ``compute.deleted``.\nNot every state gets one: the stream reports the transitions a watcher acts\non, not every pass the reconciler makes.",
+      "ComputeCreated": {
         "properties": {
           "compute": {
             "type": "string"
           },
-          "error": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "state": {
-            "enum": [
-              "requested",
-              "provisioning",
-              "recovering",
-              "ready",
-              "degraded",
-              "deleting",
-              "deleted",
-              "failed"
-            ],
-            "type": "string"
-          },
           "type": {
-            "const": "compute.state",
+            "const": "compute.created",
             "type": "string"
           }
         },
         "required": [
           "compute",
-          "state",
           "type"
         ],
-        "title": "ComputeEvent",
+        "title": "ComputeCreated",
+        "type": "object"
+      },
+      "ComputeDegraded": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.degraded",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "error",
+          "type"
+        ],
+        "title": "ComputeDegraded",
+        "type": "object"
+      },
+      "ComputeDeleted": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.deleted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "type"
+        ],
+        "title": "ComputeDeleted",
+        "type": "object"
+      },
+      "ComputeDeleting": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "nodes_ready": {
+            "type": "integer"
+          },
+          "nodes_total": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.deleting",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "nodes_ready",
+          "nodes_total",
+          "type"
+        ],
+        "title": "ComputeDeleting",
+        "type": "object"
+      },
+      "ComputeProvisioning": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "nodes_ready": {
+            "type": "integer"
+          },
+          "nodes_total": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.provisioning",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "generation",
+          "nodes_ready",
+          "nodes_total",
+          "type"
+        ],
+        "title": "ComputeProvisioning",
+        "type": "object"
+      },
+      "ComputeReady": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "nodes_ready": {
+            "type": "integer"
+          },
+          "nodes_total": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.ready",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "generation",
+          "nodes_ready",
+          "nodes_total",
+          "type"
+        ],
+        "title": "ComputeReady",
+        "type": "object"
+      },
+      "ComputeReleaseFailed": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.release_failed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "error",
+          "type"
+        ],
+        "title": "ComputeReleaseFailed",
         "type": "object"
       },
       "ComputeSpec": {
@@ -259,12 +449,10 @@
             "enum": [
               "requested",
               "provisioning",
-              "recovering",
               "ready",
               "degraded",
               "deleting",
-              "deleted",
-              "failed"
+              "deleted"
             ],
             "type": "string"
           }
@@ -279,7 +467,6 @@
         "type": "object"
       },
       "ConsoleEvent": {
-        "description": "A line a node printed, and the work it belongs to when it belongs to some.\n\nRecorded, because output that only existed live would be output a client that\nreconnected could never see.\n\n``task`` carries the *execution* \u2014 the attempt on this node \u2014 because that is\nwhat the machine that wrote the line was handed. A reader after a whole task's\noutput wants every execution of it, not a string equal to the task's id.",
         "properties": {
           "compute": {
             "type": "string"
@@ -315,7 +502,6 @@
         "type": "object"
       },
       "CostEvent": {
-        "description": "What the compute has accrued so far, and over how many live machines.\n\nPublished rather than recorded: a gauge sampled every few seconds has no\nreplay value, and the event log has no GC to save it from one.",
         "properties": {
           "at": {
             "format": "date-time",
@@ -366,7 +552,8 @@
               "task_indeterminate",
               "duplication_not_acknowledged",
               "capability_mismatch",
-              "release_pending"
+              "release_pending",
+              "illegal_transition"
             ],
             "type": "string"
           },
@@ -597,6 +784,27 @@
         "title": "Generation",
         "type": "object"
       },
+      "GenerationApplied": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.generation.applied",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "number",
+          "type"
+        ],
+        "title": "GenerationApplied",
+        "type": "object"
+      },
       "GenerationCreate": {
         "description": "Replace the machines: with the pending drift, or with an older definition.\n\nWithout ``source`` this applies whatever drift the status is carrying. With\none, it rolls back to that generation. ``force`` marks unresolved tasks\nindeterminate rather than refusing while executions are still live.",
         "properties": {
@@ -617,6 +825,27 @@
         },
         "required": [],
         "title": "GenerationCreate",
+        "type": "object"
+      },
+      "GenerationCreated": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.generation.created",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "number",
+          "type"
+        ],
+        "title": "GenerationCreated",
         "type": "object"
       },
       "Image": {
@@ -781,6 +1010,44 @@
         "title": "LeaseClaim",
         "type": "object"
       },
+      "LeaseClaimed": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.lease.claimed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "owner",
+          "type"
+        ],
+        "title": "LeaseClaimed",
+        "type": "object"
+      },
+      "LeaseReleased": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.lease.released",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "type"
+        ],
+        "title": "LeaseReleased",
+        "type": "object"
+      },
       "Liveness": {
         "description": "Whether the process answers, and what it is running.\n\nSays nothing about the store or the providers. The version rides along because\nit answers the second half of the only question a client asks before trusting a\ndaemon it did not start: something is there, and it speaks this wire.\n\nThe default is for decoding, not for answering \u2014 a daemon always says which\nskyward it is, and one that says nothing is one from before it could.",
         "properties": {
@@ -799,7 +1066,6 @@
         "type": "object"
       },
       "MetricEvent": {
-        "description": "One gauge reading off one node. Published rather than recorded, like ``compute.cost``.",
         "properties": {
           "compute": {
             "type": "string"
@@ -1047,7 +1313,6 @@
         "type": "object"
       },
       "NodeEvent": {
-        "description": "One machine's lifecycle moved, carried by every ``node.{state}``.\n\n``state`` repeats the event name because a payload that has been written\ndown, exported, or replayed out of the stream has to say what it is without\nthe frame that carried it.",
         "properties": {
           "compute": {
             "type": "string"
@@ -1560,7 +1825,6 @@
         "type": "object"
       },
       "PhaseEvent": {
-        "description": "A bootstrap phase turning over, so a late subscriber replays the checklist.\n\n``phase`` names the step; ``event`` says whether it opened, closed, or broke.",
         "properties": {
           "at": {
             "format": "date-time",
@@ -1647,7 +1911,6 @@
         "type": "object"
       },
       "ProgressEvent": {
-        "description": "What a machine short of an address is doing, while it is still doing it.\n\nPublished rather than recorded, like a gauge: a percentage is true for the\nmoment it is sent, and a late subscriber wants where the machine got to, not\nthe hundred readings it passed through while nobody was watching. What outlives\nthe wait is the node's state and, if it never arrives, the reason it was given\nup on.\n\n``progress`` is what the machine is doing and ``completion`` is how far into it,\nkept apart so that a reader can draw the fraction instead of spelling it: a\nterminal gets a bar that fills, a log file gets the same words it always got.",
         "properties": {
           "completion": {
             "oneOf": [
@@ -1951,6 +2214,30 @@
         "title": "Spec",
         "type": "object"
       },
+      "StraysTerminated": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "machines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": {
+            "const": "compute.strays_terminated",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "machines",
+          "type"
+        ],
+        "title": "StraysTerminated",
+        "type": "object"
+      },
       "Task": {
         "description": "One call \u2014 function plus arguments \u2014 and its one terminal outcome.\n\nAppend-only. ``state`` is derived from the executions rather than written\nbeside them, and is stored only so that listing by state is a query instead of\na scan. ``correlation_id`` is how the tasks of one ``&``, ``gather`` or ``map``\nare found together: a field on each of them, not a resource of their own.",
         "properties": {
@@ -2144,7 +2431,6 @@
         "type": "object"
       },
       "TaskEvent": {
-        "description": "A task began, or reached the one terminal outcome it is allowed.",
         "properties": {
           "compute": {
             "type": "string"
@@ -2524,12 +2810,10 @@
                   "enum": [
                     "requested",
                     "provisioning",
-                    "recovering",
                     "ready",
                     "degraded",
                     "deleting",
-                    "deleted",
-                    "failed"
+                    "deleted"
                   ],
                   "type": "string"
                 },
@@ -5068,7 +5352,7 @@
     "/v1/events": {
       "get": {
         "deprecated": false,
-        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is finer than that tag and is what `types` filters on:\n\n| `event:` | `data.type` |\n|---|---|\n| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |\n| `compute.abandoned` | `compute.abandoned` |\n| `compute.cost` | `compute.cost` |\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
+        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.release_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:\n\n| `event:` | `data.type` |\n|---|---|\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
         "operationId": "V1EventsStream",
         "parameters": [
           {
@@ -5153,8 +5437,21 @@
                   "discriminator": {
                     "mapping": {
                       "compute.abandoned": "#/components/schemas/ComputeAbandoned",
+                      "compute.adopted": "#/components/schemas/ComputeAdopted",
+                      "compute.bound": "#/components/schemas/ComputeBound",
                       "compute.cost": "#/components/schemas/CostEvent",
-                      "compute.state": "#/components/schemas/ComputeEvent",
+                      "compute.created": "#/components/schemas/ComputeCreated",
+                      "compute.degraded": "#/components/schemas/ComputeDegraded",
+                      "compute.deleted": "#/components/schemas/ComputeDeleted",
+                      "compute.deleting": "#/components/schemas/ComputeDeleting",
+                      "compute.generation.applied": "#/components/schemas/GenerationApplied",
+                      "compute.generation.created": "#/components/schemas/GenerationCreated",
+                      "compute.lease.claimed": "#/components/schemas/LeaseClaimed",
+                      "compute.lease.released": "#/components/schemas/LeaseReleased",
+                      "compute.provisioning": "#/components/schemas/ComputeProvisioning",
+                      "compute.ready": "#/components/schemas/ComputeReady",
+                      "compute.release_failed": "#/components/schemas/ComputeReleaseFailed",
+                      "compute.strays_terminated": "#/components/schemas/StraysTerminated",
                       "node.console": "#/components/schemas/ConsoleEvent",
                       "node.metrics": "#/components/schemas/MetricEvent",
                       "node.phase": "#/components/schemas/PhaseEvent",
@@ -5166,10 +5463,49 @@
                   },
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/ComputeEvent"
+                      "$ref": "#/components/schemas/ComputeCreated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeBound"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeAdopted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeProvisioning"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeReady"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeDegraded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GenerationCreated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GenerationApplied"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LeaseClaimed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LeaseReleased"
                     },
                     {
                       "$ref": "#/components/schemas/ComputeAbandoned"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeDeleting"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeReleaseFailed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StraysTerminated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ComputeDeleted"
                     },
                     {
                       "$ref": "#/components/schemas/CostEvent"

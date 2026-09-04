@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from piccolo.engine.sqlite import SQLiteEngine, dict_factory
+from piccolo.engine.sqlite import SQLiteEngine, SQLiteTransaction, TransactionType, dict_factory
 from piccolo.table import Table
 
 from skyward.server.persistence.tables import TABLES
@@ -121,6 +121,19 @@ class PooledSQLiteEngine(SQLiteEngine):
 
 _current: PooledSQLiteEngine | None = None
 """The engine the tables are bound to, so the next ``connect`` can retire its pool."""
+
+
+def transaction() -> SQLiteTransaction:
+    """One write, whole: every statement inside commits together or not at all.
+
+    ``IMMEDIATE`` takes the write lock on entry rather than on the first write, so
+    a transaction that reads before it writes cannot find the world moved under it
+    between the two. Nested inside another, it joins it, which is what lets a store
+    method that is transactional on its own be called from one that already is.
+    """
+    if _current is None:
+        raise RuntimeError("the store is not open; call connect() first")
+    return _current.transaction(transaction_type=TransactionType.immediate)
 
 
 async def connect(path: Path | None = None) -> SQLiteEngine:

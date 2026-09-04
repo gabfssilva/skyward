@@ -47,8 +47,9 @@ from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import SkywardError
+from skyward.shared.events import ConsoleEvent, Event, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
-from skyward.shared.schemas import ConsoleEvent, Event, MetricEvent, PhaseEvent, PhaseMark
+from skyward.shared.schemas import PhaseMark
 
 logger = logger.bind(component="daemon")
 
@@ -114,11 +115,11 @@ def services() -> Services:
     """
     wake = Wakeup()
 
-    computes = ComputeStore()
+    events = EventStore()
+    computes = ComputeStore(events)
     nodes = NodeStore()
     blobs = BlobStore()
     providers = ProviderStore()
-    events = EventStore()
     tasks = TaskStore(computes, nodes, blobs)
 
     async def console(compute: str, node: str, content: str, task: str | None) -> None:

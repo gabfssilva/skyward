@@ -13,12 +13,10 @@ from skyward.shared.architectures import Architecture, architecture
 type ComputeState = Literal[
     "requested",
     "provisioning",
-    "recovering",
     "ready",
     "degraded",
     "deleting",
     "deleted",
-    "failed",
 ]
 
 type NodeState = Literal[
@@ -104,6 +102,7 @@ type ErrorCode = Literal[
     "duplication_not_acknowledged",
     "capability_mismatch",
     "release_pending",
+    "illegal_transition",
 ]
 
 
@@ -830,144 +829,3 @@ task that was never placed has a state and no event, and ``started`` is a moment
 rather than a state — the two are not the same alphabet and are not merged.
 """
 
-
-class ComputeEvent(Struct, frozen=True, tag_field="type", tag="compute.state"):
-    """A compute reached a state worth saying out loud.
-
-    Carried by ``compute.ready``, ``compute.degraded`` and ``compute.deleted``.
-    Not every state gets one: the stream reports the transitions a watcher acts
-    on, not every pass the reconciler makes.
-    """
-
-    compute: str
-    state: ComputeState
-    error: str | None = None
-
-
-class ComputeAbandoned(Struct, frozen=True, tag_field="type", tag="compute.abandoned"):
-    """Nothing renewed the lease and ``delete_on_exit`` was set, so it is going away.
-
-    Its own fact rather than a compute state, because a lapsed lease is not a
-    failure — it is what a client exiting looks like from in here.
-    """
-
-    compute: str
-
-
-class CostEvent(Struct, frozen=True, tag_field="type", tag="compute.cost"):
-    """What the compute has accrued so far, and over how many live machines.
-
-    Published rather than recorded: a gauge sampled every few seconds has no
-    replay value, and the event log has no GC to save it from one.
-    """
-
-    compute: str
-    cost: float
-    nodes: int
-    at: datetime
-
-
-class NodeEvent(Struct, frozen=True, tag_field="type", tag="node.state"):
-    """One machine's lifecycle moved, carried by every ``node.{state}``.
-
-    ``state`` repeats the event name because a payload that has been written
-    down, exported, or replayed out of the stream has to say what it is without
-    the frame that carried it.
-    """
-
-    compute: str
-    node: str
-    state: NodeState
-    error: str | None = None
-
-
-class ProgressEvent(Struct, frozen=True, tag_field="type", tag="node.progress"):
-    """What a machine short of an address is doing, while it is still doing it.
-
-    Published rather than recorded, like a gauge: a percentage is true for the
-    moment it is sent, and a late subscriber wants where the machine got to, not
-    the hundred readings it passed through while nobody was watching. What outlives
-    the wait is the node's state and, if it never arrives, the reason it was given
-    up on.
-
-    ``progress`` is what the machine is doing and ``completion`` is how far into it,
-    kept apart so that a reader can draw the fraction instead of spelling it: a
-    terminal gets a bar that fills, a log file gets the same words it always got.
-    """
-
-    compute: str
-    node: str
-    progress: str
-    completion: float | None = None
-
-
-def progressed(progress: str, completion: float | None) -> str:
-    """What a machine is doing and how far into it, as one phrase.
-
-    One rendering, because the same words are the line a log carries and the reason
-    a machine that never moved again was given up on, and a percentage written two
-    ways reads as two different machines.
-    """
-    return progress if completion is None else f"{progress} ({completion * 100:.0f}%)"
-
-
-class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
-    """A line a node printed, and the work it belongs to when it belongs to some.
-
-    Recorded, because output that only existed live would be output a client that
-    reconnected could never see.
-
-    ``task`` carries the *execution* — the attempt on this node — because that is
-    what the machine that wrote the line was handed. A reader after a whole task's
-    output wants every execution of it, not a string equal to the task's id.
-    """
-
-    compute: str
-    node: str
-    content: str
-    task: str | None = None
-
-
-class PhaseEvent(Struct, frozen=True, tag_field="type", tag="node.phase"):
-    """A bootstrap phase turning over, so a late subscriber replays the checklist.
-
-    ``phase`` names the step; ``event`` says whether it opened, closed, or broke.
-    """
-
-    compute: str
-    node: str
-    event: PhaseMark
-    phase: str
-    at: datetime
-    error: str | None = None
-
-
-class MetricEvent(Struct, frozen=True, tag_field="type", tag="node.metrics"):
-    """One gauge reading off one node. Published rather than recorded, like ``compute.cost``."""
-
-    compute: str
-    node: str
-    name: str
-    value: float
-
-
-class TaskEvent(Struct, frozen=True, tag_field="type", tag="task.state"):
-    """A task began, or reached the one terminal outcome it is allowed."""
-
-    compute: str
-    task: str
-    state: TaskEventState
-
-
-type Event = (
-    ComputeEvent | ComputeAbandoned | CostEvent | NodeEvent | ProgressEvent | ConsoleEvent | PhaseEvent | MetricEvent | TaskEvent
-)
-"""Everything the SSE stream carries, as one tagged union.
-
-The SSE frame's ``event:`` field is the name a subscriber filters on, and it is
-finer than this: ten node states and four task outcomes share a struct each. The
-``type`` tag inside the payload is the coarser of the two, and it is what makes
-the payload decodable on its own — by a client that matches on the struct instead
-of on a string, and by a reader of the OpenAPI document, which has no way to
-express a discriminator that lives outside the body.
-"""

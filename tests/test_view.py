@@ -22,8 +22,9 @@ from skyward.core.view import (
     NodeView,
     observe,
 )
-from skyward.shared.schemas import (
-    ComputeEvent,
+from skyward.shared.events import (
+    ComputeDegraded,
+    ComputeReady,
     ConsoleEvent,
     CostEvent,
     Event,
@@ -44,7 +45,7 @@ def describe_folding_the_lifecycle() -> None:
         assert [node.state for node in view.nodes] == ["provisioning"]
 
     def a_compute_event_moves_the_state() -> None:
-        view = observe(ComputeView(id="cmp_1"), ComputeEvent(compute="cmp_1", state="ready"))
+        view = observe(ComputeView(id="cmp_1"), ComputeReady(compute="cmp_1", nodes_ready=1, nodes_total=1, generation=1))
 
         assert view.state == "ready"
 
@@ -63,7 +64,7 @@ def describe_the_errors_window() -> None:
     def what_goes_wrong_is_kept_wherever_it_happened() -> None:
         view = ComputeView(id="cmp_1")
         view = observe(view, NodeEvent(compute="cmp_1", node="nod_1", state="lost", error="preempted"))
-        view = observe(view, ComputeEvent(compute="cmp_1", state="degraded", error="below the floor"))
+        view = observe(view, ComputeDegraded(compute="cmp_1", error="below the floor"))
         view = observe(view, PhaseEvent(compute="cmp_1", node="nod_1", event="failed", phase="uv sync", at=datetime.now(UTC), error="no wheel"))
 
         assert view.errors == ("preempted", "below the floor", "no wheel")
@@ -163,7 +164,7 @@ def describe_the_observer() -> None:
         events = (
             NodeEvent(compute="cmp_1", node="nod_1", state="provisioning"),
             NodeEvent(compute="cmp_1", node="nod_1", state="ready"),
-            ComputeEvent(compute="cmp_1", state="ready"),
+            ComputeReady(compute="cmp_1", nodes_ready=1, nodes_total=1, generation=1),
         )
         seen: list[tuple[Event, ComputeView]] = []
 
@@ -172,12 +173,12 @@ def describe_the_observer() -> None:
 
         await Observer(_Stream(events), "cmp_1", callbacks=(spy,)).follow()
 
-        assert [type(event) for event, _ in seen] == [NodeEvent, NodeEvent, ComputeEvent]
+        assert [type(event) for event, _ in seen] == [NodeEvent, NodeEvent, ComputeReady]
         assert seen[-1][1].state == "ready"
         assert seen[-1][1].nodes_ready == 1
 
     async def a_callback_that_raises_does_not_take_the_stream_with_it(capsys: pytest.CaptureFixture[str]) -> None:
-        events = (ComputeEvent(compute="cmp_1", state="ready"),)
+        events = (ComputeReady(compute="cmp_1", nodes_ready=1, nodes_total=1, generation=1),)
         landed: list[Event] = []
 
         def broken(event: Event, view: ComputeView) -> None:

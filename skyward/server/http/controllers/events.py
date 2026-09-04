@@ -8,7 +8,7 @@ from litestar.params import Parameter
 from litestar.response import ServerSentEvent, ServerSentEventMessage
 
 from skyward.server.application import ports
-from skyward.shared.schemas import Event
+from skyward.shared.events import Event
 
 
 class EventController(Controller):
@@ -27,12 +27,15 @@ class EventController(Controller):
             "Task stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second "
             "source of truth.\n\n"
             "The schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the "
-            "frame's `event:` field is finer than that tag and is what `types` filters on:\n\n"
+            "frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: "
+            "`compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, "
+            "`compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, "
+            "`compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.release_failed`, "
+            "`compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: "
+            "there is no way to move a compute's state without the stream saying so. For a node or a task the frame is "
+            "finer than the tag:\n\n"
             "| `event:` | `data.type` |\n"
             "|---|---|\n"
-            "| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |\n"
-            "| `compute.abandoned` | `compute.abandoned` |\n"
-            "| `compute.cost` | `compute.cost` |\n"
             "| `node.{state}` — ten of them | `node.state` |\n"
             "| `node.progress` | `node.progress` |\n"
             "| `node.console` | `node.console` |\n"

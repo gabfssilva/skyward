@@ -31,6 +31,7 @@ from skyward.server.application.runtimes import Runtime
 from skyward.server.application.source import Source
 from skyward.server.persistence.computes import ComputeStore, Infrastructure
 from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.tables import ComputeRow
 from skyward.shared import tls
 from skyward.shared.schemas import ComputeCreate
@@ -133,7 +134,7 @@ def describe_reaching_a_worker() -> None:
 def describe_the_authority_a_compute_keeps() -> None:
     async def it_outlives_the_daemon_that_minted_it(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
-        store = ComputeStore()
+        store = ComputeStore(EventStore())
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="mint")
         minted = tls.authority()
 
@@ -144,7 +145,7 @@ def describe_the_authority_a_compute_keeps() -> None:
     async def it_is_added_to_a_database_that_predates_it(tmp_path: Path) -> None:
         database = tmp_path / "skyward.sqlite"
         await connect(database)
-        store = ComputeStore()
+        store = ComputeStore(EventStore())
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="older")
         await ComputeRow.raw("ALTER TABLE computes DROP COLUMN authority").run()
 

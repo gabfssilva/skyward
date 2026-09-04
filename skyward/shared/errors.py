@@ -99,3 +99,14 @@ class CapabilityMismatchError(SkywardError):
     status = 422
 
 
+class IllegalTransitionError(SkywardError):
+    """An event that the entity's current state has no arrow for.
+
+    Not retryable: the same event against the same state is refused again. What
+    changes the answer is the state, and the state is somebody else's to move.
+    """
+
+    code = "illegal_transition"
+    status = 409
+
+

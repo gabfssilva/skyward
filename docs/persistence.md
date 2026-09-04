@@ -27,7 +27,7 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 | `spec` | client | the definition you asked for |
 | `generation` | client | which revision of that definition is current |
 | `status_observed_generation` | reconciler | which one has actually been applied |
-| `status_state` | reconciler | `requested`, `provisioning`, `recovering`, `ready`, `degraded`, `deleting`, `deleted`, `failed` |
+| `status_state` | `ComputeStore.apply` | `requested`, `provisioning`, `ready`, `degraded`, `deleting`, `deleted` — moved only by an event, recorded in the same transaction |
 | `status_nodes_ready` / `status_nodes_total` | reconciler | how many machines answer, of how many that exist |
 | `status_drift` | reconciler | what differs between intent and reality |
 | `revision` | either | the optimistic-concurrency token behind `If-Match` |

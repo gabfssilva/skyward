@@ -31,18 +31,19 @@ from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
 from skyward.core.view import EventCallback, decoded
-from skyward.shared import codec
+from skyward.shared import codec, lifecycle
 from skyward.shared.accelerators import resolve
+from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
 from skyward.shared.schemas import (
     Allocation,
     ComputeCreate,
     ComputeSpec,
     ComputeSpecPatch,
+    ComputeState,
     Dispatch,
     Endpoint,
     Error,
-    Event,
     Image,
     Lease,
     LeaseClaim,
@@ -420,7 +421,7 @@ class Compute:
             self._watching = self.loop.start(observer.follow())
 
         async with asyncio.timeout(self._ready_timeout):
-            current = await self._reach("ready", "failed", "degraded")
+            current = await self._reach("ready", "degraded")
 
         if current.status.state != "ready":
             raise RuntimeError(f"compute {self._id} is {current.status.state}: {current.status.last_error}")
@@ -599,21 +600,21 @@ class Compute:
                 if error.code != "revision_conflict" or not attempts:
                     raise
 
-    async def _reach(self, *states: str) -> ComputeResource:
-        """Follow the compute's events; answer with its view once it reaches one of ``states``.
+    async def _reach(self, *states: ComputeState) -> ComputeResource:
+        """Follow the compute's events; answer with the resource once it reaches one of ``states``.
 
         The stream replays the log from the start before it follows, so a state reached
-        before this subscription still arrives. Only a compute-level event prompts a read
-        — those are the transitions worth waking for — which is what turns a poll every
-        half second into one read per change.
+        before this subscription still arrives, and the state is folded from the events
+        with the same table the daemon moved it by. Only an event that leads somewhere
+        prompts a read, which is what turns a poll every half second into one read per
+        change.
         """
+        state: ComputeState = "requested"
         async with aclosing(self.client.events(self._id)) as events:
-            async for event, _ in events:
-                if not event.startswith("compute."):
+            async for _, payload in events:
+                if (event := decoded(payload)) is None or (state := lifecycle.leads(event) or state) not in states:
                     continue
-                current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
-                if current.status.state in states:
-                    return current
+                return await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
         raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
 
     async def _one[T](self, pending: Pending[T]) -> T:

@@ -47,8 +47,8 @@ from skyward.core.widgets import (
     _ssh_url,
     _State,
 )
+from skyward.shared.events import ComputeDegraded, ComputeDeleted, ConsoleEvent, Event, NodeEvent, TaskEvent
 from skyward.shared.observability import NAME as LOGGER_NAME
-from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent, TaskEvent
 
 
 def _state(view: ComputeView) -> _State:
@@ -280,7 +280,7 @@ class RichConsole:
         self._footer.state = _state(view)
         self._print_event(event, view)
         self._live.update(self._footer)
-        if isinstance(event, ComputeEvent) and event.state in {"deleted", "failed"}:
+        if isinstance(event, ComputeDeleted):
             self._summarize()
 
     def refreshed(self, view: ComputeView) -> None:
@@ -335,8 +335,8 @@ class RichConsole:
                 _emit_task(self._console, _node_label(state, node_id), "done", "")
             case TaskEvent(state="failed"):
                 _emit_task(self._console, _node_label(state, node_id), "failed", "")
-            case ComputeEvent(state="failed" | "degraded" as failure, error=error):
-                _emit(self._console, "error", error or failure, "red")
+            case ComputeDegraded(error=error):
+                _emit(self._console, "error", error, "red")
             case _:
                 pass
 
