@@ -149,6 +149,8 @@ class Compute:
     ) -> None:
         if specs and provider is not None:
             raise ValueError("a pool takes either specs or a provider, not both")
+        if provider is None and any(value is not None for value in (accelerator, cpus, memory_gb, region)):
+            raise ValueError("accelerator, cpus, memory_gb and region describe one provider's machine: pass them with provider=, or on a Spec")
         if attach and (specs or provider is not None):
             raise ValueError("attaching takes the compute that already exists; a spec would describe a different one")
         if provider is not None:
