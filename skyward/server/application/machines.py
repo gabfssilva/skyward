@@ -156,44 +156,48 @@ class Machines:
         The region is a decision one refused node makes and the rest inherit. Twenty
         nodes refused together are twenty candidates to move the compute, and one
         move is all it needs: the walk is taken under the binding lock, after reading
-        the binding back, and a node that finds it already moved buys where the
-        winner did rather than move it again. Only when every region has refused does
-        the compound failure escape, and the tick offers the row again.
+        the binding back, and a node that finds it already moved lets go of the lock
+        and buys where the winner did rather than move it again — and walks itself if
+        that region refuses it too, with every refusal so far still on the list. Only
+        when every region has refused does the compound failure escape, and the tick
+        offers the row again.
         """
         failures: list[Exception] = []
 
-        if bought := await self._buy(adapter, infrastructure, node, failures):
-            machine, sold = bought
-            return infrastructure, machine, sold
+        while True:
+            if bought := await self._buy(adapter, infrastructure, node, failures):
+                machine, sold = bought
+                return infrastructure, machine, sold
 
-        async with self._binding:
-            current = await self._computes.infrastructure(compute.id)
-            if current.offer_id != infrastructure.offer_id:
-                logger.bind(compute_id=compute.id).debug("the compute moved while this node was being refused; following it")
-                return await self._place(adapter, compute, current, node)
-
-            tried = {infrastructure.offer_id}
-            for offer in await market.rank(compute.spec, self._offers):
-                if offer.id in tried:
+            async with self._binding:
+                current = await self._computes.infrastructure(compute.id)
+                if current.offer_id != infrastructure.offer_id:
+                    logger.bind(compute_id=compute.id).debug("the compute moved while this node was being refused; following it")
+                    infrastructure = current
                     continue
-                tried.add(offer.id)
 
-                logger.bind(compute_id=compute.id, provider=offer.provider_name).info(
-                    "no market here would sell; trying {} in {}",
-                    offer.instance_type,
-                    offer.region or "another region",
-                )
-                relocated = await self._relocate(adapter, compute, infrastructure, offer)
-                if bought := await self._buy(adapter, relocated, node, failures):
-                    machine, sold = bought
-                    await self._computes.bind(compute.id, relocated)
-                    await self._abandon(adapter, infrastructure)
-                    return relocated, machine, sold
-                await self._abandon(adapter, relocated)
+                tried = {infrastructure.offer_id}
+                for offer in await market.rank(compute.spec, self._offers):
+                    if offer.id in tried:
+                        continue
+                    tried.add(offer.id)
 
-        if not failures:
-            raise CapabilityMismatchError(f"{adapter.kind} was bound with no market to buy on")
-        raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
+                    logger.bind(compute_id=compute.id, provider=offer.provider_name).info(
+                        "no market here would sell; trying {} in {}",
+                        offer.instance_type,
+                        offer.region or "another region",
+                    )
+                    relocated = await self._relocate(adapter, compute, infrastructure, offer)
+                    if bought := await self._buy(adapter, relocated, node, failures):
+                        machine, sold = bought
+                        await self._computes.bind(compute.id, relocated)
+                        await self._abandon(adapter, infrastructure)
+                        return relocated, machine, sold
+                    await self._abandon(adapter, relocated)
+
+            if not failures:
+                raise CapabilityMismatchError(f"{adapter.kind} was bound with no market to buy on")
+            raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
 
     async def _buy(
         self, adapter: Provider, infrastructure: Infrastructure, node: str, failures: list[Exception]
