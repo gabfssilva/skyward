@@ -74,7 +74,7 @@ class FunctionStore:
 
         rows = await query.order_by(FunctionRow.created_at).limit(limit)
         items = tuple(_to_function(row) for row in rows)
-        return Page(items=items, next_cursor=items[-1].sha256 if len(items) == limit else None)
+        return Page(items=items, next_cursor=items[-1].sha256 if items and len(items) == limit else None)
 
     async def register(self, sha256: str, blob: bytes, name: str | None) -> tuple[Function, bool]:
         written = await self._blobs.put(sha256, blob)

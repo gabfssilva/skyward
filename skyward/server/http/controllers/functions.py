@@ -19,7 +19,7 @@ class FunctionController(Controller):
         summary="List registered functions",
         description="Every function this daemon has been handed, by hash. Uploading the same code twice adds no row.",
     )
-    async def list(self, functions: ports.Functions, cursor: str | None = None, limit: int = 50) -> Page[Function]:
+    async def list(self, functions: ports.Functions, cursor: str | None = None, limit: int = Parameter(default=50, ge=1)) -> Page[Function]:
         return await functions.list(cursor, limit)
 
     @head(

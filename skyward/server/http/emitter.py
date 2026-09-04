@@ -10,7 +10,7 @@ from skyward.shared.observability import logger
 
 logger = logger.bind(component="emitter")
 
-type Key = tuple[EventListener, str, int]
+type Key = tuple[EventListener, str, tuple[Any, ...], frozenset[tuple[str, Any]]]
 
 
 class ReconcilingEventEmitter(BaseEventEmitterBackend):
@@ -80,7 +80,10 @@ class ReconcilingEventEmitter(BaseEventEmitterBackend):
 
     @staticmethod
     def _key(listener: EventListener, event_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Key | None:
+        """The payload itself, not its hash: two payloads that hash alike are still two wakeups."""
+        key = listener, event_id, args, frozenset(kwargs.items())
         try:
-            return listener, event_id, hash((args, frozenset(kwargs.items())))
+            hash(key)
         except TypeError:
             return None
+        return key

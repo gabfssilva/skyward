@@ -49,7 +49,7 @@ class TaskController(Controller):
         self,
         tasks: ports.Tasks,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = Parameter(default=50, ge=1),
         compute: str | None = None,
         task_state: TaskState | None = Parameter(query="state", default=None),
         correlation_id: str | None = Parameter(default=None, description="Groups the tasks of an `&`/`gather`/`map`. A field, not a resource."),

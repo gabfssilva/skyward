@@ -59,6 +59,13 @@ def describe_naming_a_compute() -> None:
 
 
 def describe_listing_computes() -> None:
+    async def an_empty_page_has_no_cursor(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+
+        page = await store.list(cursor=None, limit=0, state=None, owned=None, live=None)
+
+        assert page.items == () and page.next_cursor is None
+
     async def they_come_newest_first(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         for index in range(3):

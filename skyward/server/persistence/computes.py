@@ -221,7 +221,7 @@ class ComputeStore:
 
         rows = await query.order_by(ComputeRow.created_at, ascending=False).limit(limit)
         items = tuple([await _to_compute(row) for row in rows])
-        return Page(items=items, next_cursor=items[-1].id if len(items) == limit else None)
+        return Page(items=items, next_cursor=items[-1].id if items and len(items) == limit else None)
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute:
         """Resize in place.

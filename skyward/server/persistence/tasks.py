@@ -115,7 +115,7 @@ class TaskStore:
 
         rows = await query.order_by(TaskRow.submitted_at).limit(limit)
         items = tuple([await _to_task(row) for row in rows])
-        return Page(items=items, next_cursor=items[-1].id if len(items) == limit else None)
+        return Page(items=items, next_cursor=items[-1].id if items and len(items) == limit else None)
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
         """Stop it if it has not started; ask it to stop if it has.

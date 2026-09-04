@@ -40,7 +40,7 @@ class ComputeController(Controller):
         self,
         computes: ports.Computes,
         cursor: str | None = None,
-        limit: int = 50,
+        limit: int = Parameter(default=50, ge=1),
         compute_state: ComputeState | None = Parameter(query="state", default=None),
         owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes with no live owner."),
         live: bool | None = Parameter(default=None, description="`true` lists what is still running, `false` what is finished."),

@@ -22,6 +22,14 @@ pytestmark = pytest.mark.local
 
 
 def describe_asking_a_compute_for_a_different_size() -> None:
+    async def the_size_it_already_has_is_not_a_new_definition(tmp_path: Path) -> None:
+        store, compute = await given(tmp_path / "skyward.sqlite")
+
+        written = await store.patch(compute.id, ComputeSpecPatch(nodes=SPEC.nodes), compute.revision)
+
+        assert (written.revision, written.generation) == (compute.revision, compute.generation)
+        assert len((await GenerationStore(store).list(compute.id)).items) == 1
+
     async def it_is_a_new_definition_and_leaves_the_rest_of_the_spec_alone(tmp_path: Path) -> None:
         store, compute = await given(tmp_path / "skyward.sqlite")
 
