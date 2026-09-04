@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import MappingProxyType
+from typing import assert_never
 
 import msgspec
 
@@ -178,27 +179,7 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
     """
     spec = compute.spec.specs[0] if compute.spec.specs else None
     previous = {node.id: node for node in view.nodes}
-    rows = tuple(
-        NodeView(
-            id=node.id,
-            state=node.state,
-            rank=node.rank,
-            machine=node.machine,
-            address=node.address,
-            accelerator=node.accelerator,
-            price_per_hour=node.price_per_hour,
-            market=node.market,
-            error=node.last_error.message if node.last_error else None,
-            binding=MappingProxyType(node.provider_binding),
-            progress=previous[node.id].progress if node.id in previous else None,
-            completion=previous[node.id].completion if node.id in previous else None,
-            metrics=previous[node.id].metrics if node.id in previous else MappingProxyType({}),
-            phases=previous[node.id].phases if node.id in previous else (),
-            tail=previous[node.id].tail if node.id in previous else (),
-        )
-        for node in nodes.items
-        if node.state != "deleted"
-    )
+    rows = tuple(_hydrated(node, previous.get(node.id, NodeView(node.id))) for node in nodes.items if node.state != "deleted")
     hydrated = replace(
         view,
         name=compute.name,
@@ -220,7 +201,7 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
     return _noted(hydrated, compute.status.last_error.message if compute.status.last_error else None)
 
 
-def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str] = MappingProxyType({})) -> ComputeView:
+def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str]) -> ComputeView:
     """The tasks as the API tells them, with the function's real name when known."""
     rows = tuple(
         TaskView(
@@ -326,9 +307,27 @@ def _tasked(view: ComputeView, task_id: str, state: TaskEventState) -> ComputeVi
             landed = "running"
         case "succeeded" | "failed" | "indeterminate":
             landed = state
+        case _ as unreachable:
+            assert_never(unreachable)
     if not any(task.id == task_id for task in view.tasks):
         return replace(view, tasks=(*view.tasks, TaskView(id=task_id, state=landed)))
     return replace(view, tasks=tuple(replace(task, state=landed) if task.id == task_id else task for task in view.tasks))
+
+
+def _hydrated(node: Node, seen: NodeView) -> NodeView:
+    """The API's half of a node over the stream's half: what only a resource says, keeping what only events said."""
+    return replace(
+        seen,
+        state=node.state,
+        rank=node.rank,
+        machine=node.machine,
+        address=node.address,
+        accelerator=node.accelerator,
+        price_per_hour=node.price_per_hour,
+        market=node.market,
+        error=node.last_error.message if node.last_error else None,
+        binding=MappingProxyType(node.provider_binding),
+    )
 
 
 def _amend(view: ComputeView, node_id: str, change: Callable[[NodeView], NodeView]) -> ComputeView:

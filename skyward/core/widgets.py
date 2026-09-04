@@ -109,7 +109,6 @@ class _State:
     task_latencies: tuple[float, ...] = ()
     task_fn_stats: MappingProxyType[str, tuple[float, ...]] = MappingProxyType({})
     task_fn_failed: MappingProxyType[str, int] = MappingProxyType({})
-    ready_at: float = 0.0
     target_nodes: int = 0
     pending_nodes: int = 0
     draining_nodes: int = 0
@@ -117,7 +116,6 @@ class _State:
     min_nodes: int | None = None
     max_nodes: int | None = None
     is_elastic: bool = False
-    spec_accelerator_memory: str = ""
     tasks_per_node: MappingProxyType[int, int] = MappingProxyType({})
     ssh_user: str = ""
     ssh_key_path: str = ""
@@ -313,11 +311,7 @@ def _badge_text(label: str, link: str = "") -> Text:
 
 
 def _node_instance(state: _State, node_id: int) -> _Instance | None:
-    if node_id in state.node_instances:
-        return state.node_instances[node_id]
-    if 0 <= node_id < len(state.instances):
-        return state.instances[node_id]
-    return None
+    return state.node_instances.get(node_id)
 
 
 def _node_label(state: _State, node_id: int) -> str:
@@ -477,7 +471,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
         if accelerator := instance_type.accelerator:
             total = accelerator.count * count
             total_text = str(int(total)) if total == int(total) else f"{total:.1f}"
-            memory = accelerator.memory or state.spec_accelerator_memory
+            memory = accelerator.memory
             if not memory:
                 totals = _collect_metric_vals(state, "gpu_mem_total_mb")
                 if totals:

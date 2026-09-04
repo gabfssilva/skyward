@@ -119,6 +119,10 @@ class Compute:
     running — the machines it bought outlive this block, and something has to be
     reconciling them. ``database`` is the exception: it runs the control plane in
     this process, over that file.
+
+    ``attach`` is :meth:`attached`'s: the compute that already exists, in place of
+    a definition. It is a constructor argument only so that the class has one
+    constructor.
     """
 
     def __init__(
@@ -172,23 +176,7 @@ class Compute:
                 reuse=executor.reuse,
                 buffer=executor.buffer,
             ),
-            options=OptionsRef(
-                ssh_connect_timeout=options.ssh_timeout,
-                ssh_reconnect_attempts=options.max_provision_attempts,
-                ssh_retry_delay=options.provision_retry_delay,
-                provision_timeout=options.provision_timeout,
-                worker_timeout=options.worker_timeout,
-                autoscale_idle_timeout=options.autoscale_idle_timeout,
-                autoscale_cooldown=options.autoscale_cooldown,
-                default_compute_timeout=options.default_compute_timeout,
-                health_command=options.health_command,
-                health_interval=options.health_checker.interval if options.health_checker else options.health_interval,
-                health_failures=options.health_checker.consecutive_failures if options.health_checker else options.health_failures,
-                health_function=codec.dumps(options.health_checker.fn) if options.health_checker else None,
-                health_timeout=options.health_checker.timeout if options.health_checker else 15.0,
-                health_initial_delay=options.health_checker.initial_delay if options.health_checker else 0.0,
-                cluster=options.cluster,
-            ),
+            options=_options(options),
             plugins=tuple(plugin.ref() for plugin in plugins),
             delete_on_exit=delete_on_exit,
             ttl=ttl,
@@ -201,7 +189,6 @@ class Compute:
         self._client_stack = ExitStack()
         self._url = url
         self._database = database
-        self._delete_on_exit = delete_on_exit
         self._console = console
         self._callbacks = tuple(callbacks)
         self._ready_timeout = options.ready_timeout
@@ -346,8 +333,7 @@ class Compute:
 
     def map[I, R](self, fn: Callable[[I], Pending[R]], items: Iterable[I]) -> list[R]:
         """One task per item, spread over the nodes, answers in the order asked."""
-        futures = [self.start(fn(item)) for item in items]
-        return [future.result() for future in futures]
+        return self.gather(Group(tuple(fn(item) for item in items)))
 
     def events(self) -> Iterator[Event]:
         """The compute's event log, replayed from the start and then followed.
@@ -389,9 +375,7 @@ class Compute:
             ``4`` for a fixed size, ``(2, 8)`` for an elastic range, or a
             :class:`~skyward.Nodes` for a floor that differs from the target.
         """
-        wanted = bounds(nodes)
-        self.loop.run(self._conditional("PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=wanted))))
-        self._spec = msgspec.structs.replace(self._spec, nodes=wanted)
+        self.loop.run(self._conditional("PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=bounds(nodes)))))
 
     async def _provision(self) -> None:
         if self._attach:
@@ -548,7 +532,7 @@ class Compute:
         self._proxies = []
         try:
             self._client_stack.close()
-            if self._delete_on_exit and self._id:
+            if self._spec.delete_on_exit and self._id:
                 self.loop.run(self._destroy())
         finally:
             if self._leasing:
@@ -696,6 +680,34 @@ class Compute:
 async def _next[T](source: AsyncIterator[T]) -> T | None:
     """One item, or nothing left. The pull the consumer's ``for`` loop turns into."""
     return await anext(source, None)
+
+
+def _options(options: Options) -> OptionsRef:
+    """The operational knobs as the daemon takes them; a health checker, when there is one, overrides the plain probe."""
+    wire = OptionsRef(
+        ssh_connect_timeout=options.ssh_timeout,
+        ssh_reconnect_attempts=options.max_provision_attempts,
+        ssh_retry_delay=options.provision_retry_delay,
+        provision_timeout=options.provision_timeout,
+        worker_timeout=options.worker_timeout,
+        autoscale_idle_timeout=options.autoscale_idle_timeout,
+        autoscale_cooldown=options.autoscale_cooldown,
+        default_compute_timeout=options.default_compute_timeout,
+        health_command=options.health_command,
+        health_interval=options.health_interval,
+        health_failures=options.health_failures,
+        cluster=options.cluster,
+    )
+    if (checker := options.health_checker) is None:
+        return wire
+    return msgspec.structs.replace(
+        wire,
+        health_interval=checker.interval,
+        health_failures=checker.consecutive_failures,
+        health_function=codec.dumps(checker.fn),
+        health_timeout=checker.timeout,
+        health_initial_delay=checker.initial_delay,
+    )
 
 
 def _wire(spec: Spec) -> SpecRef:

@@ -228,11 +228,8 @@ class Client:
                     raise
                 await asyncio.sleep(1)
             else:
-                # A clean close is the server shedding a slow consumer; resume from
-                # the cursor. One that keeps closing without ever saying anything is
-                # not shedding, it is gone.
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(f"the event stream for {compute} keeps closing without events")
+                    raise RuntimeError(f"the event stream for {compute} closed after {RETRY_SECONDS:.0f}s without an event")
                 await asyncio.sleep(1)
 
     async def forward_up(self, compute: str, cid: str, port: int, route: str, chunks: AsyncIterator[bytes]) -> None:
@@ -383,9 +380,11 @@ class Embedded(httpx.AsyncBaseTransport):
             "root_path": "",
         }
 
-        source = request.stream
-        assert isinstance(source, httpx.AsyncByteStream)
-        body = aiter(source)
+        match request.stream:
+            case httpx.AsyncByteStream() as source:
+                body = aiter(source)
+            case _:
+                raise TypeError("the embedded transport carries async requests only")
         drained = False
         disconnected = asyncio.Event()
 
@@ -456,10 +455,10 @@ class Embedded(httpx.AsyncBaseTransport):
             finally:
                 disconnected.set()
 
-        headers: Message = await start
+        started: Message = await start
         return httpx.Response(
-            headers["status"],
-            headers=headers.get("headers", []),
+            started["status"],
+            headers=started.get("headers", []),
             stream=Body(stream(), task),
         )
 

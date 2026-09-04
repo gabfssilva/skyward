@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import Literal, Protocol, TextIO, assert_never
+from typing import Literal, Protocol, TextIO
 
 from skyward.core.client import Client
 from skyward.core.view import ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
@@ -57,27 +58,18 @@ class Watcher(Protocol):
 
     def event(self, event: Event, view: ComputeView) -> None: ...
 
-    def refreshed(self, view: ComputeView) -> None: ...
-
     def closed(self, view: ComputeView) -> None: ...
 
 
 def watcher(out: TextIO | None = None, *, mode: ConsoleMode = "rich") -> Watcher:
-    """Select the Rich live view or the line log."""
-    stream = out or sys.stderr
-    match mode:
-        case "log":
-            return Console(out)
-        case "rich":
-            if stream.isatty():
-                try:
-                    from skyward.core.live import RichConsole
-                except ImportError:
-                    return Console(out)
-                return RichConsole(out)
-            return Console(out)
-        case _ as unreachable:
-            assert_never(unreachable)
+    """Select the Rich live view or the line log: the live view only on a terminal, and only when Rich is installed."""
+    if mode == "log" or not (out or sys.stderr).isatty():
+        return Console(out)
+    try:
+        from skyward.core.live import RichConsole
+    except ImportError:
+        return Console(out)
+    return RichConsole(out)
 
 
 class Observer:
@@ -113,13 +105,11 @@ class Observer:
                 if (event := decoded(payload)) is None:
                     continue
                 view = observe(self._view, event)
-                if refreshed := self._stale(event):
+                if self._stale(event):
                     with suppress(Exception):
                         view = await self._fetch(view)
                 self._view = view
-                await asyncio.to_thread(self._dispatch, event, view, refreshed)
-        except asyncio.CancelledError:
-            raise
+                await asyncio.to_thread(self._dispatch, event, view)
         except Exception as exc:
             print(f"skyward: the event stream stopped ({exc})", file=sys.stderr, flush=True)
         finally:
@@ -148,24 +138,22 @@ class Observer:
         self._fetched = time.monotonic()
         return refresh_tasks(refresh(view, compute, nodes), tasks, await self._names_for(tasks))
 
-    async def _names_for(self, tasks: Page[Task]) -> dict[str, str]:
+    async def _names_for(self, tasks: Page[Task]) -> Mapping[str, str]:
+        """Each function's name, asked once; a function that cannot be named is asked once too."""
         for sha in {task.function for task in tasks.items} - self._names.keys():
             try:
-                function = await self._client.call("GET", f"/v1/functions/{sha}", Function)
-                self._names[sha] = function.name or sha[:8]
+                self._names[sha] = (await self._client.call("GET", f"/v1/functions/{sha}", Function)).name or ""
             except Exception:
-                self._names[sha] = sha[:8]
+                self._names[sha] = ""
         return self._names
 
     def _open(self) -> None:
         for one in self._watchers:
             one.opened(self._view)
 
-    def _dispatch(self, event: Event, view: ComputeView, refreshed: bool) -> None:
+    def _dispatch(self, event: Event, view: ComputeView) -> None:
         for one in self._watchers:
             one.event(event, view)
-            if refreshed:
-                one.refreshed(view)
         for callback in self._callbacks:
             try:
                 callback(event, view)
@@ -222,9 +210,6 @@ class Console:
     def event(self, event: Event, view: ComputeView) -> None:
         if line := render(event, self.out.isatty()):
             print(line, file=self.out, flush=True)
-
-    def refreshed(self, view: ComputeView) -> None:
-        return None
 
     def closed(self, view: ComputeView) -> None:
         return None

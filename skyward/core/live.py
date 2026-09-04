@@ -49,6 +49,7 @@ from skyward.core.widgets import (
 )
 from skyward.shared.events import ComputeDegraded, ComputeDeleted, ConsoleEvent, Event, NodeEvent, TaskEvent
 from skyward.shared.observability import NAME as LOGGER_NAME
+from skyward.shared.schemas import NodeState
 
 
 def _state(view: ComputeView) -> _State:
@@ -71,36 +72,21 @@ def _state(view: ComputeView) -> _State:
         if row.state in {"connecting", "bootstrapping"}
     })
     task_counts = Counter(task.state for task in view.tasks)
-    latencies = tuple(
-        (task.finished_at - task.started_at).total_seconds()
-        for task in view.tasks
-        if task.started_at and task.finished_at
-    )
+    latencies: list[float] = []
     per_function: dict[str, tuple[float, ...]] = {}
     failures: Counter[str] = Counter()
     per_node: Counter[int] = Counter()
     ranks = {row.id: row.rank for row in rows}
     for task in view.tasks:
         if task.started_at and task.finished_at:
-            per_function[task.function] = (
-                *per_function.get(task.function, ()),
-                (task.finished_at - task.started_at).total_seconds(),
-            )
+            latency = (task.finished_at - task.started_at).total_seconds()
+            latencies.append(latency)
+            per_function[task.function] = (*per_function.get(task.function, ()), latency)
         if task.state == "failed":
             failures[task.function] += 1
         if task.node in ranks:
             per_node[ranks[task.node]] += 1
-    started = (
-        time.monotonic() - max(0.0, (datetime.now(UTC) - view.created_at).total_seconds())
-        if view.created_at
-        else 0.0
-    )
     submissions = [task.submitted_at for task in view.tasks if task.submitted_at]
-    first_task_at = (
-        time.monotonic() - max(0.0, (datetime.now(UTC) - min(submissions)).total_seconds())
-        if submissions
-        else 0.0
-    )
     active = sum(row.state not in {"deleted", "failed", "lost"} for row in rows)
     pending = max(0, view.initial - len(rows))
     reconciler_state = (
@@ -118,12 +104,12 @@ def _state(view: ComputeView) -> _State:
         tasks_running=task_counts["running"],
         tasks_done=task_counts["succeeded"],
         tasks_failed=task_counts["failed"],
-        first_task_at=first_task_at,
+        first_task_at=_since(min(submissions)) if submissions else 0.0,
         cluster=_Cluster(_ClusterSpec(view.provider)),
         instances=instances,
         metrics=metrics,
-        pool_started_at=started,
-        task_latencies=latencies,
+        pool_started_at=_since(view.created_at) if view.created_at else 0.0,
+        task_latencies=tuple(latencies),
         task_fn_stats=MappingProxyType(per_function),
         task_fn_failed=MappingProxyType(dict(failures)),
         target_nodes=active + pending,
@@ -142,25 +128,34 @@ def _state(view: ComputeView) -> _State:
     )
 
 
+def _since(moment: datetime) -> float:
+    """A wall-clock instant on the monotonic clock the footer's timers run on."""
+    return time.monotonic() - max(0.0, (datetime.now(UTC) - moment).total_seconds())
+
+
 def _phase(view: ComputeView) -> _Phase:
-    if view.state in {"deleted", "deleting"}:
-        return _Phase.STOPPED
-    if view.state == "ready":
-        return _Phase.READY
     states = {row.state for row in view.nodes}
-    if "bootstrapping" in states:
-        return _Phase.BOOTSTRAP
-    if "connecting" in states:
-        return _Phase.SSH
-    return _Phase.PROVISIONING
+    match view.state:
+        case "deleted" | "deleting":
+            return _Phase.STOPPED
+        case "ready":
+            return _Phase.READY
+        case _ if "bootstrapping" in states:
+            return _Phase.BOOTSTRAP
+        case _ if "connecting" in states:
+            return _Phase.SSH
+        case _:
+            return _Phase.PROVISIONING
 
 
-def _node_status(state: str) -> _NodeStatus:
-    if state == "ready":
-        return _NodeStatus.READY
-    if state == "bootstrapping":
-        return _NodeStatus.SSH
-    return _NodeStatus.WAITING
+def _node_status(state: NodeState) -> _NodeStatus:
+    match state:
+        case "ready":
+            return _NodeStatus.READY
+        case "bootstrapping":
+            return _NodeStatus.SSH
+        case _:
+            return _NodeStatus.WAITING
 
 
 def _metrics(row: NodeView) -> dict[str, float]:
@@ -277,17 +272,11 @@ class RichConsole:
     def event(self, event: Event, view: ComputeView) -> None:
         if self._live is None:
             return
-        self._footer.state = _state(view)
-        self._print_event(event, view)
+        state = self._footer.state = _state(view)
+        self._print_event(event, view, state)
         self._live.update(self._footer)
         if isinstance(event, ComputeDeleted):
             self._summarize()
-
-    def refreshed(self, view: ComputeView) -> None:
-        if self._live is None:
-            return
-        self._footer.state = _state(view)
-        self._live.update(self._footer)
 
     def closed(self, view: ComputeView) -> None:
         if self._live is not None:
@@ -318,27 +307,32 @@ class RichConsole:
         self._console.print(banner)
         self._console.print()
 
-    def _print_event(self, event: Event, view: ComputeView) -> None:
-        state = _state(view)
-        node = getattr(event, "node", None)
-        row = next((row for row in view.nodes if row.id == node), None)
-        node_id = row.rank if row else 0
+    def _print_event(self, event: Event, view: ComputeView, state: _State) -> None:
+        def label(node: str) -> tuple[str, str]:
+            """The badge and the link for a node the view knows; a bare badge for one it does not yet."""
+            row = next((row for row in view.nodes if row.id == node), None)
+            return (_node_label(state, row.rank), _ssh_url(state, row.rank)) if row else ("node", "")
+
         match event:
-            case ConsoleEvent(content=content):
+            case ConsoleEvent(node=node, content=content):
+                row = next((row for row in view.nodes if row.id == node), None)
                 if row is None or row.state not in {"connecting", "bootstrapping"}:
-                    _emit(self._console, _node_label(state, node_id), content, link=_ssh_url(state, node_id))
-            case NodeEvent(state="ready"):
-                _emit(self._console, _node_label(state, node_id), "✓ Joined", "green bold", link=_ssh_url(state, node_id))
+                    badge, link = label(node)
+                    _emit(self._console, badge, content, link=link)
+            case NodeEvent(node=node, state="ready"):
+                badge, link = label(node)
+                _emit(self._console, badge, "✓ Joined", "green bold", link=link)
             case NodeEvent(state="failed" | "lost" as failure, error=error):
                 _emit(self._console, "error", error or failure, "red")
             case TaskEvent(state="succeeded"):
-                _emit_task(self._console, _node_label(state, node_id), "done", "")
+                _emit_task(self._console, "task", "done", "")
             case TaskEvent(state="failed"):
-                _emit_task(self._console, _node_label(state, node_id), "failed", "")
+                _emit_task(self._console, "task", "failed", "")
             case ComputeDegraded(error=error):
                 _emit(self._console, "error", error, "red")
             case _:
                 pass
+
 
 class _LogSink(logging.Handler):
     def __init__(self, console: Console) -> None:
