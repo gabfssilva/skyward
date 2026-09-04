@@ -76,7 +76,7 @@ def build_listeners(
         await reconciler.compute(compute_id)
 
     @listener("node.observed")
-    async def on_node_observed(compute_id: str, node_id: str, state: NodeState, error: str) -> None:
+    async def on_node_observed(compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
         """A node said what became of it.
 
         It goes through the bus rather than straight into the reconciler so that a

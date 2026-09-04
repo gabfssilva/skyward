@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Protocol
 
 import msgspec
 
@@ -42,11 +41,7 @@ from skyward.worker import bootstrap
 logger = logger.bind(component="machines")
 
 
-class _ClusterFormation(Protocol):
-    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool: ...
-
-
-def _clustered(adapter: _ClusterFormation, spec: ComputeSpec, offer: Offer) -> bool:
+def _clustered(adapter: Provider, spec: ComputeSpec, offer: Offer) -> bool:
     allowed = adapter.allows_cluster_formation(spec, offer)
     requested = spec.options.cluster
     if requested and not allowed:
@@ -128,7 +123,6 @@ class Machines:
             log.debug("not buying: the row became {} while the compute was being bound", node.state)
             return
 
-        infrastructure = await self._computes.infrastructure(compute_id)
         log.debug("buying one machine on {}", adapter.kind)
         placed, machine, sold = await self._place(adapter, compute, infrastructure, claim(node_id))
 
@@ -437,7 +431,7 @@ class Machines:
             case mode:
                 return image.content_hash((await resolve(mode)).argument)
 
-    async def resolve(self, compute: Compute, nodes: tuple[Node, ...]) -> None:
+    async def resolve(self, compute: Compute) -> None:
         """Ask the provider what became of the machines we asked it for.
 
         This is the one thing a provider is the authority on. It is not asked which
@@ -460,12 +454,11 @@ class Machines:
         if not infrastructure.provider_id:
             return
 
+        nodes = await self._nodes.of(compute.id)
         if not any(node.state in ("requested", "provisioning", "connecting", "bootstrapping", "ready") for node in nodes):
             return
 
         adapter = await self.adapter(infrastructure.provider_id)
-
-        nodes = await self._nodes.of(compute.id)
         pending = [node for node in nodes if node.state in ("requested", "provisioning")]
         watched = [node for node in nodes if node.state in ("connecting", "bootstrapping", "ready")]
 
@@ -507,8 +500,9 @@ class Machines:
                     )
                 case None if node.machine and _settled(node):
                     await self._lost(node, "the provider no longer has it")
-                case Machine() as machine if await self._stalled(node, machine, deadline):
-                    await self._lost(node, _unaddressed(machine, deadline))
+                case Machine() as machine:
+                    if not await self._advanced(node, machine) and self._stalled(node, deadline):
+                        await self._lost(node, _unaddressed(machine, deadline))
                 case _:
                     pass
 
@@ -561,7 +555,24 @@ class Machines:
             raise CapabilityMismatchError(f"{adapter.kind} can quote hardware but cannot provision it")
         return adapter
 
-    async def _stalled(self, node: Node, machine: Machine, deadline: float) -> bool:
+    async def _advanced(self, node: Node, machine: Machine) -> bool:
+        """Whether the machine reports something it did not report last time — and if so, says it.
+
+        A provider that reports nothing has one unchanging answer, so its machines
+        never advance and are held to the deadline from the moment they were bought,
+        which is what every provider was held to before there was anything to report.
+        """
+        if node.launched_at is None:
+            return False
+        seen, _ = self._progress.get(node.id, (None, node.launched_at))
+        moved = _token(machine)
+        if moved == seen:
+            return False
+        self._progress[node.id] = (moved, now())
+        await self._progressed(node, machine)
+        return True
+
+    def _stalled(self, node: Node, deadline: float) -> bool:
         """A machine that was bought, is there, and has stopped getting closer.
 
         Every other timeout in the system starts once there is an address to dial.
@@ -576,21 +587,10 @@ class Machines:
         nothing, for as long as the compute is asked for. A machine whose reported
         progress keeps changing is one to wait for; one that has been saying the same
         thing for the whole window has stopped.
-
-        A provider that reports nothing has one unchanging answer, so its machines are
-        held to the deadline from the moment they were bought — which is what every
-        provider was held to before there was anything to report.
         """
         if not deadline or node.launched_at is None:
             return False
-
-        seen, since = self._progress.get(node.id, (None, node.launched_at))
-        moved = _token(machine)
-        if moved != seen:
-            self._progress[node.id] = (moved, now())
-            await self._progressed(node, machine)
-            return False
-
+        _, since = self._progress.get(node.id, (None, node.launched_at))
         return (now() - since).total_seconds() > deadline
 
     async def _progressed(self, node: Node, machine: Machine) -> None:

@@ -116,7 +116,7 @@ def describe_a_machine_that_is_bought_and_never_says_where_it_is() -> None:
         machines, compute, node = await _bought(tmp_path / "skyward.sqlite", provision_timeout=0.01)
         await asyncio.sleep(0.05)
 
-        await machines.resolve(compute, await NodeStore().of(compute.id))
+        await machines.resolve(compute)
 
         given_up = await NodeStore().get(compute.id, node.id)
         assert given_up.state == "lost"
@@ -126,7 +126,7 @@ def describe_a_machine_that_is_bought_and_never_says_where_it_is() -> None:
     async def it_is_waited_on_while_the_window_is_open(tmp_path: Path) -> None:
         machines, compute, node = await _bought(tmp_path / "skyward.sqlite", provision_timeout=600.0)
 
-        await machines.resolve(compute, await NodeStore().of(compute.id))
+        await machines.resolve(compute)
 
         assert (await NodeStore().get(compute.id, node.id)).state == "provisioning", "a machine still coming up is not a machine lost"
 
@@ -141,7 +141,7 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
 
         for _ in range(3):
             await asyncio.sleep(0.05)
-            await machines.resolve(compute, await NodeStore().of(compute.id))
+            await machines.resolve(compute)
 
         waited = await NodeStore().get(compute.id, node.id)
         assert waited.state == "provisioning", "a machine pulling its image is a machine still coming up"
@@ -155,7 +155,7 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
 
         for _ in range(2):
             await asyncio.sleep(0.05)
-            await machines.resolve(compute, await NodeStore().of(compute.id))
+            await machines.resolve(compute)
 
         given_up = await NodeStore().get(compute.id, node.id)
         assert given_up.state == "lost"

@@ -193,7 +193,7 @@ class Reconciler(Protocol):
 
     async def compute(self, compute_id: str) -> None: ...
 
-    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
+    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
         """What a node's own lifecycle reported about it.
 
         The one thing the reconciler is told rather than reads, because it is the

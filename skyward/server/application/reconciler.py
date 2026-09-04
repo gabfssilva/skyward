@@ -79,7 +79,7 @@ class Wakeup:
     def bind(self, emit: Wake) -> None:
         self._emit = emit
 
-    def __call__(self, event: str, **payload: str) -> None:
+    def __call__(self, event: str, **payload: str | None) -> None:
         self._emit(event, **payload)
 
 
@@ -119,7 +119,8 @@ class Reconciler:
             except NotFoundError:
                 return
             try:
-                await self._pass(compute)
+                if await self._pass(compute):
+                    self._locks.pop(compute_id, None)
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
                 code = exc.code if isinstance(exc, SkywardError) else "reconcile_failed"
@@ -128,7 +129,7 @@ class Reconciler:
                 else:
                     await self._computes.apply(ComputeDegraded(compute=compute_id, error=str(exc), code=code))
 
-    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
+    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
         """What the node's own lifecycle reported, and what follows from it.
 
         The only thing the reconciler is told rather than reads. No query can answer
@@ -156,9 +157,10 @@ class Reconciler:
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return await self._computes.live(), await self._tasks.unsettled()
 
-    async def _pass(self, compute: Compute) -> None:
+    async def _pass(self, compute: Compute) -> bool:
+        """One pass; ``True`` once there is nothing left of the compute to reconcile."""
         if compute.status.state == "deleted":
-            return
+            return True
 
         log = logger.bind(compute_id=compute.id)
 
@@ -168,14 +170,15 @@ class Reconciler:
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
             compute = await self._computes.get(compute.id)
 
-        await self._machines.resolve(compute, await self._nodes.of(compute.id))
+        await self._machines.resolve(compute)
 
         nodes = await self._nodes.of(compute.id)
         alive = [node for node in nodes if node.state in LIVE]
         load = await self._tasks.load(compute.id)
+        holding, owed = await self._tasks.busy(compute.id)
         buy, spare = demand(compute, nodes, load)
         lower, upper = bounds(compute.spec)
-        surplus = await self._surplus(compute, alive, spare)
+        surplus = self._surplus(compute, alive, spare, holding, owed)
 
         log.debug(
             "pass: {} alive within [{}, {}], {} in the queue, nodes {} — buy {}, {} over the target, draining {}",
@@ -199,10 +202,11 @@ class Reconciler:
             await self._nodes.observe(node.id, "draining")
             await self._announce("draining", compute.id, node.id)
 
-        await self._push(compute)
-        await self._status(compute)
+        nodes = await self._nodes.of(compute.id)
+        await self._push(compute, nodes, holding)
+        return await self._status(compute, nodes, lower)
 
-    async def _push(self, compute: Compute) -> None:
+    async def _push(self, compute: Compute, nodes: Sequence[Node], holding: Counter[str]) -> None:
         """Re-offer every row that is waiting on somebody, and retire the ones that are done.
 
         A row in ``requested`` is a machine nobody has bought yet; in ``connecting``,
@@ -223,27 +227,28 @@ class Reconciler:
         the only place the two halves meet: the reconciler decided it should go, the
         queue decides when.
         """
-        holding, _ = await self._tasks.busy(compute.id)
         doomed = compute.spec.desired == "deleted"
 
-        for node in await self._nodes.of(compute.id):
+        async def retire(node: Node) -> None:
+            await self._nodes.observe(node.id, "deleting")
+            await self._announce("deleting", compute.id, node.id)
+
+        for node in nodes:
             match node.state:
                 case "requested":
                     await self._announce("requested", compute.id, node.id, record=False)
                 case "connecting" | "bootstrapping" | "ready":
                     self._wake("node.connect", compute_id=compute.id, node_id=node.id)
                 case "draining" if doomed or not holding[node.id]:
-                    await self._nodes.observe(node.id, "deleting")
-                    await self._announce("deleting", compute.id, node.id)
+                    await retire(node)
                 case "lost" | "failed":
-                    await self._nodes.observe(node.id, "deleting")
-                    await self._announce("deleting", compute.id, node.id)
+                    await retire(node)
                 case "deleting":
                     await self._announce("deleting", compute.id, node.id, record=False)
                 case _:
                     pass
 
-    async def _surplus(self, compute: Compute, alive: list[Node], surplus: int) -> list[Node]:
+    def _surplus(self, compute: Compute, alive: list[Node], surplus: int, holding: Counter[str], owed: frozenset[int]) -> list[Node]:
         """Which machines to give back, if any.
 
         Idle for long enough, newest first. Newest because the oldest are the ones
@@ -261,23 +266,22 @@ class Reconciler:
         if compute.spec.desired == "deleted":
             return sorted(alive, key=lambda node: node.rank, reverse=True)[:surplus]
 
-        idle = await self._idlers(compute.id, compute.spec.options.autoscale_idle_timeout)
+        idle = self._idlers(alive, holding, owed, compute.spec.options.autoscale_idle_timeout)
         leavable = [node for node in alive if node.id in idle]
 
         return sorted(leavable, key=lambda node: node.rank, reverse=True)[:surplus]
 
-    async def _idlers(self, compute_id: str, idle_timeout: float) -> set[str]:
+    def _idlers(self, nodes: Sequence[Node], holding: Counter[str], owed: frozenset[int], idle_timeout: float) -> set[str]:
         """Nodes with nothing on them, and nothing owed to them, for long enough.
 
         The clock starts at ``ready``, and only runs while the node stays leavable:
         anything else resets it, so a machine that spends five minutes booting has
         been idle for zero seconds when it arrives.
         """
-        holding, owed = await self._tasks.busy(compute_id)
         now = monotonic()
 
         idle: set[str] = set()
-        for node in await self._nodes.of(compute_id):
+        for node in nodes:
             if not leavable(node, holding, owed):
                 self._idle.pop(node.id, None)
                 continue
@@ -288,14 +292,13 @@ class Reconciler:
 
         return idle
 
-    async def _status(self, compute: Compute) -> None:
-        """Say what the count came to. The store decides whether that is news.
+    async def _status(self, compute: Compute, nodes: Sequence[Node], lower: int) -> bool:
+        """Say what the count came to, and whether that was the last word.
 
         The event carries the observation — how many answer, of how many — and
         the state it leads to is the table's to say. Most passes say what the last
         one said, and those write the counts and record nothing.
         """
-        nodes = await self._nodes.of(compute.id)
         live = [node for node in nodes if node.state in LIVE]
         ready = [node for node in live if node.state == "ready"]
         gone = all(node.state == "deleted" for node in nodes)
@@ -307,12 +310,13 @@ class Reconciler:
                 if not error.retryable:
                     raise
                 await self._computes.apply(ComputeDeletionFailed(compute=compute.id, error=error.message, code=error.code))
-                return
+                return False
             await self._computes.apply(ComputeDeleted(compute=compute.id))
+            for node in nodes:
+                self._idle.pop(node.id, None)
             logger.bind(compute_id=compute.id).info("deleted: every machine is gone and the binding is released")
-            return
+            return True
 
-        lower, _ = bounds(compute.spec)
         event: ComputeDeleting | ComputeReady | ComputeProvisioning
         if compute.spec.desired == "deleted":
             event = ComputeDeleting(compute=compute.id, nodes_ready=len(ready), nodes_total=len(live))
@@ -322,7 +326,7 @@ class Reconciler:
             event = ComputeProvisioning(compute=compute.id, nodes_ready=len(ready), nodes_total=len(live), generation=compute.generation)
 
         if not await self._computes.apply(event):
-            return
+            return False
 
         logger.bind(compute_id=compute.id).info("{} → {}, {} of {} nodes ready", compute.status.state, lifecycle.leads(event), len(ready), len(live))
 
@@ -330,6 +334,7 @@ class Reconciler:
             case ComputeReady():
                 await self._generations.apply(compute.id, compute.generation)
                 self._wake("compute.dispatch", compute_id=compute.id)
+        return False
 
     async def _announce(self, state: NodeState, compute_id: str, node_id: str, record: bool = True) -> None:
         self._wake(f"node.{state}", compute_id=compute_id, node_id=node_id)

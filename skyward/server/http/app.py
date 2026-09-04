@@ -143,7 +143,7 @@ def services() -> Services:
 
     runtimes = Runtimes(
         listener=lambda compute, node, state, error: wake(
-            "node.observed", compute_id=compute, node_id=node, state=state, error=error or "",
+            "node.observed", compute_id=compute, node_id=node, state=state, error=error,
         ),
         output=lambda compute, node, content, task: spoken(console(compute, node, content, task)),
         sample=lambda compute, node, name, value: spoken(sampled(compute, node, name, value)),
