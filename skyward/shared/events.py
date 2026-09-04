@@ -87,7 +87,7 @@ class ComputeDegraded(Struct, frozen=True, tag_field="type", tag="compute.degrad
 
 
 class GenerationCreated(Struct, frozen=True, tag_field="type", tag="compute.generation.created"):
-    """A new definition was frozen: a resize, an applied drift, or a rollback."""
+    """A new definition was frozen: a resize, or an earlier generation brought back."""
 
     compute: str
     number: int

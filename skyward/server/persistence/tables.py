@@ -100,7 +100,6 @@ class ComputeRow(Table, tablename="computes"):
     status_observed_generation = Integer(default=0)
     status_nodes_ready = Integer(default=0)
     status_nodes_total = Integer(default=0)
-    status_drift = JSONB(default="[]")
     status_error = JSONB(null=True, default=None)
 
     lease_owner = Varchar(null=True, default=None)

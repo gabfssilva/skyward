@@ -382,7 +382,7 @@
         "type": "object"
       },
       "ComputeSpec": {
-        "description": "Everything a compute was asked to be. Intent, never observation.\n\nOnly a client writes it, and only through ``PATCH``. Of its fields exactly one\nis mutable in place \u2014 ``nodes``, which resizes \u2014 and changing any other is\ndrift: it is recorded, the applied definition is kept, and replacing the\nmachines takes a new generation.",
+        "description": "Everything a compute was asked to be. Intent, never observation.\n\nOnly a client writes it, and only through ``PATCH``. Of its fields exactly one\nis mutable in place \u2014 ``nodes``, which resizes. The rest is fixed for the life\nof the compute: a different image or provider is a different compute.",
         "properties": {
           "allocation": {
             "default": "spot_if_available",
@@ -477,13 +477,6 @@
       "ComputeStatus": {
         "description": "What the reconciler has observed. Never written by a client.\n\n``observed_generation`` against the compute's ``generation`` is the progress:\nthe gap between them *is* the pending work, which is why there is no operation\nresource to poll.",
         "properties": {
-          "drift": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "last_error": {
             "oneOf": [
               {
@@ -865,24 +858,15 @@
         "type": "object"
       },
       "GenerationCreate": {
-        "description": "Replace the machines: with the pending drift, or with an older definition.\n\nWithout ``source`` this applies whatever drift the status is carrying. With\none, it rolls back to that generation. ``force`` marks unresolved tasks\nindeterminate rather than refusing while executions are still live.",
+        "description": "Make an earlier generation's definition current again, as a new generation.\n\nThe machines already up are not replaced: a size that differs is reconciled\nas a resize would be, and a machine bought from now on is built to the\ndefinition now current.",
         "properties": {
-          "force": {
-            "default": false,
-            "type": "boolean"
-          },
           "source": {
-            "oneOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "integer"
           }
         },
-        "required": [],
+        "required": [
+          "source"
+        ],
         "title": "GenerationCreate",
         "type": "object"
       },
@@ -3305,7 +3289,7 @@
       },
       "patch": {
         "deprecated": false,
-        "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nA compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.\n\nChanging immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in `status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires `POST /computes/{id}/generations`.",
+        "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nA compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.\n\nThe rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the compute; a different one is a different compute.",
         "operationId": "V1ComputesComputeIdUpdate",
         "parameters": [
           {
@@ -4402,7 +4386,7 @@
       },
       "post": {
         "deprecated": false,
-        "description": "Replacing infrastructure *is* creating a new generation: quiesce, drain, destroy the old one, provision the new one \u2014 same `compute_id`.\n\nWithout `source`, applies the drift pending in `status.drift`. With `source`, rolls back to that generation.\n\n`force: true` marks unresolved tasks as `indeterminate` before replacing; `force: false` refuses while executions are still active.",
+        "description": "Makes generation `source`'s definition current again, under a new generation number \u2014 the same `compute_id`, the same machines.\n\nNothing is replaced: a size that differs is reconciled as a resize would be, and a machine bought from now on is built to the definition now current.",
         "operationId": "V1ComputesComputeIdGenerationsCreateGeneration",
         "parameters": [
           {
@@ -4534,7 +4518,7 @@
             "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
-        "summary": "Create a generation (apply drift, or roll back)",
+        "summary": "Create a generation (roll back to an earlier one)",
         "tags": [
           "computes"
         ]

@@ -146,17 +146,17 @@ When the target is below the number of live nodes, the reconciler marks idle nod
 
 Compute deletion skips the idle wait: its desired node count becomes zero and all nodes are drained and terminated. The Compute reaches `status.state="deleted"` only after provider resources and shared infrastructure have been released.
 
-## Generations and drift
+## Generations
 
-The API treats the Compute definition as versioned state. A `PATCH` can change `spec.nodes` in place and creates a new generation for the resize. Other definition fields are immutable in place. Changing the provider, image, executor, plugins, volumes, or ports is recorded as drift rather than silently replacing machines.
+The API treats the Compute definition as versioned state. A `PATCH` can change `spec.nodes` in place and creates a new generation for the resize. Every other field of the definition is fixed for the life of the compute: a different image or provider is a different compute.
 
-To apply a changed immutable definition, create a new generation:
+An earlier definition can be made current again, as a new generation:
 
 ```text
-POST /v1/computes/{id}/generations
+POST /v1/computes/{id}/generations   {"source": 2}
 ```
 
-The generation operation drains and replaces the old infrastructure under the same Compute id. Without `force`, active executions prevent replacement. With `force`, unresolved executions become `indeterminate` before the replacement proceeds.
+Nothing is replaced by it. A size that differs is reconciled the way a resize is, and a machine bought from then on is built to the definition now current; the machines already up stay as they were built.
 
 Revisions protect concurrent changes. Reads return an `ETag`; writes send it back as `If-Match`. Idempotency keys make repeated create, delete, and generation requests safe to retry.
 

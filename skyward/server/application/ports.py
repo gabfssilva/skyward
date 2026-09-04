@@ -65,7 +65,7 @@ class Generations(Protocol):
     async def get(self, compute: str, number: int) -> Generation: ...
 
     async def create(self, compute: str, body: GenerationCreate, expected_revision: int, idempotency_key: str) -> Generation:
-        """Applies pending drift, or rolls back to `body.source`. Quiesce, drain, replace."""
+        """Makes generation `body.source` current again, as a new generation."""
         ...
 
 

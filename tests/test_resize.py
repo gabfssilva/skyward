@@ -15,7 +15,7 @@ import pytest
 from skyward.server.application.mock import SPEC
 from skyward.server.persistence.computes import GenerationStore
 from skyward.shared.errors import ComputeNotResizableError
-from skyward.shared.schemas import ComputeSpecPatch, NodeBounds
+from skyward.shared.schemas import ComputeSpecPatch, GenerationCreate, NodeBounds
 from tests.conftest import cli, given
 
 pytestmark = pytest.mark.local
@@ -80,3 +80,16 @@ def describe_spelling_a_size_on_the_command_line() -> None:
 
         assert ran.code != 0
         assert "not_found" in ran.err, "the size parsed, and the compute is what was missing"
+
+
+def describe_bringing_an_earlier_generation_back() -> None:
+    async def it_is_a_new_generation_with_the_old_definition(tmp_path: Path) -> None:
+        store, compute = await given(tmp_path / "skyward.sqlite")
+        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=16)), compute.revision)
+        generations = GenerationStore(store)
+
+        restored = await generations.create(compute.id, GenerationCreate(source=1), resized.revision, "back")
+
+        assert restored.number == 3
+        assert restored.spec.nodes == SPEC.nodes
+        assert (await store.get(compute.id)).spec.nodes == SPEC.nodes

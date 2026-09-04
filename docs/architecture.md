@@ -78,7 +78,7 @@ The API has two resource families.
 Declarative resources carry intent and observation:
 
 - `compute.spec` is the desired provider, image, node bounds, runtime, and lifecycle;
-- `compute.status` is the observed state, ready count, live count, errors, drift, and applied generation;
+- `compute.status` is the observed state, ready count, live count, the last error, and the applied generation;
 - `node` is the persisted identity and lifecycle of one machine;
 - `generation` is a definition history entry.
 

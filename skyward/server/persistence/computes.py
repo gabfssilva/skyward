@@ -435,16 +435,16 @@ class GenerationStore:
         return await _to_generation(row)
 
     async def create(self, compute: str, body: GenerationCreate, expected_revision: int, idempotency_key: str) -> Generation:
-        """Replace the infrastructure: same compute, new definition.
+        """An earlier definition, current again: same compute, new generation number.
 
-        Without a ``source`` this applies whatever drift is pending; with one, it
-        goes back to that generation's definition. Either way the current machines
-        are condemned — which is why this is a separate verb from ``PATCH`` and
-        not an inference from it.
+        A separate verb from ``PATCH`` because it is not a field changing but a
+        whole definition coming back, frozen as it was. What the reconciler does
+        with it is what it does with any definition: hold the size, and build the
+        machines it buys from now on to it.
         """
         async def branch() -> str:
             row = await self._computes.checked(compute, expected_revision)
-            spec = (await self.get(compute, body.source)).spec if body.source else await unpacked(row.spec, ComputeSpec)
+            spec = (await self.get(compute, body.source)).spec
 
             number = await self._computes.regenerate(row, spec)
             return f"{row.id}:{number}"
@@ -491,7 +491,6 @@ async def _to_compute(row: ComputeRow) -> Compute:
             observed_generation=row.status_observed_generation,
             nodes_ready=row.status_nodes_ready,
             nodes_total=row.status_nodes_total,
-            drift=await unpacked(row.status_drift, tuple[str, ...]),
             last_error=await unpacked(row.status_error, Error) if row.status_error else None,
         ),
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),

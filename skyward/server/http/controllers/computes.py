@@ -88,9 +88,8 @@ class ComputeController(Controller):
             "A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 "
             "compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank "
             "added afterwards blocks in it.\n\n"
-            "Changing immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in "
-            "`status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires "
-            "`POST /computes/{id}/generations`."
+            "The rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the "
+            "compute; a different one is a different compute."
         ),
         responses=failures(404, 412, 422),
     )
@@ -150,14 +149,12 @@ class ComputeController(Controller):
     @post(
         "/{compute_id:str}/generations",
         status_code=202,
-        summary="Create a generation (apply drift, or roll back)",
+        summary="Create a generation (roll back to an earlier one)",
         description=(
-            "Replacing infrastructure *is* creating a new generation: quiesce, drain, destroy the old one, provision the "
-            "new one — same `compute_id`.\n\n"
-            "Without `source`, applies the drift pending in `status.drift`. With `source`, rolls back to that "
-            "generation.\n\n"
-            "`force: true` marks unresolved tasks as `indeterminate` before replacing; `force: false` refuses while "
-            "executions are still active."
+            "Makes generation `source`'s definition current again, under a new generation number — the same "
+            "`compute_id`, the same machines.\n\n"
+            "Nothing is replaced: a size that differs is reconciled as a resize would be, and a machine bought from "
+            "now on is built to the definition now current."
         ),
         responses=failures(404, 409, 412, 422),
     )

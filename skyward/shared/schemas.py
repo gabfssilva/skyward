@@ -432,9 +432,8 @@ class ComputeSpec(Struct, frozen=True):
     """Everything a compute was asked to be. Intent, never observation.
 
     Only a client writes it, and only through ``PATCH``. Of its fields exactly one
-    is mutable in place — ``nodes``, which resizes — and changing any other is
-    drift: it is recorded, the applied definition is kept, and replacing the
-    machines takes a new generation.
+    is mutable in place — ``nodes``, which resizes. The rest is fixed for the life
+    of the compute: a different image or provider is a different compute.
     """
 
     specs: tuple[Spec, ...]
@@ -489,7 +488,6 @@ class ComputeStatus(Struct, frozen=True):
     observed_generation: int
     nodes_ready: int
     nodes_total: int
-    drift: tuple[str, ...] = ()
     last_error: Error | None = None
 
 
@@ -667,15 +665,14 @@ class Generation(Struct, frozen=True):
 
 
 class GenerationCreate(Struct, frozen=True):
-    """Replace the machines: with the pending drift, or with an older definition.
+    """Make an earlier generation's definition current again, as a new generation.
 
-    Without ``source`` this applies whatever drift the status is carrying. With
-    one, it rolls back to that generation. ``force`` marks unresolved tasks
-    indeterminate rather than refusing while executions are still live.
+    The machines already up are not replaced: a size that differs is reconciled
+    as a resize would be, and a machine bought from now on is built to the
+    definition now current.
     """
 
-    source: int | None = None
-    force: bool = False
+    source: int
 
 
 class Page[T](Struct, frozen=True):
