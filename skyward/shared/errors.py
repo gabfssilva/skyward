@@ -69,11 +69,6 @@ class UnsupportedPluginError(SkywardError):
     status = 422
 
 
-class SecretInDefinitionError(SkywardError):
-    code = "secret_in_definition"
-    status = 422
-
-
 class HashMismatchError(SkywardError):
     code = "hash_mismatch"
     status = 400

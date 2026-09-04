@@ -81,7 +81,6 @@ Every failure is the same JSON object, whatever produced it:
 | `compute_not_resizable` | 422 | no | The compute runs a collective, and its ranks are frozen |
 | `unsupported_provider` | 422 | no | No adapter registered for that kind |
 | `unsupported_plugin` | 422 | no | No plugin registered under that kind |
-| `secret_in_definition` | 422 | no | A credential was put where the API serves it back |
 | `hash_mismatch` | 400 | no | Uploaded content does not hash to its name |
 | `task_failed` | 409 | no | Reading the result of a task that failed |
 | `task_indeterminate` | 409 | no | Contact was lost after code may have run |
@@ -90,7 +89,7 @@ Every failure is the same JSON object, whatever produced it:
 | `release_pending` | — | yes | Only in `status.last_error`: every machine is gone and the provider would not release the binding yet |
 | `reconcile_failed` | — | yes | Only in `status.last_error`: a reconcile pass broke on an error with no code of its own |
 
-`secret_in_definition` is worth its own note: credentials belong on a provider row, which no read path selects and the API never returns. Putting one in a compute spec is refused rather than stored, because a spec *is* served back.
+Credentials never appear in a compute spec: they belong on a provider row, which no read path selects and the API never returns, and a spec names that row by kind and name. A spec *is* served back, which is why it has no field a credential could go in.
 
 ## Content-addressed payloads
 

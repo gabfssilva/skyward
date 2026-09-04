@@ -95,7 +95,6 @@ type ErrorCode = Literal[
     "compute_not_resizable",
     "unsupported_provider",
     "unsupported_plugin",
-    "secret_in_definition",
     "hash_mismatch",
     "task_failed",
     "task_indeterminate",

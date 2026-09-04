@@ -196,7 +196,6 @@
               "compute_not_resizable",
               "unsupported_provider",
               "unsupported_plugin",
-              "secret_in_definition",
               "hash_mismatch",
               "task_failed",
               "task_indeterminate",
@@ -292,7 +291,6 @@
               "compute_not_resizable",
               "unsupported_provider",
               "unsupported_plugin",
-              "secret_in_definition",
               "hash_mismatch",
               "task_failed",
               "task_indeterminate",
@@ -597,7 +595,6 @@
               "compute_not_resizable",
               "unsupported_provider",
               "unsupported_plugin",
-              "secret_in_definition",
               "hash_mismatch",
               "task_failed",
               "task_indeterminate",
@@ -3087,7 +3084,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Create a compute",
@@ -3409,7 +3406,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Change a compute's spec",
@@ -3542,7 +3539,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Run a shell command on the compute",
@@ -3675,7 +3672,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Remove a path on the compute",
@@ -3806,7 +3803,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "List a path on the compute",
@@ -3944,7 +3941,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Write a file onto the compute",
@@ -4073,7 +4070,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Read a file off the compute",
@@ -4178,7 +4175,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "The down half of a forwarded connection",
@@ -4303,7 +4300,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "The up half of a forwarded connection",
@@ -4525,7 +4522,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Create a generation (roll back to an earlier one)",
@@ -5213,7 +5210,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "The down half of an interactive session",
@@ -5394,7 +5391,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "The up half of an interactive session",
@@ -6233,7 +6230,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Query instance offers",
@@ -6374,7 +6371,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Register a provider account",
@@ -6642,7 +6639,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Update a provider account",
@@ -6923,7 +6920,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Submit a task",
@@ -7590,7 +7587,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
           }
         },
         "summary": "Read a streaming task",
