@@ -11,9 +11,9 @@ from skyward.server.persistence.tables import TABLES
 
 DEFAULT_PATH = Path.home() / ".skyward" / "skyward.sqlite"
 
-PRAGMAS = ("PRAGMA journal_mode=WAL",)
-"""Only what sticks to the file. Everything per-connection is applied where the
-connections are actually made — on each pooled connection as it opens."""
+JOURNAL = "PRAGMA journal_mode=WAL"
+"""The one pragma that sticks to the file. Everything per-connection is applied
+where the connections are actually made — on each pooled connection as it opens."""
 
 BUSY_SECONDS = 30
 """How long any statement waits for a write lock before giving up.
@@ -83,12 +83,16 @@ class PooledSQLiteEngine(SQLiteEngine):
         if (connection := await self._pool.get()) is not None:
             return connection
 
-        fresh = aiosqlite.connect(**self.connection_kwargs)
-        fresh._thread.daemon = True  # a pooled connection lives until exit, and must not hold it up
-        await fresh
-        fresh.row_factory = dict_factory  # pyright: ignore[reportAttributeAccessIssue]
-        await fresh.execute("PRAGMA foreign_keys = 1")
-        await fresh.execute("PRAGMA synchronous = NORMAL")
+        try:
+            fresh = aiosqlite.connect(**self.connection_kwargs)
+            fresh._thread.daemon = True  # a pooled connection lives until exit, and must not hold it up
+            await fresh
+            fresh.row_factory = dict_factory  # pyright: ignore[reportAttributeAccessIssue]
+            await fresh.execute("PRAGMA foreign_keys = 1")
+            await fresh.execute("PRAGMA synchronous = NORMAL")
+        except BaseException:
+            self._pool.put_nowait(None)  # the slot is the pool's; an open that failed does not keep it
+            raise
         return fresh
 
     async def _run_in_new_connection(
@@ -102,12 +106,7 @@ class PooledSQLiteEngine(SQLiteEngine):
         try:
             async with connection.execute(query, args or []) as cursor:
                 await connection.commit()
-                if query_type == "insert" and self.get_version_sync() < 3.35:
-                    assert table is not None
-                    pk = await self._get_inserted_pk(cursor, table)
-                    result: Any = [{table._meta.primary_key._meta.db_column_name: pk}]
-                else:
-                    result = await cursor.fetchall()
+                result = await cursor.fetchall()
         except sqlite3.Error:
             self._pool.put_nowait(connection)  # the statement failed; the connection did not
             raise
@@ -136,7 +135,7 @@ def transaction() -> SQLiteTransaction:
     return _current.transaction(transaction_type=TransactionType.immediate)
 
 
-async def connect(path: Path | None = None) -> SQLiteEngine:
+async def connect(path: Path | None = None) -> None:
     """Open the store and make it usable by more than one process.
 
     WAL is what lets a `sky.Compute` in one script and the daemon in another
@@ -154,8 +153,7 @@ async def connect(path: Path | None = None) -> SQLiteEngine:
     for table in TABLES:
         table._meta.db = engine
 
-    for pragma in PRAGMAS:
-        await TABLES[0].raw(pragma).run()
+    await TABLES[0].raw(JOURNAL).run()
 
     for table in TABLES:
         await table.create_table(if_not_exists=True).run()
@@ -163,8 +161,6 @@ async def connect(path: Path | None = None) -> SQLiteEngine:
 
     for statement in MENDS:
         await TABLES[0].raw(statement).run()
-
-    return engine
 
 
 async def _widen(table: type[Table]) -> None:
