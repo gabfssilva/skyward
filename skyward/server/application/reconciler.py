@@ -33,18 +33,16 @@ from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import LIVE, NodeStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared import codec, lifecycle
+from skyward.shared import lifecycle
 from skyward.shared.errors import NotFoundError, SkywardError
 from skyward.shared.events import (
     ComputeAbandoned,
     ComputeDegraded,
     ComputeDeleted,
     ComputeDeleting,
+    ComputeDeletionFailed,
     ComputeProvisioning,
     ComputeReady,
-    ComputeReleaseFailed,
-    Event,
-    GenerationApplied,
     NodeEvent,
 )
 from skyward.shared.observability import logger
@@ -108,14 +106,27 @@ class Reconciler:
         """When each node last had nothing to do. Absent means it is doing something."""
 
     async def compute(self, compute_id: str) -> None:
+        """One pass, and what a pass that broke does to the row.
+
+        A compute on its way up is degraded by a failure: the state says the pool is
+        not what was asked for, and the next tick tries again. A compute on its way
+        out has nowhere to be degraded to — the failure is a fact on the way to
+        ``deleted``, and the next tick carries on giving the machines back.
+        """
         async with self._lock(compute_id):
             try:
-                await self._pass(await self._computes.get(compute_id))
+                compute = await self._computes.get(compute_id)
             except NotFoundError:
-                pass
+                return
+            try:
+                await self._pass(compute)
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
-                await self._computes.apply(compute_id, ComputeDegraded(compute=compute_id, error=str(exc)))
+                code = exc.code if isinstance(exc, SkywardError) else "reconcile_failed"
+                if compute.spec.desired == "deleted":
+                    await self._computes.apply(ComputeDeletionFailed(compute=compute_id, error=str(exc), code=code))
+                else:
+                    await self._computes.apply(ComputeDegraded(compute=compute_id, error=str(exc), code=code))
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What the node's own lifecycle reported, and what follows from it.
@@ -135,7 +146,7 @@ class Reconciler:
             state,
             Error(code="not_found", message=error, retryable=True) if error else None,
         )
-        await self._record(f"node.{state}", NodeEvent(compute=compute_id, node=node_id, state=state, error=error))
+        await self._events.record(NodeEvent(compute=compute_id, node=node_id, state=state, error=error))
         await self.compute(compute_id)
 
         if state == "ready":
@@ -153,8 +164,7 @@ class Reconciler:
 
         if abandoned(compute) and compute.spec.delete_on_exit:
             log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
-            await self._computes.apply(compute.id, ComputeAbandoned(compute=compute.id))
-            compute = await self._computes.get(compute.id)
+            await self._computes.apply(ComputeAbandoned(compute=compute.id))
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
             compute = await self._computes.get(compute.id)
 
@@ -296,38 +306,35 @@ class Reconciler:
             except SkywardError as error:
                 if not error.retryable:
                     raise
-                await self._computes.apply(compute.id, ComputeReleaseFailed(compute=compute.id, error=error.message))
+                await self._computes.apply(ComputeDeletionFailed(compute=compute.id, error=error.message, code=error.code))
                 return
-            await self._computes.apply(compute.id, ComputeDeleted(compute=compute.id))
+            await self._computes.apply(ComputeDeleted(compute=compute.id))
             logger.bind(compute_id=compute.id).info("deleted: every machine is gone and the binding is released")
             return
 
         lower, _ = bounds(compute.spec)
-        counted = {"compute": compute.id, "nodes_ready": len(ready), "nodes_total": len(live)}
+        event: ComputeDeleting | ComputeReady | ComputeProvisioning
         if compute.spec.desired == "deleted":
-            event = ComputeDeleting(**counted)
+            event = ComputeDeleting(compute=compute.id, nodes_ready=len(ready), nodes_total=len(live))
         elif len(ready) >= lower:
-            event = ComputeReady(**counted, generation=compute.generation)
+            event = ComputeReady(compute=compute.id, nodes_ready=len(ready), nodes_total=len(live), generation=compute.generation)
         else:
-            event = ComputeProvisioning(**counted, generation=compute.generation)
+            event = ComputeProvisioning(compute=compute.id, nodes_ready=len(ready), nodes_total=len(live), generation=compute.generation)
 
-        if not await self._computes.apply(compute.id, event):
+        if not await self._computes.apply(event):
             return
 
         logger.bind(compute_id=compute.id).info("{} → {}, {} of {} nodes ready", compute.status.state, lifecycle.leads(event), len(ready), len(live))
 
-        if isinstance(event, ComputeReady):
-            await self._generations.apply(compute.id, compute.generation)
-            await self._computes.apply(compute.id, GenerationApplied(compute=compute.id, number=compute.generation))
-            self._wake("compute.dispatch", compute_id=compute.id)
+        match event:
+            case ComputeReady():
+                await self._generations.apply(compute.id, compute.generation)
+                self._wake("compute.dispatch", compute_id=compute.id)
 
     async def _announce(self, state: NodeState, compute_id: str, node_id: str, record: bool = True) -> None:
         self._wake(f"node.{state}", compute_id=compute_id, node_id=node_id)
         if record:
-            await self._record(f"node.{state}", NodeEvent(compute=compute_id, node=node_id, state=state))
-
-    async def _record(self, name: str, payload: Event) -> None:
-        await self._events.record(name, await codec.json(Event).encode(payload), compute=payload.compute)
+            await self._events.record(NodeEvent(compute=compute_id, node=node_id, state=state))
 
     def _lock(self, compute_id: str) -> asyncio.Lock:
         """One pass per compute at a time.
@@ -335,6 +342,13 @@ class Reconciler:
         The emitter already collapses duplicate wakeups, but the tick and an event
         can arrive from different directions at the same moment, and two passes
         interleaved would each write the deficit the other is already writing.
+
+        The store's optimistic lock does not replace this one: it fences a single
+        ``apply`` — one read, one decision, one write — and a pass is many writes,
+        the node rows among them, which no compute revision covers. Nor could the
+        revision fence a whole pass: a lease renewal or a binding bumps it from
+        another task by design, and a pass that aborted on those would abort on
+        every pool with a live client.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
 

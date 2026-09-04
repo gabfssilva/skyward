@@ -16,7 +16,7 @@ import msgspec
 import pytest
 
 from skyward.server.application.machines import Machines
-from skyward.server.application.mock import SPEC
+from skyward.server.application.mock import OFFER, SPEC
 from skyward.server.application.node import Node as ApplicationNode
 from skyward.server.application.runtimes import Files, Runtime, Runtimes
 from skyward.server.application.source import Source
@@ -72,8 +72,8 @@ def describe_listing_computes() -> None:
         store = await _store(tmp_path)
         running, _ = await store.create(ComputeCreate(spec=SPEC, name="running"), idempotency_key="k1")
         gone, _ = await store.create(ComputeCreate(spec=SPEC, name="gone"), idempotency_key="k2")
-        await store.apply(gone.id, ComputeDeleting(compute=gone.id, nodes_ready=0, nodes_total=0))
-        await store.apply(gone.id, ComputeDeleted(compute=gone.id))
+        await store.apply(ComputeDeleting(compute=gone.id, nodes_ready=0, nodes_total=0))
+        await store.apply(ComputeDeleted(compute=gone.id))
 
         live = await store.list(None, 50, None, None, True)
         finished = await store.list(None, 50, None, None, False)
@@ -162,8 +162,8 @@ def describe_binding_a_compute() -> None:
         store = await _store(tmp_path)
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="raced")
 
-        await store.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"a": 1}, private_key="winner"))
-        await store.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"b": 2}, private_key="loser"))
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"a": 1}, private_key="winner"))
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"b": 2}, private_key="loser"))
 
         stored = await store.infrastructure(compute.id)
         assert stored.private_key == "winner"
@@ -174,8 +174,8 @@ def describe_binding_a_compute() -> None:
         store = await _store(tmp_path)
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="moved")
 
-        await store.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"region": "us"}, private_key="key"))
-        await store.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"region": "eu"}, private_key="key"))
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"region": "us"}, private_key="key"))
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"region": "eu"}, private_key="key"))
 
         assert (await store.infrastructure(compute.id)).binding == {"region": "eu"}
 
@@ -273,7 +273,7 @@ async def _bought(
     computes, nodes, providers = ComputeStore(EventStore()), NodeStore(), ProviderStore()
     spec = msgspec.structs.replace(SPEC, options=msgspec.structs.replace(SPEC.options, provision_timeout=provision_timeout))
     compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="bought")
-    await computes.bind(compute.id, Infrastructure(provider_id="prv_1", binding={"prefix": "skyward-"}))
+    await computes.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"prefix": "skyward-"}))
 
     node = await nodes.request(compute.id, compute.generation)
     await nodes.launched(node.id, Machine(id="m1", state="running"))

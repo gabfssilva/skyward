@@ -8,7 +8,7 @@ from msgspec import Struct
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
 from skyward.shared import codec
-from skyward.shared.events import Event, name
+from skyward.shared.events import ConsoleEvent, Event, TaskEvent, name
 
 type Record = tuple[int, str, bytes]
 
@@ -46,39 +46,39 @@ class EventStore:
     def __init__(self) -> None:
         self._feeds: set[asyncio.Queue[Live | None]] = set()
 
-    async def record(self, event_type: str, payload: bytes, compute: str | None = None, task: str | None = None) -> int:
-        live = await self.append(event_type, payload, compute, task)
-        self.deliver(live)
-        return live.sequence or 0
+    async def record(self, event: Event) -> None:
+        """Write it down and hand it to whoever is listening, in that order."""
+        self.deliver(await self.append(event))
 
-    async def append(self, event_type: str, payload: bytes, compute: str | None = None, task: str | None = None) -> Live:
+    async def append(self, event: Event) -> Live:
         """Write the row and say nothing yet.
 
         The half of :meth:`record` that belongs inside a transaction. What comes back
         is handed to :meth:`deliver` once the transaction has committed — a
         subscriber told of an event that is then rolled back has been told a lie the
         replay will never repeat, and a cursor past it would skip what did happen.
+
+        The frame name and the filter columns are the event's own: every event names
+        its compute, and the ones about a task's execution or a task name that too.
         """
+        frame = name(event)
+        payload = await codec.json(Event).encode(event)
         row = EventRow(
-            type=event_type,
-            compute_id=compute,
-            task_id=task,
+            type=frame,
+            compute_id=event.compute,
+            task_id=_task(event),
             payload=payload.decode(),
             created_at=now(),
         )
         await row.save().run()
-        return Live(sequence=row.sequence, type=event_type, payload=payload, compute=compute, task=task)
-
-    async def written(self, event: Event, compute: str | None = None, task: str | None = None) -> Live:
-        """An event as a typed struct, appended under the frame name it goes out as."""
-        return await self.append(name(event), await codec.json(Event).encode(event), compute, task)
+        return Live(sequence=row.sequence, type=frame, payload=payload, compute=event.compute, task=_task(event))
 
     def deliver(self, live: Live) -> None:
         """Hand a committed event to whoever is listening."""
         for feed in tuple(self._feeds):
             self._offer(feed, live)
 
-    async def publish(self, event_type: str, payload: bytes, compute: str | None = None) -> None:
+    async def publish(self, event: Event) -> None:
         """Say it once, to whoever is listening, and keep no record.
 
         A metric sampled every couple of seconds has no replay value, and the event
@@ -86,9 +86,8 @@ class EventStore:
         :meth:`record`, without the row — a late subscriber simply misses the samples
         it was not there for, which is exactly right for a gauge.
         """
-        live = Live(sequence=None, type=event_type, payload=payload, compute=compute, task=None)
-        for feed in tuple(self._feeds):
-            self._offer(feed, live)
+        payload = await codec.json(Event).encode(event)
+        self.deliver(Live(sequence=None, type=name(event), payload=payload, compute=event.compute, task=None))
 
     async def stream(
         self,
@@ -143,3 +142,11 @@ class EventStore:
             return
 
         feed.put_nowait(live)
+
+
+def _task(event: Event) -> str | None:
+    match event:
+        case TaskEvent(task=task) | ConsoleEvent(task=task):
+            return task
+        case _:
+            return None

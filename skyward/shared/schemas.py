@@ -103,6 +103,7 @@ type ErrorCode = Literal[
     "capability_mismatch",
     "release_pending",
     "illegal_transition",
+    "reconcile_failed",
 ]
 
 

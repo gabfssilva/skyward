@@ -30,7 +30,7 @@ class EventController(Controller):
             "frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: "
             "`compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, "
             "`compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, "
-            "`compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.release_failed`, "
+            "`compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.deletion_failed`, "
             "`compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: "
             "there is no way to move a compute's state without the stream saying so. For a node or a task the frame is "
             "finer than the tag:\n\n"

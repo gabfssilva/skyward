@@ -62,8 +62,9 @@ class ComputeRow(Table, tablename="computes"):
     """What was asked for, and what has been observed of it.
 
     ``spec`` is intent and only the user writes it; the ``status_*`` columns are
-    observation and only the reconciler writes them. Keeping them in one row is
-    what makes a reconcile one read.
+    observation and only ``ComputeStore.apply`` writes them, as the projection of
+    the event that observed it. Keeping them in one row is what makes a reconcile
+    one read.
 
     ``binding`` is the provider's per-compute state — the network it created, the
     availability zone it pinned. It is not in the API's ``Compute``: it is

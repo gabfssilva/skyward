@@ -26,7 +26,7 @@ import msgspec
 from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
-    ComputeReleaseFailed,
+    ComputeDeletionFailed,
     ConsoleEvent,
     CostEvent,
     Event,
@@ -164,10 +164,10 @@ def observe(view: ComputeView, event: Event) -> ComputeView:
             return _transition(_noted(view, error), node, state, error)
         case TaskEvent(task=task, state=state):
             return _tasked(view, task, state)
-        case ComputeDegraded(error=error) | ComputeReleaseFailed(error=error):
-            return replace(_noted(view, error), state=lifecycle.leads(event) or view.state)
-        case _:
-            return replace(view, state=lifecycle.leads(event) or view.state)
+        case ComputeDegraded(error=error) | ComputeDeletionFailed(error=error):
+            view = _noted(view, error)
+    state = lifecycle.leads(event)
+    return view if state is None or state == view.state else replace(view, state=state)
 
 
 def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> ComputeView:

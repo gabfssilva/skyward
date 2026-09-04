@@ -7,8 +7,8 @@ from itertools import batched
 from typing import Any
 
 import msgspec
-from piccolo.engine.sqlite import TransactionType
 
+from skyward.server.persistence.db import transaction
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import OfferRow, ProviderRow
 from skyward.shared.accelerators import resolve
@@ -94,7 +94,7 @@ class OfferCache:
         offers = [offer async for offer in adapter.offers()]
         log.info("{} offers", len(offers))
 
-        async with OfferRow._meta.db.transaction(transaction_type=TransactionType.immediate):
+        async with transaction():
             await OfferRow.delete().where(OfferRow.provider_id == row.id).run()
             for batch in batched(offers, BATCH_SIZE):
                 await OfferRow.insert(*(_to_row(offer) for offer in batch)).run()

@@ -155,5 +155,5 @@ async def _history(database: Path, count: int) -> None:
 
     for index in range(count):
         compute, _ = await store.create(ComputeCreate(spec=SPEC, name=f"c{index}"), idempotency_key=f"k{index}")
-        await store.apply(compute.id, ComputeDeleting(compute=compute.id, nodes_ready=0, nodes_total=0))
-        await store.apply(compute.id, ComputeDeleted(compute=compute.id))
+        await store.apply(ComputeDeleting(compute=compute.id, nodes_ready=0, nodes_total=0))
+        await store.apply(ComputeDeleted(compute=compute.id))

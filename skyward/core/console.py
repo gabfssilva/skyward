@@ -22,18 +22,15 @@ from typing import Literal, Protocol, TextIO, assert_never
 
 from skyward.core.client import Client
 from skyward.core.view import ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
+from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
-    ComputeDeleted,
-    ComputeDeleting,
-    ComputeProvisioning,
-    ComputeReady,
+    ComputeDeletionFailed,
     ConsoleEvent,
     Event,
     NodeEvent,
     ProgressEvent,
     TaskEvent,
-    name,
     progressed,
 )
 from skyward.shared.schemas import (
@@ -257,8 +254,10 @@ def render(event: Event, color: bool = False) -> str | None:
             return f"{_who(node, color)} {_sep(color)} {_badge(state, color)}"
         case ComputeDegraded(compute=compute, error=error):
             return f"{_who(compute, color)} {_sep(color)} {_badge('degraded', color)} {_dim(error, color)}"
-        case ComputeProvisioning(compute=compute) | ComputeReady(compute=compute) | ComputeDeleting(compute=compute) | ComputeDeleted(compute=compute):
-            return f"{_who(compute, color)} {_sep(color)} {_badge(name(event).removeprefix('compute.'), color)}"
+        case ComputeDeletionFailed(compute=compute, error=error):
+            return f"{_who(compute, color)} {_sep(color)} {_badge('deleting', color)} {_dim(error, color)}"
+        case _ if (state := lifecycle.leads(event)):
+            return f"{_who(event.compute, color)} {_sep(color)} {_badge(state, color)}"
         case _:
             return None
 

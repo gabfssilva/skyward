@@ -87,6 +87,8 @@ Every failure is the same JSON object, whatever produced it:
 | `task_indeterminate` | 409 | no | Contact was lost after code may have run |
 | `duplication_not_acknowledged` | 409 | no | Retrying an indeterminate task without accepting it may run twice |
 | `capability_mismatch` | 422 | no | The provider cannot do what the spec asks — volumes, clustering |
+| `release_pending` | — | yes | Only in `status.last_error`: every machine is gone and the provider would not release the binding yet |
+| `reconcile_failed` | — | yes | Only in `status.last_error`: a reconcile pass broke on an error with no code of its own |
 
 `secret_in_definition` is worth its own note: credentials belong on a provider row, which no read path selects and the API never returns. Putting one in a compute spec is refused rather than stored, because a spec *is* served back.
 

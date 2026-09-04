@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.x509 import ExtendedKeyUsage, load_pem_x509_certificate
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from skyward.server.application.mock import SPEC
+from skyward.server.application.mock import OFFER, SPEC
 from skyward.server.application.runtimes import Runtime
 from skyward.server.application.source import Source
 from skyward.server.persistence.computes import ComputeStore, Infrastructure
@@ -138,7 +138,7 @@ def describe_the_authority_a_compute_keeps() -> None:
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="mint")
         minted = tls.authority()
 
-        await store.bind(compute.id, Infrastructure(private_key="ssh", authority=minted))
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, private_key="ssh", authority=minted))
 
         assert (await store.infrastructure(compute.id)).authority == minted
 

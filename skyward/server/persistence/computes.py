@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
@@ -14,14 +15,13 @@ from skyward.server.persistence.tables import ComputeRow, GenerationRow
 from skyward.shared import lifecycle
 from skyward.shared.errors import ComputeNotResizableError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
 from skyward.shared.events import (
+    ComputeBound,
     ComputeCreated,
     ComputeDegraded,
-    ComputeDeleted,
     ComputeDeleting,
-    ComputeProvisioning,
-    ComputeReady,
-    ComputeReleaseFailed,
+    ComputeDeletionFailed,
     Event,
+    GenerationApplied,
     GenerationCreated,
     LeaseClaimed,
     LeaseReleased,
@@ -56,6 +56,13 @@ The window is the one between reading the row and the conditional write, and
 what lands in it is a lease renewal or a binding — writes about other columns.
 Three is generous for a loop that never contends with itself for long.
 """
+
+STATUS: Mapping[str, Column] = {
+    "nodes_ready": ComputeRow.status_nodes_ready,
+    "nodes_total": ComputeRow.status_nodes_total,
+    "generation": ComputeRow.status_observed_generation,
+}
+"""An event's field, and the status column it is the observation of."""
 
 
 class Infrastructure(Struct, frozen=True):
@@ -106,8 +113,8 @@ class ComputeStore:
     def __init__(self, events: EventStore) -> None:
         self._events = events
 
-    async def apply(self, compute_id: str, event: Event) -> bool:
-        """Apply one event to the compute, and say whether its state moved.
+    async def apply(self, event: Event) -> bool:
+        """Apply one event to the compute it names, and say whether its state moved.
 
         The row is read fresh and written conditionally on the revision that read
         saw — an optimistic lock around exactly the read-decide-write, and no wider,
@@ -117,35 +124,44 @@ class ComputeStore:
         and the write is read again; a transition is always computed against the
         state the row is actually in.
 
-        Three outcomes, by what the table says. A move writes the state and the
-        event together. A repeat — an event leading where the row already is —
-        writes the columns the event carries and records nothing: the reconciler
-        says ``ready`` to a ready compute on every pass, and that is not news. A
-        fact records the event and touches no state.
+        Three outcomes, by what the table says and what the event carries. A move
+        writes the state and the event together. A repeat records nothing: an event
+        leading where the row already is (the reconciler says ``ready`` to a ready
+        compute on every pass), or a fact whose every column the row already shows
+        (the provider refusing to release with the same words as last tick). What a
+        repeat carries that is new — a count — is still written. A fact with
+        something to say is recorded, and touches no state.
         """
-        for _ in range(ATTEMPTS):
-            row = await self._row(compute_id)
-            state = lifecycle.compute(msgspec.convert(row.status_state, ComputeState), event)
-            moved = state is not None and state != row.status_state
-            columns = await _observed(event)
+        projection = await _projected(event)
+        attempts = ATTEMPTS
+
+        while True:
+            row = await self._status(event.compute)
+            current = msgspec.convert(row["status_state"], ComputeState)
+            state = lifecycle.compute(current, event)
+            moved = state is not None and state != current
+            columns = {column: value for column, value in projection.items() if row[column._meta.name] != value}
+            repeat = not moved and (state is not None or (bool(projection) and not columns))
             live = None
 
             async with transaction():
                 if moved or columns:
                     landed = await ComputeRow.update({
                         **columns,
-                        ComputeRow.status_state: state or row.status_state,
-                        ComputeRow.revision: row.revision + 1,
-                    }).where((ComputeRow.id == row.id) & (ComputeRow.revision == row.revision)).returning(ComputeRow.id).run()
+                        ComputeRow.status_state: state or current,
+                        ComputeRow.revision: row["revision"] + 1,
+                    }).where((ComputeRow.id == row["id"]) & (ComputeRow.revision == row["revision"])).returning(ComputeRow.id).run()
                     if not landed:
-                        continue
-                live = await self._events.written(event, compute=row.id) if moved or state is None else None
+                        attempts -= 1
+                        if attempts:
+                            continue
+                        raise RevisionConflictError(f"compute {event.compute} kept moving while {type(event).__name__} was applied", current=row["revision"])
+                if not repeat:
+                    live = await self._events.append(event)
 
             if live is not None:
                 self._events.deliver(live)
             return moved
-
-        raise RevisionConflictError(f"compute {compute_id} kept moving while {type(event).__name__} was applied", current=None)
 
     async def create(self, body: ComputeCreate, idempotency_key: str) -> tuple[Compute, bool]:
         """Write the definition down, and say plainly when the name is not free.
@@ -171,8 +187,8 @@ class ComputeStore:
                 status_state="requested",
                 created_at=now(),
             ).save().run()
-            await self.freeze(compute, 1, body.spec)
-            await self.apply(compute, ComputeCreated(compute=compute))
+            await self.apply(ComputeCreated(compute=compute))
+            await self._freeze(compute, 1, body.spec)
             return compute
 
         compute_id, created = await once("compute.create", idempotency_key, body, insert)
@@ -224,22 +240,16 @@ class ComputeStore:
         row = await self.checked(ref, expected_revision)
         current = await unpacked(row.spec, ComputeSpec)
 
-        if body.nodes != current.nodes and (freezes := plugins.collective(current.plugins)):
+        if body.nodes == current.nodes:
+            return await _to_compute(row)
+        if freezes := plugins.collective(current.plugins):
             raise ComputeNotResizableError(
                 f"compute {row.id} runs {freezes}, a collective: its process group was formed with the ranks it "
                 f"started with, and a machine added now would block in it",
                 plugin=freezes,
             )
 
-        spec = msgspec.structs.replace(current, nodes=body.nodes)
-
-        row.spec = await packed(spec)
-        row.revision += 1
-        row.generation += 1
-        await row.save().run()
-
-        await self.freeze(row.id, row.generation, spec)
-        await self.apply(row.id, GenerationCreated(compute=row.id, number=row.generation))
+        await self.regenerate(row, msgspec.structs.replace(current, nodes=body.nodes))
         return await self.get(row.id)
 
     async def delete(self, ref: str, expected_revision: int, idempotency_key: str) -> Compute:
@@ -259,7 +269,7 @@ class ComputeStore:
             row.spec = await packed(spec)
             row.revision += 1
             await row.save().run()
-            await self.apply(row.id, ComputeDeleting(compute=row.id, nodes_ready=row.status_nodes_ready, nodes_total=row.status_nodes_total))
+            await self.apply(ComputeDeleting(compute=row.id, nodes_ready=row.status_nodes_ready, nodes_total=row.status_nodes_total))
             return row.id
 
         compute_id, _ = await once("compute.delete", idempotency_key, None, mark)
@@ -286,7 +296,7 @@ class ComputeStore:
         row.revision += 1
         await row.save().run()
         if not renewal:
-            await self.apply(row.id, LeaseClaimed(compute=row.id, owner=claim.owner))
+            await self.apply(LeaseClaimed(compute=row.id, owner=claim.owner))
 
         return Lease(owner=claim.owner, expires_at=expires)
 
@@ -296,7 +306,7 @@ class ComputeStore:
         row.lease_expires_at = None
         row.revision += 1
         await row.save().run()
-        await self.apply(row.id, LeaseReleased(compute=row.id))
+        await self.apply(LeaseReleased(compute=row.id))
 
     async def infrastructure(self, compute_id: str) -> Infrastructure:
         row = await self._row(compute_id)
@@ -311,7 +321,7 @@ class ComputeStore:
             volumes=await unpacked(row.volumes, tuple[str, ...]),
         )
 
-    async def bind(self, compute_id: str, infrastructure: Infrastructure) -> None:
+    async def bind(self, compute_id: str, infrastructure: Infrastructure) -> bool:
         """Record what the provider built, before anything is built on top of it.
 
         Written before the machines are launched, and not after: a binding that is
@@ -323,35 +333,54 @@ class ComputeStore:
         private key was bound by somebody else — another daemon on the same file,
         racing — and overwriting it would strand every machine launched under the
         first key behind a lock the store no longer opens. The loser's write is a
-        no-op; whether it lost is read back, not returned, because the row is the
-        authority either way.
+        no-op, and the answer says which it was; only a binding that landed is said
+        on the stream, with the offer it replaced when the compute moved.
         """
+        if infrastructure.offer is None:
+            raise ValueError("a binding names the offer the compute was bought as")
+
         guard = ComputeRow.private_key.is_null()
         if infrastructure.private_key is not None:
             guard = guard | (ComputeRow.private_key == infrastructure.private_key)
 
-        await ComputeRow.update({
+        before = await self._status(compute_id)
+        landed = await ComputeRow.update({
             ComputeRow.provider_id: infrastructure.provider_id,
             ComputeRow.offer_id: infrastructure.offer_id,
-            ComputeRow.offer: await packed(infrastructure.offer) if infrastructure.offer else None,
+            ComputeRow.offer: await packed(infrastructure.offer),
             ComputeRow.binding: await packed(infrastructure.binding),
             ComputeRow.private_key: infrastructure.private_key,
             ComputeRow.authority: await packed(infrastructure.authority) if infrastructure.authority else None,
             ComputeRow.markets: await packed(infrastructure.markets),
             ComputeRow.volumes: await packed(infrastructure.volumes),
             ComputeRow.revision: ComputeRow.revision + 1,
-        }).where((ComputeRow.id == compute_id) & guard).run()
+        }).where((ComputeRow.id == compute_id) & guard).returning(ComputeRow.id).run()
+        if not landed:
+            return False
+
+        await self.apply(ComputeBound(
+            compute=compute_id,
+            offer=infrastructure.offer.id,
+            instance_type=infrastructure.offer.instance_type,
+            region=infrastructure.offer.region,
+            markets=infrastructure.markets,
+            previous=before["offer_id"],
+        ))
+        return True
+
+    async def regenerate(self, row: ComputeRow, spec: ComputeSpec) -> int:
+        """A new definition for the same compute: the row moves on, and the generation is frozen and said."""
+        row.spec = await packed(spec)
+        row.revision += 1
+        row.generation += 1
+        await row.save().run()
+        await self._freeze(row.id, row.generation, spec)
+        return row.generation
 
     async def live(self) -> tuple[str, ...]:
         """Every compute that still owes something — the sweep's worklist."""
         rows = await ComputeRow.select(ComputeRow.id).where(ComputeRow.status_state.is_in(list(LIVE)))
         return tuple(row["id"] for row in rows)
-
-    async def _row(self, ref: str) -> ComputeRow:
-        row = await ComputeRow.objects().where((ComputeRow.id == ref) | (ComputeRow.name == ref)).first()
-        if row is None:
-            raise NotFoundError(f"no such compute: {ref}")
-        return row
 
     async def checked(self, ref: str, expected_revision: int) -> ComputeRow:
         row = await self._row(ref)
@@ -362,7 +391,21 @@ class ComputeStore:
             )
         return row
 
-    async def freeze(self, compute_id: str, number: int, spec: ComputeSpec) -> None:
+    async def _row(self, ref: str) -> ComputeRow:
+        row = await ComputeRow.objects().where((ComputeRow.id == ref) | (ComputeRow.name == ref)).first()
+        if row is None:
+            raise NotFoundError(f"no such compute: {ref}")
+        return row
+
+    async def _status(self, compute_id: str) -> dict[str, Any]:
+        """The columns :meth:`apply` decides by — not the row, which carries the key and three JSON blobs."""
+        decided_by = (ComputeRow.id, ComputeRow.status_state, ComputeRow.revision, ComputeRow.offer_id, ComputeRow.status_error, *STATUS.values())
+        row = await ComputeRow.select(*decided_by).where(ComputeRow.id == compute_id).first()
+        if row is None:
+            raise NotFoundError(f"no such compute: {compute_id}")
+        return row
+
+    async def _freeze(self, compute_id: str, number: int, spec: ComputeSpec) -> None:
         await GenerationRow(
             id=f"{compute_id}:{number}",
             compute_id=compute_id,
@@ -372,6 +415,7 @@ class ComputeStore:
             applied=False,
             created_at=now(),
         ).save().run()
+        await self.apply(GenerationCreated(compute=compute_id, number=number))
 
 
 class GenerationStore:
@@ -402,51 +446,37 @@ class GenerationStore:
             row = await self._computes.checked(compute, expected_revision)
             spec = (await self.get(compute, body.source)).spec if body.source else await unpacked(row.spec, ComputeSpec)
 
-            row.spec = await packed(spec)
-            row.revision += 1
-            row.generation += 1
-            await row.save().run()
-
-            await self._computes.freeze(row.id, row.generation, spec)
-            await self._computes.apply(row.id, GenerationCreated(compute=row.id, number=row.generation))
-            return f"{row.id}:{row.generation}"
+            number = await self._computes.regenerate(row, spec)
+            return f"{row.id}:{number}"
 
         generation_id, _ = await once("generation.create", idempotency_key, body, branch)
         compute_id, number = generation_id.rsplit(":", 1)
         return await self.get(compute_id, int(number))
 
     async def apply(self, compute: str, number: int) -> None:
-        """Mark a generation as the one the machines actually reflect."""
+        """Mark a generation as the one the machines actually reflect, and say so."""
         await GenerationRow.update({GenerationRow.applied: True}).where(
             (GenerationRow.compute_id == compute) & (GenerationRow.number == number),
         ).run()
+        await self._computes.apply(GenerationApplied(compute=compute, number=number))
 
 
-async def _observed(event: Event) -> dict[Column, Any]:
+async def _projected(event: Event) -> dict[Column, Any]:
     """The status columns an event carries with it.
 
-    The event is the observation: what the reconciler counted is on it, and the
-    columns are a projection of it, not a second thing the caller has to say.
+    The event is the observation and the columns are a projection of it: a count
+    lands in the column of the same name, and a failure lands in ``status_error``.
+    A transition that is not a failure clears the error, because the compute has
+    demonstrably moved past whatever it was.
     """
+    fields = msgspec.structs.asdict(event)
+    columns: dict[Column, Any] = {column: fields[field] for field, column in STATUS.items() if field in fields}
     match event:
-        case ComputeProvisioning(nodes_ready=ready, nodes_total=total, generation=generation) | ComputeReady(
-            nodes_ready=ready, nodes_total=total, generation=generation
-        ):
-            return {
-                ComputeRow.status_nodes_ready: ready,
-                ComputeRow.status_nodes_total: total,
-                ComputeRow.status_observed_generation: generation,
-                ComputeRow.status_error: None,
-            }
-        case ComputeDeleting(nodes_ready=ready, nodes_total=total):
-            return {ComputeRow.status_nodes_ready: ready, ComputeRow.status_nodes_total: total}
-        case ComputeDeleted():
-            return {ComputeRow.status_nodes_ready: 0, ComputeRow.status_nodes_total: 0, ComputeRow.status_error: None}
-        case ComputeDegraded(error=error) | ComputeReleaseFailed(error=error):
-            failure = Error(code="capability_mismatch", message=error, retryable=True)
-            return {ComputeRow.status_error: await packed(failure)}
-        case _:
-            return {}
+        case ComputeDegraded(error=error, code=code) | ComputeDeletionFailed(error=error, code=code):
+            columns[ComputeRow.status_error] = await packed(Error(code=code, message=error, retryable=True))
+        case _ if type(event) in lifecycle.COMPUTE:
+            columns[ComputeRow.status_error] = None
+    return columns
 
 
 async def _to_compute(row: ComputeRow) -> Compute:

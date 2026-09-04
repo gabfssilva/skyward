@@ -31,7 +31,7 @@ from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
 from skyward.core.view import EventCallback, decoded
-from skyward.shared import codec, lifecycle
+from skyward.shared import codec
 from skyward.shared.accelerators import resolve
 from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
@@ -601,20 +601,21 @@ class Compute:
                     raise
 
     async def _reach(self, *states: ComputeState) -> ComputeResource:
-        """Follow the compute's events; answer with the resource once it reaches one of ``states``.
+        """Follow the compute's events; answer with the resource once it is in one of ``states``.
 
         The stream replays the log from the start before it follows, so a state reached
-        before this subscription still arrives, and the state is folded from the events
-        with the same table the daemon moved it by. Only an event that leads somewhere
-        prompts a read, which is what turns a poll every half second into one read per
-        change.
+        before this subscription still arrives. A compute event is the only kind that
+        can mean the state moved, so only those prompt a read — one read per change
+        instead of a poll every half second — and the resource, not the event, is what
+        says where the compute is: by the time the read lands it may be further on.
         """
-        state: ComputeState = "requested"
         async with aclosing(self.client.events(self._id)) as events:
-            async for _, payload in events:
-                if (event := decoded(payload)) is None or (state := lifecycle.leads(event) or state) not in states:
+            async for frame, _ in events:
+                if not frame.startswith("compute."):
                     continue
-                return await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
+                current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
+                if current.status.state in states:
+                    return current
         raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
 
     async def _one[T](self, pending: Pending[T]) -> T:

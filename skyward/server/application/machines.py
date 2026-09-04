@@ -31,9 +31,8 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
-from skyward.shared import codec
 from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.events import ComputeAdopted, ComputeBound, Event, NodeEvent, ProgressEvent, StraysTerminated, progressed
+from skyward.shared.events import ComputeAdopted, NodeEvent, ProgressEvent, StraysTerminated, progressed
 from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
 from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
@@ -188,7 +187,6 @@ class Machines:
                 if bought := await self._buy(adapter, relocated, node, failures):
                     machine, sold = bought
                     await self._computes.bind(compute.id, relocated)
-                    await self._computes.apply(compute.id, _bound(compute.id, offer, relocated.markets, previous=infrastructure.offer_id))
                     await self._abandon(adapter, infrastructure)
                     return relocated, machine, sold
                 await self._abandon(adapter, relocated)
@@ -300,21 +298,18 @@ class Machines:
                 markets=market.order(offer, compute.spec.allocation),
                 volumes=mount.phases,
             )
-            await self._computes.bind(compute.id, infrastructure)
+            if not await self._computes.bind(compute.id, infrastructure):
+                logger.warning("compute {} was bound by another daemon; adopting its binding", compute.id)
+                await self._computes.apply(ComputeAdopted(compute=compute.id))
+                await self._abandon(adapter, infrastructure)
+                return await self._computes.infrastructure(compute.id)
+
             logger.bind(compute_id=compute.id, provider=offer.provider_name).info(
                 "bound to {} in {}, buying on {}",
                 offer.instance_type,
                 offer.region or "the account's default region",
                 " then ".join(infrastructure.markets) or "no market",
             )
-
-            stored = await self._computes.infrastructure(compute.id)
-            if stored.private_key != private:
-                logger.warning("compute {} was bound by another daemon; adopting its binding", compute.id)
-                await self._computes.apply(compute.id, ComputeAdopted(compute=compute.id))
-                await self._abandon(adapter, infrastructure)
-                return stored
-            await self._computes.apply(compute.id, _bound(compute.id, offer, infrastructure.markets))
             return infrastructure
 
     async def _mount(self, adapter: Provider, spec: ComputeSpec, binding: Binding) -> Mount:
@@ -530,7 +525,7 @@ class Machines:
         if strays:
             logger.bind(compute_id=compute.id).warning("terminating {} machine(s) no row of this compute owns: {}", len(strays), ", ".join(strays))
             await adapter.terminate(infrastructure.binding, strays)
-            await self._computes.apply(compute.id, StraysTerminated(compute=compute.id, machines=strays))
+            await self._computes.apply(StraysTerminated(compute=compute.id, machines=strays))
 
     async def terminate(self, compute_id: str, node_id: str) -> None:
         """Stop paying for it. Idempotent by nature: a machine already gone is a no-op."""
@@ -606,8 +601,7 @@ class Machines:
             return
 
         logger.bind(node_id=node.id, instance_id=machine.id).debug("{}", progressed(machine.progress, machine.completion))
-        payload = ProgressEvent(compute=node.compute_id, node=node.id, progress=machine.progress, completion=machine.completion)
-        await self._events.publish("node.progress", await codec.json(Event).encode(payload), compute=node.compute_id)
+        await self._events.publish(ProgressEvent(compute=node.compute_id, node=node.id, progress=machine.progress, completion=machine.completion))
 
     async def _lost(self, node: Node, why: str) -> None:
         """Give up on a machine, and say so where anybody can read it.
@@ -620,19 +614,7 @@ class Machines:
         logger.bind(compute_id=node.compute_id, node_id=node.id).warning("giving up on rank {}: {}", node.rank, why)
         self._progress.pop(node.id, None)
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
-        payload = NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why)
-        await self._events.record("node.lost", await codec.json(Event).encode(payload), compute=node.compute_id)
-
-
-def _bound(compute_id: str, offer: Offer, markets: tuple[Market, ...], previous: str | None = None) -> ComputeBound:
-    return ComputeBound(
-        compute=compute_id,
-        offer=offer.id,
-        instance_type=offer.instance_type,
-        region=offer.region,
-        markets=markets,
-        previous=previous,
-    )
+        await self._events.record(NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why))
 
 
 def claim(node_id: str) -> str:

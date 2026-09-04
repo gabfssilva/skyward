@@ -19,7 +19,7 @@ from datetime import datetime
 
 from msgspec import Struct
 
-from skyward.shared.schemas import Market, NodeState, PhaseMark, TaskEventState
+from skyward.shared.schemas import ErrorCode, Market, NodeState, PhaseMark, TaskEventState
 
 
 class ComputeCreated(Struct, frozen=True, tag_field="type", tag="compute.created"):
@@ -77,11 +77,13 @@ class ComputeDegraded(Struct, frozen=True, tag_field="type", tag="compute.degrad
     """A reconcile pass broke on this compute, and the next pass will try again.
 
     Not a terminal failure — there is none for a compute. Said once when the state
-    moves, not once per failing tick.
+    moves, not once per failing tick. ``code`` is the failure's own when it had one,
+    and ``reconcile_failed`` when all the pass caught was an exception.
     """
 
     compute: str
     error: str
+    code: ErrorCode = "reconcile_failed"
 
 
 class GenerationCreated(Struct, frozen=True, tag_field="type", tag="compute.generation.created"):
@@ -134,11 +136,18 @@ class ComputeDeleting(Struct, frozen=True, tag_field="type", tag="compute.deleti
     nodes_total: int
 
 
-class ComputeReleaseFailed(Struct, frozen=True, tag_field="type", tag="compute.release_failed"):
-    """Every machine is gone but the provider would not release the binding yet. It will be asked again."""
+class ComputeDeletionFailed(Struct, frozen=True, tag_field="type", tag="compute.deletion_failed"):
+    """A pass during teardown broke, and the next one will carry on giving the machines back.
+
+    A fact, not a state: a compute being deleted has nowhere to be degraded *to*.
+    Said once per distinct failure — the same error on the next tick is a repeat
+    and is not written again. ``release_pending`` is the provider refusing to
+    release the binding while every machine is already gone.
+    """
 
     compute: str
     error: str
+    code: ErrorCode = "reconcile_failed"
 
 
 class StraysTerminated(Struct, frozen=True, tag_field="type", tag="compute.strays_terminated"):
@@ -149,9 +158,15 @@ class StraysTerminated(Struct, frozen=True, tag_field="type", tag="compute.stray
 
 
 class ComputeDeleted(Struct, frozen=True, tag_field="type", tag="compute.deleted"):
-    """Every machine is gone and the binding is released. Nothing bills any more."""
+    """Every machine is gone and the binding is released. Nothing bills any more.
+
+    The counts are what it observed — none — spelled out so that the row's status
+    is a projection of the event like every other transition's.
+    """
 
     compute: str
+    nodes_ready: int = 0
+    nodes_total: int = 0
 
 
 class CostEvent(Struct, frozen=True, tag_field="type", tag="compute.cost"):
@@ -272,7 +287,7 @@ type Event = (
     | LeaseReleased
     | ComputeAbandoned
     | ComputeDeleting
-    | ComputeReleaseFailed
+    | ComputeDeletionFailed
     | StraysTerminated
     | ComputeDeleted
     | CostEvent
@@ -312,9 +327,9 @@ __all__ = [
     "ComputeDegraded",
     "ComputeDeleted",
     "ComputeDeleting",
+    "ComputeDeletionFailed",
     "ComputeProvisioning",
     "ComputeReady",
-    "ComputeReleaseFailed",
     "ConsoleEvent",
     "CostEvent",
     "Event",

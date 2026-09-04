@@ -183,6 +183,31 @@
       },
       "ComputeDegraded": {
         "properties": {
+          "code": {
+            "default": "reconcile_failed",
+            "enum": [
+              "not_found",
+              "revision_conflict",
+              "idempotency_conflict",
+              "lease_held",
+              "name_taken",
+              "compute_not_connected",
+              "compute_not_accepting",
+              "compute_not_resizable",
+              "unsupported_provider",
+              "unsupported_plugin",
+              "secret_in_definition",
+              "hash_mismatch",
+              "task_failed",
+              "task_indeterminate",
+              "duplication_not_acknowledged",
+              "capability_mismatch",
+              "release_pending",
+              "illegal_transition",
+              "reconcile_failed"
+            ],
+            "type": "string"
+          },
           "compute": {
             "type": "string"
           },
@@ -206,6 +231,14 @@
         "properties": {
           "compute": {
             "type": "string"
+          },
+          "nodes_ready": {
+            "default": 0,
+            "type": "integer"
+          },
+          "nodes_total": {
+            "default": 0,
+            "type": "integer"
           },
           "type": {
             "const": "compute.deleted",
@@ -242,6 +275,52 @@
           "type"
         ],
         "title": "ComputeDeleting",
+        "type": "object"
+      },
+      "ComputeDeletionFailed": {
+        "properties": {
+          "code": {
+            "default": "reconcile_failed",
+            "enum": [
+              "not_found",
+              "revision_conflict",
+              "idempotency_conflict",
+              "lease_held",
+              "name_taken",
+              "compute_not_connected",
+              "compute_not_accepting",
+              "compute_not_resizable",
+              "unsupported_provider",
+              "unsupported_plugin",
+              "secret_in_definition",
+              "hash_mismatch",
+              "task_failed",
+              "task_indeterminate",
+              "duplication_not_acknowledged",
+              "capability_mismatch",
+              "release_pending",
+              "illegal_transition",
+              "reconcile_failed"
+            ],
+            "type": "string"
+          },
+          "compute": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.deletion_failed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "error",
+          "type"
+        ],
+        "title": "ComputeDeletionFailed",
         "type": "object"
       },
       "ComputeProvisioning": {
@@ -300,27 +379,6 @@
           "type"
         ],
         "title": "ComputeReady",
-        "type": "object"
-      },
-      "ComputeReleaseFailed": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          },
-          "type": {
-            "const": "compute.release_failed",
-            "type": "string"
-          }
-        },
-        "required": [
-          "compute",
-          "error",
-          "type"
-        ],
-        "title": "ComputeReleaseFailed",
         "type": "object"
       },
       "ComputeSpec": {
@@ -553,7 +611,8 @@
               "duplication_not_acknowledged",
               "capability_mismatch",
               "release_pending",
-              "illegal_transition"
+              "illegal_transition",
+              "reconcile_failed"
             ],
             "type": "string"
           },
@@ -5352,7 +5411,7 @@
     "/v1/events": {
       "get": {
         "deprecated": false,
-        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.release_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:\n\n| `event:` | `data.type` |\n|---|---|\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
+        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.deletion_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:\n\n| `event:` | `data.type` |\n|---|---|\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
         "operationId": "V1EventsStream",
         "parameters": [
           {
@@ -5444,13 +5503,13 @@
                       "compute.degraded": "#/components/schemas/ComputeDegraded",
                       "compute.deleted": "#/components/schemas/ComputeDeleted",
                       "compute.deleting": "#/components/schemas/ComputeDeleting",
+                      "compute.deletion_failed": "#/components/schemas/ComputeDeletionFailed",
                       "compute.generation.applied": "#/components/schemas/GenerationApplied",
                       "compute.generation.created": "#/components/schemas/GenerationCreated",
                       "compute.lease.claimed": "#/components/schemas/LeaseClaimed",
                       "compute.lease.released": "#/components/schemas/LeaseReleased",
                       "compute.provisioning": "#/components/schemas/ComputeProvisioning",
                       "compute.ready": "#/components/schemas/ComputeReady",
-                      "compute.release_failed": "#/components/schemas/ComputeReleaseFailed",
                       "compute.strays_terminated": "#/components/schemas/StraysTerminated",
                       "node.console": "#/components/schemas/ConsoleEvent",
                       "node.metrics": "#/components/schemas/MetricEvent",
@@ -5499,7 +5558,7 @@
                       "$ref": "#/components/schemas/ComputeDeleting"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeReleaseFailed"
+                      "$ref": "#/components/schemas/ComputeDeletionFailed"
                     },
                     {
                       "$ref": "#/components/schemas/StraysTerminated"

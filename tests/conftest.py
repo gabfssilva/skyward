@@ -28,9 +28,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+import msgspec
 import pytest
 
 import skyward as sky
+from skyward.server.application.mock import SPEC
+from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.shared.schemas import Compute, ComputeCreate, PluginRef
 
 PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 """The node's interpreter is the one running the tests.
@@ -196,3 +202,12 @@ def compute(daemon: str) -> Build:
         )
 
     return build
+
+
+async def given(database: Path, *plugins: str, events: EventStore | None = None) -> tuple[ComputeStore, Compute]:
+    """A compute in a database of this test's own, carrying the plugins named."""
+    await connect(database)
+    store = ComputeStore(events or EventStore())
+    spec = msgspec.structs.replace(SPEC, plugins=tuple(PluginRef(kind=kind) for kind in plugins))
+    compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="given")
+    return store, compute

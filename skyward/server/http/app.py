@@ -45,9 +45,8 @@ from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
-from skyward.shared import codec
 from skyward.shared.errors import SkywardError
-from skyward.shared.events import ConsoleEvent, Event, MetricEvent, PhaseEvent
+from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import PhaseMark
 
@@ -123,18 +122,15 @@ def services() -> Services:
     tasks = TaskStore(computes, nodes, blobs)
 
     async def console(compute: str, node: str, content: str, task: str | None) -> None:
-        line = ConsoleEvent(compute=compute, node=node, content=content, task=task)
-        await events.record("node.console", await codec.json(Event).encode(line), compute=compute, task=task)
+        await events.record(ConsoleEvent(compute=compute, node=node, content=content, task=task))
 
     async def phased(compute: str, node: str, event: PhaseMark, phase: str, error: str | None) -> None:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
-        mark = PhaseEvent(compute=compute, node=node, event=event, phase=phase, at=now(), error=error)
-        await events.record("node.phase", await codec.json(Event).encode(mark), compute=compute)
+        await events.record(PhaseEvent(compute=compute, node=node, event=event, phase=phase, at=now(), error=error))
 
     async def sampled(compute: str, node: str, name: str, value: float) -> None:
         """A gauge reading goes out to whoever is watching, and is not written down."""
-        reading = MetricEvent(compute=compute, node=node, name=name, value=value)
-        await events.publish("node.metrics", await codec.json(Event).encode(reading), compute=compute)
+        await events.publish(MetricEvent(compute=compute, node=node, name=name, value=value))
 
     def spoken(recording: Coroutine[None, None, None]) -> None:
         """A node's output goes straight to the log, not through the wakeup bus.
