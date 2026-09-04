@@ -79,7 +79,7 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
 
     for wanted in spec.specs:
         page = await offers.list(
-            provider=None,
+            provider=wanted.provider.name,
             kind=wanted.provider.kind,
             accelerator=wanted.accelerator,
             min_count=wanted.accelerator_count if wanted.accelerator else None,

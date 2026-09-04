@@ -173,7 +173,7 @@ def create_compute(
     spec = ComputeSpec(
         specs=(
             Spec(
-                provider=ProviderRef(kind=account.kind),
+                provider=ProviderRef(kind=account.kind, name=account.name or account.kind),
                 accelerator=resolve(accelerator, None)[0],
                 cpus=cpus,
                 memory_gb=memory,

@@ -24,6 +24,8 @@ production = sky.AWS(name="production", region="us-east-1")
 research = sky.AWS(name="research", region="eu-west-1")
 ```
 
+A compute buys from the account it was given: the spec carries the name, and the market only ranks that account's offers.
+
 Credentials are resolved in your process — from the argument you passed, then from the environment or credential file listed in each section below — and stored by the daemon on the provider row. The daemon never reads your environment, and the API serves an account's configuration back but never its credentials.
 
 ### Disk size

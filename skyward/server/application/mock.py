@@ -45,25 +45,6 @@ SPEC = ComputeSpec(
     delete_on_exit=True,
 )
 
-OFFER = Offer(
-    id="aws-a100",
-    provider_id="prv_aws",
-    provider_name="aws",
-    kind="aws",
-    instance_type="p4d.24xlarge",
-    accelerator="a100",
-    accelerator_count=8,
-    cpus=96,
-    memory_gb=1152.0,
-    region="us-east-1",
-    spot_price=12.0,
-    on_demand_price=32.77,
-    available=None,
-    fetched_at=NOW,
-    expires_at=NOW,
-    specific={},
-)
-
 COMPUTE = Compute(
     id="cmp_7f3a1c",
     name="training",

@@ -699,7 +699,7 @@ async def _next[T](source: AsyncIterator[T]) -> T | None:
 def _wire(spec: Spec) -> SpecRef:
     accelerator, count = _accelerator(spec.accelerator)
     return SpecRef(
-        provider=ProviderRef(kind=spec.provider.kind),
+        provider=ProviderRef(kind=spec.provider.kind, name=spec.provider.name or spec.provider.kind),
         accelerator=accelerator,
         accelerator_count=count,
         cpus=spec.cpus,

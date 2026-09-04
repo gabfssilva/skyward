@@ -126,14 +126,18 @@ class Error(Struct, frozen=True):
 class ProviderRef(Struct, frozen=True):
     """Which account a spec wants to buy from.
 
-    A kind and nothing else: how the account is configured belongs to the provider
-    row, which is what the daemon builds its adapter from. A copy of the settings
-    riding on the spec would be a second answer to the same question, and the one
-    nobody reads — so a spec names the kind, and ``sky providers set`` or the SDK's
-    own account object is what says what that kind means here.
+    A kind and a name, and nothing else: how the account is configured belongs to
+    the provider row, which is what the daemon builds its adapter from. A copy of
+    the settings riding on the spec would be a second answer to the same question,
+    and the one nobody reads — so a spec names the row, and ``sky providers set``
+    or the SDK's own account object is what says what that row means here.
+
+    ``name`` is the row's; two accounts of one kind are two rows with two names,
+    and the market buys from the one named. Left out, any row of the kind will do.
     """
 
     kind: str
+    name: str | None = None
 
 
 class PluginRef(Struct, frozen=True):

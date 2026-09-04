@@ -2100,10 +2100,20 @@
         "type": "object"
       },
       "ProviderRef": {
-        "description": "Which account a spec wants to buy from.\n\nA kind and nothing else: how the account is configured belongs to the provider\nrow, which is what the daemon builds its adapter from. A copy of the settings\nriding on the spec would be a second answer to the same question, and the one\nnobody reads \u2014 so a spec names the kind, and ``sky providers set`` or the SDK's\nown account object is what says what that kind means here.",
+        "description": "Which account a spec wants to buy from.\n\nA kind and a name, and nothing else: how the account is configured belongs to\nthe provider row, which is what the daemon builds its adapter from. A copy of\nthe settings riding on the spec would be a second answer to the same question,\nand the one nobody reads \u2014 so a spec names the row, and ``sky providers set``\nor the SDK's own account object is what says what that row means here.\n\n``name`` is the row's; two accounts of one kind are two rows with two names,\nand the market buys from the one named. Left out, any row of the kind will do.",
         "properties": {
           "kind": {
             "type": "string"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
