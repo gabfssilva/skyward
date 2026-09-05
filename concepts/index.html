@@ -1,0 +1,4494 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Distributed compute orchestration for ML/AI workloads. Cloud accelerators with a single decorator.">
+      
+      
+      
+        <link rel="canonical" href="https://gabfssilva.github.io/skyward/concepts/">
+      
+      
+        <link rel="prev" href="../getting-started/">
+      
+      
+        <link rel="next" href="../cli/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../logo_sky.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Core concepts - Skyward</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Space+Grotesk:300,300i,400,400i,700,700i%7CSpace+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Space Grotesk";--md-code-font:"Space Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+      <link rel="stylesheet" href="../stylesheets/gpu-compare.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#core-concepts" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Skyward" class="md-header__button md-logo" aria-label="Skyward" data-md-component="logo">
+      
+  <img src="../logo_sky.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Skyward
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Core concepts
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/gabfssilva/skyward" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    gabfssilva/skyward
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../plugins/" class="md-tabs__link">
+          
+  
+  
+  Plugins
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../guides/hello-skyward/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/pool/" class="md-tabs__link">
+          
+  
+  
+  API reference
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../llms.txt" class="md-tabs__link">
+          
+  
+  
+  For LLMs
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Skyward" class="md-nav__button md-logo" aria-label="Skyward" data-md-component="logo">
+      
+  <img src="../logo_sky.png" alt="logo">
+
+    </a>
+    Skyward
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/gabfssilva/skyward" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    gabfssilva/skyward
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Home
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skyward
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lazy-computation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy computation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compute
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Compute">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-control-plane-is-not-in-the-object" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The control plane is not in the object
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-daemon-remembers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the daemon remembers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-specification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node specification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operators
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operators">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#execute-on-one-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &gt;&gt; — execute on one node
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#broadcast-to-all-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        @ — broadcast to all nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parallel-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &amp; — parallel composition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#async-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &gt; — async dispatch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gather-dynamic-parallelism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gather() — dynamic parallelism
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime context
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Runtime context">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-sharding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data sharding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing hardware
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing hardware">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Providers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accelerators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accelerators
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#allocation-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allocation strategies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-spec-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-spec selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#executors-and-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Executors and concurrency
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../notebook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jupyter notebooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../callbacks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Watching a compute
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_1_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_1_7" id="__nav_1_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_1_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accelerators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accelerators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../volumes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Volumes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_1_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_1_8" id="__nav_1_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control plane
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_1_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Control plane
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../http-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API explorer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../persistence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../provision-controllers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconciliation and provisioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../why-asyncio/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Why asyncio
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_1_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_1_9" id="__nav_1_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Clustering
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_1_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Clustering
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-collections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed collections
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_1_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_1_10" id="__nav_1_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Misc
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_1_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Misc
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../choosing-a-provider/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choosing the best provider: an opinionated guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compare/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compare accelerators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sky-computing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sky computing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For HPC users
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    What are plugins?
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/accelerate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accelerate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/torch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/jax/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    JAX
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/keras/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keras
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/joblib/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Joblib
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/sklearn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scikit-learn
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/cuml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cuML
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/mps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    NVIDIA MPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/mig/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    NVIDIA MIG
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/hello-skyward/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hello, Skyward!
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/parallel-execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/using-accelerators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using accelerators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/data-sharding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data sharding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/streaming/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/torch-model-roundtrip/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch model roundtrip
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed training
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Distributed training
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/pytorch-distributed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch distributed
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/keras-training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keras training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/huggingface-finetuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HuggingFace fine-tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/fsdp-huggingface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FSDP with HuggingFace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Infrastructure
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Infrastructure
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/fractional-gpus/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fractional GPUs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/nvidia-mig/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    NVIDIA MIG
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/s3-volumes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 volumes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/multi-provider/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-provider selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/standalone-workers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standalone workers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Testing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/local-containers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local containers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/worker-executors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker executors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Misc
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Misc
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/joblib-concurrency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Joblib concurrency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/scikit-grid-search/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scikit grid search
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/cuml-acceleration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cuML GPU acceleration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_1" id="__nav_4_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/pool/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute and task dispatch
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/runtime/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Providers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Providers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AWS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/gcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GCP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/container/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Container
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/hyperstack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hyperstack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/jarvislabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jarvis Labs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/lambda/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lambda
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/massed-compute/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Massed Compute
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/novita/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Novita
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/runpod/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    RunPod
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/scaleway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scaleway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/tensordock/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TensorDock
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/vastai/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    VastAI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/verda/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verda
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/providers/vultr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vultr
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/distributed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed collections
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/events/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Events
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/accelerators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accelerators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For LLMs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    For LLMs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llms.txt" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview (llms.txt)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../llms-full.txt" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Full reference (llms-full.txt)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lazy-computation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy computation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compute
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Compute">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-control-plane-is-not-in-the-object" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The control plane is not in the object
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-the-daemon-remembers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the daemon remembers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-specification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node specification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operators
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operators">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#execute-on-one-node" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &gt;&gt; — execute on one node
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#broadcast-to-all-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        @ — broadcast to all nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parallel-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &amp; — parallel composition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#async-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        &gt; — async dispatch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gather-dynamic-parallelism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gather() — dynamic parallelism
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime context
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Runtime context">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-sharding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data sharding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#output-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#streaming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing hardware
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing hardware">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Providers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accelerators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accelerators
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#allocation-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allocation strategies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-spec-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-spec selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#executors-and-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Executors and concurrency
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="core-concepts">Core concepts<a class="headerlink" href="#core-concepts" title="Permanent link">&para;</a></h1>
+<p>Skyward's programming model is built on a simple idea: <strong>computation and location should be separate concerns</strong>. You write ordinary Python functions. You decide where they run — on which cloud, on how many machines, on which accelerators — at the call site, not inside the function itself. This separation is what makes the same code work on a laptop, a single GPU, or a cluster of eight H100s.</p>
+<p>This page walks through the concepts that make this possible. For how the daemon behind it actually works, see <a href="../architecture/">Architecture</a>.</p>
+<h2 id="lazy-computation">Lazy computation<a class="headerlink" href="#lazy-computation" title="Permanent link">&para;</a></h2>
+<p>The central abstraction is <code>@sky.function</code>. It transforms a regular function into a <strong>lazy computation</strong> — calling the function no longer executes it. Instead, it produces a <code>Pending</code> object: a frozen, serializable description of <em>what</em> to compute, without committing to <em>where</em> or <em>when</em>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">skyward</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sky</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">function</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span><span class="n">epochs</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">model</span> <span class="o">=</span> <span class="n">build_model</span><span class="p">()</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">return</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">epochs</span><span class="o">=</span><span class="n">epochs</span><span class="p">)</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">pending</span> <span class="o">=</span> <span class="n">train</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span>  <span class="c1"># nothing runs — returns Pending[float]</span>
+</code></pre></div>
+<p>In functional programming, this pattern is known as reifying an <strong>effect</strong>. Calling <code>train(10)</code> doesn't produce a result — it produces a <em>description</em> of a computation that, when interpreted, will produce a result. The side effects (provisioning a GPU, transferring data, executing remotely) are not performed at the call site. They are deferred to an interpreter — here, the compute and its operators. This is the same idea behind <code>IO</code> in Haskell, <code>Effect</code> in ZIO, or <code>suspend</code> in Kotlin: separating the description of a program from its execution so the runtime can decide how, where, and when to run it.</p>
+<p>Because <code>Pending</code> is a value and not a running process, it can be serialized, sent over the network, and executed on a remote machine. It can also be composed: combined with other computations via <code>&amp;</code>, collected into a <code>gather()</code>, or stored and dispatched later. None of this triggers execution. The program you're building is a data structure that only materializes when you commit to a target with <code>&gt;&gt;</code> or <code>@</code>.</p>
+<p>The generic type is preserved throughout — <code>train(10)</code> produces <code>Pending[float]</code>, and dispatching it returns <code>float</code>. Your type checker sees the same types whether the function runs locally or on a remote GPU.</p>
+<p>Nothing is pickled at call time either. Serialization happens at dispatch, so building a thousand <code>Pending</code> values costs a thousand small dataclasses, not a thousand cloudpickle payloads.</p>
+<p>To bypass all of this and run the original function directly — for testing, debugging, or local profiling — every decorated function exposes the unwrapped version via <code>.local</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">train</span><span class="o">.</span><span class="n">local</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span>  <span class="c1"># executes immediately, returns float</span>
+</code></pre></div>
+<p><code>@sky.function(timeout=600)</code> sets a deadline for the call, and <code>.with_timeout(600)</code> overrides it per dispatch.</p>
+<h2 id="compute">Compute<a class="headerlink" href="#compute" title="Permanent link">&para;</a></h2>
+<p>A <code>Compute</code> is a context manager representing a set of cloud machines with a defined lifecycle. When you enter the block, Skyward provisions the machines, installs dependencies, and establishes connectivity. When you exit — normally or through an exception — everything is torn down.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">accelerator</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">A100</span><span class="p">(),</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">nodes</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">image</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">Image</span><span class="p">(</span><span class="n">pip</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;torch&quot;</span><span class="p">,</span> <span class="s2">&quot;transformers&quot;</span><span class="p">]),</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">result</span> <span class="o">=</span> <span class="n">train</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="c1"># all machines terminated</span>
+</code></pre></div>
+<p>This is what it means for compute to be <strong>ephemeral</strong>: the infrastructure exists only for the duration of the work. There are no machines to forget about, no environments that drift over time, no idle costs accumulating overnight. The compute's lifetime is the job's lifetime.</p>
+<p>This model fits ML workloads naturally. Training runs, fine-tuning jobs, hyperparameter sweeps, batch inference — these are all tasks with a beginning and an end. <code>Compute</code> captures that shape: provision what you need, do the work, release everything.</p>
+<h3 id="the-control-plane-is-not-in-the-object">The control plane is not in the object<a class="headerlink" href="#the-control-plane-is-not-in-the-object" title="Permanent link">&para;</a></h3>
+<p><code>Compute</code> looks like it owns the machines. It doesn't. The machines are owned by a <strong>daemon</strong> — a separate control plane that <code>Compute</code> talks to over HTTP. With no <code>url</code>, that daemon runs inside your process against a local SQLite database, reached through ASGI with no socket involved. With <code>url=</code> or <code>SKYWARD_URL</code>, it's a daemon you started with <code>sky server start</code>. Nothing above the client can tell which it got.</p>
+<p>The consequence is that machines outlive the process that asked for them:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;training&quot;</span><span class="p">,</span> <span class="n">delete_on_exit</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">train</span><span class="p">(</span><span class="n">data</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="o">.</span><span class="n">attached</span><span class="p">(</span><span class="s2">&quot;training&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>  <span class="c1"># tomorrow, another process</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">evaluate</span><span class="p">()</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+</code></pre></div>
+<p><code>Compute.attached()</code> takes a name or id and no spec — the definition already lives in the daemon. Ownership is a <strong>lease</strong> the SDK renews in the background; when renewals stop, the daemon may reclaim the compute.</p>
+<p>Internally, one asyncio event loop on a background daemon thread serves every call. That is what makes <code>task() &gt; compute</code> a real future rather than a wrapper around a blocking call.</p>
+<h3 id="what-the-daemon-remembers">What the daemon remembers<a class="headerlink" href="#what-the-daemon-remembers" title="Permanent link">&para;</a></h3>
+<p>Your compute is a row. So is every node under it, every task you submit, and every attempt at that task. They live in one SQLite file at <code>~/.skyward/skyward.sqlite</code>, and that is not an implementation detail you can ignore — it is what the whole model rests on.</p>
+<p>Because the state is on disk rather than in your process, the daemon can be restarted, killed, or replaced while your machines keep running. It reconnects by reading back what it needs: the provider binding it created, the SSH key it provisioned with, the address of every node. Anything genuinely live — the SSH connections, the forwarded ports — is rebuilt from those rows rather than recovered.</p>
+<p>That is also why the definition and the observation are separate. What you asked for is <code>spec</code>, and only you write it. What actually exists is <code>status</code>, and only the daemon writes it. There is no operation to poll: the distance between the two is the work still pending.</p>
+<p>Two consequences reach your code. <code>Compute.attached()</code> works because the definition already exists without you. And a task keeps its identity across retries — a retry is a new <em>execution</em> of the same task, never a new task — so the <code>Future</code> you're holding stays valid even when the machine under it is replaced.</p>
+<p>You never have to touch any of this to use Skyward. When you do want to look, the store is a plain SQLite file and the daemon's only interface is HTTP:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="gp">$ </span>sqlite3<span class="w"> </span>~/.skyward/skyward.sqlite<span class="w"> </span><span class="s1">&#39;select id, name, status_state from computes&#39;</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="gp">$ </span>http<span class="w"> </span>GET<span class="w"> </span>:17590/v1/computes
+</code></pre></div>
+<p>See <a href="../persistence/">Persistence</a> for the tables and <a href="../http-api/">HTTP API</a> for the routes.</p>
+<h3 id="node-specification">Node specification<a class="headerlink" href="#node-specification" title="Permanent link">&para;</a></h3>
+<p><code>nodes</code> accepts three shapes, and they mean different things:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>                              <span class="c1"># exactly 4</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">8</span><span class="p">))</span>                         <span class="c1"># elastic, 2 to 8</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">Nodes</span><span class="p">(</span><span class="n">initial</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mi">4</span><span class="p">))</span>    <span class="c1"># open at 8, live on 4</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">Nodes</span><span class="p">(</span><span class="n">initial</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="nb">max</span><span class="o">=</span><span class="mi">16</span><span class="p">))</span>
+</code></pre></div>
+<p>An integer fixes both bounds. A tuple is an elastic range: the daemon opens at the floor and scales inside the range based on queued and running task load. <code>sky.Nodes</code> separates the two ideas that a tuple conflates — <code>initial</code> is the size the pool opens at, <code>min</code> is how few nodes you are willing to live on, and <code>max</code> is the ceiling.</p>
+<p><code>initial</code> is a request made once, not a target the daemon holds you to. With <code>min</code> below it, work begins as soon as <code>min</code> nodes are ready and the rest join as they come up, which matters when one slow provider would otherwise hold up seven fast ones — and a machine the opening request never got is not bought again. Eight asked for, five up, <code>min=4</code>: the pool is ready, it stays at five, and it buys another machine only if it drops below four. If you want eight to be self-healing, <code>min=8</code> says so.</p>
+<p>A collective plugin freezes the world of a distributed job, so a compute using one cannot be resized while that definition is active.</p>
+<h2 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h2>
+<p>Most distributed computing frameworks express execution through configuration files, job submission APIs, or method calls like <code>pool.submit(fn, args)</code>. Skyward uses Python's operator overloading to create a small vocabulary where the syntax communicates intent. The expression <code>train(10) &gt;&gt; compute</code> reads as "send this computation to the compute" — and that's exactly what it does.</p>
+<p>This works because <code>@sky.function</code> returns a <code>Pending</code> value rather than a result. Operators are defined on <code>Pending</code>, <code>Group</code>, and <code>Streaming</code> (via <code>__rshift__</code>, <code>__matmul__</code>, <code>__and__</code>, <code>__gt__</code>), and each triggers a different dispatch strategy. Dispatch serializes the function and arguments with cloudpickle, compresses with lz4, submits the task to the daemon, waits, and deserializes the result.</p>
+<table>
+<thead>
+<tr>
+<th>Expression</th>
+<th>Semantics</th>
+<th>Return type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task() &gt;&gt; compute</code></td>
+<td>Execute on one node (round-robin)</td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td><code>task() @ compute</code></td>
+<td>Broadcast to all nodes</td>
+<td><code>list[T]</code></td>
+</tr>
+<tr>
+<td><code>task1() &amp; task2() &gt;&gt; compute</code></td>
+<td>Parallel execution</td>
+<td><code>tuple[T1, T2]</code></td>
+</tr>
+<tr>
+<td><code>task() &gt; compute</code></td>
+<td>Async, non-blocking</td>
+<td><code>Future[T]</code></td>
+</tr>
+<tr>
+<td><code>streaming() &gt;&gt; compute</code></td>
+<td>Items as the node produces them</td>
+<td><code>Iterator[T]</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="execute-on-one-node"><code>&gt;&gt;</code> — execute on one node<a class="headerlink" href="#execute-on-one-node" title="Permanent link">&para;</a></h3>
+<p>The most common operation. Sends the computation to a single node and blocks until the result is available:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">train</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+</code></pre></div>
+<p>The target node is chosen round-robin. Ten tasks sent with <code>&gt;&gt;</code> distribute evenly across available nodes. This is the right operator for independent tasks that don't need to run everywhere — hyperparameter trials, inference on different inputs, any embarrassingly parallel workload.</p>
+<h3 id="broadcast-to-all-nodes"><code>@</code> — broadcast to all nodes<a class="headerlink" href="#broadcast-to-all-nodes" title="Permanent link">&para;</a></h3>
+<p>Sends the same computation to every node, and returns one result per node:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="n">results</span> <span class="o">=</span> <span class="n">initialize_model</span><span class="p">(</span><span class="n">config</span><span class="p">)</span> <span class="o">@</span> <span class="n">compute</span>  <span class="c1"># list of 4 results</span>
+</code></pre></div>
+<p>Broadcast is the foundation for distributed training. Combined with <code>sky.shard()</code> inside the function, each node receives the full arguments but operates on its own partition. The function body is identical across nodes — the differentiation happens at runtime from <code>sky.instance_info()</code>.</p>
+<p>Broadcast pins each execution to the rank it was admitted with, which is what lets rank-dependent code inside the function be meaningful.</p>
+<h3 id="parallel-composition"><code>&amp;</code> — parallel composition<a class="headerlink" href="#parallel-composition" title="Permanent link">&para;</a></h3>
+<p>Combines multiple <em>different</em> computations into a group that executes in parallel. Results come back as a tuple with full type inference:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">c</span> <span class="o">=</span> <span class="p">(</span><span class="n">preprocess</span><span class="p">()</span> <span class="o">&amp;</span> <span class="n">train</span><span class="p">()</span> <span class="o">&amp;</span> <span class="n">evaluate</span><span class="p">())</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+</code></pre></div>
+<p>The distinction from broadcast matters: <code>@</code> runs the <em>same</em> function on all nodes, <code>&amp;</code> runs <em>different</em> functions concurrently. Each computation may go to a different node, and the group blocks until all complete. Types are preserved individually — if <code>preprocess</code> returns <code>DataFrame</code>, <code>train</code> returns <code>Model</code>, and <code>evaluate</code> returns <code>float</code>, the destructured result is <code>tuple[DataFrame, Model, float]</code>.</p>
+<h3 id="async-dispatch"><code>&gt;</code> — async dispatch<a class="headerlink" href="#async-dispatch" title="Permanent link">&para;</a></h3>
+<p>Like <code>&gt;&gt;</code>, but returns a <code>Future[T]</code> immediately instead of blocking, so remote computation overlaps with local work:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">future</span> <span class="o">=</span> <span class="n">train</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">compute</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># ... do local work while the remote computation runs ...</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">future</span><span class="o">.</span><span class="n">result</span><span class="p">()</span>  <span class="c1"># blocks only when you need the result</span>
+</code></pre></div>
+<p>The <code>Future</code> follows the <code>concurrent.futures</code> protocol, so it works with <code>as_completed()</code>, <code>wait()</code>, and existing executor code.</p>
+<h3 id="gather-dynamic-parallelism"><code>gather()</code> — dynamic parallelism<a class="headerlink" href="#gather-dynamic-parallelism" title="Permanent link">&para;</a></h3>
+<p><code>&amp;</code> works when the number of parallel tasks is known at write time. When it isn't — you're iterating over a dataset, a list of configurations, any dynamic collection — <code>gather</code> groups an arbitrary number of computations:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">tasks</span> <span class="o">=</span> <span class="p">[</span><span class="n">process</span><span class="p">(</span><span class="n">chunk</span><span class="p">)</span> <span class="k">for</span> <span class="n">chunk</span> <span class="ow">in</span> <span class="n">chunks</span><span class="p">]</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">results</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="o">*</span><span class="n">tasks</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+</code></pre></div>
+<p><code>gather</code> produces the same <code>Group</code> type that <code>&amp;</code> does, so dispatch behaviour is identical. The difference is syntactic: <code>&amp;</code> for a fixed set of typed computations, <code>gather</code> for a dynamic collection.</p>
+<p>With <code>stream=True</code>, results are yielded as they complete rather than after all of them finish — useful when tasks have variable duration and you want to start processing early:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">for</span> <span class="n">result</span> <span class="ow">in</span> <span class="n">sky</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="o">*</span><span class="n">tasks</span><span class="p">,</span> <span class="n">stream</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    <span class="n">save</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+</code></pre></div>
+<p>Streaming preserves the original order by default. With <code>ordered=False</code>, results arrive in completion order — faster overall, but you lose the positional correspondence.</p>
+<p><code>compute.map(fn, items)</code> is the shorthand for the common case: one function over a collection, results in order.</p>
+<h2 id="image">Image<a class="headerlink" href="#image" title="Permanent link">&para;</a></h2>
+<p>Remote nodes start as bare cloud instances — a fresh OS with no Python, no libraries, no knowledge of your project. <code>Image</code> describes the environment that should exist on each node before any computation runs. It's declarative: you state what you need, and the daemon generates an idempotent bootstrap script that provisions it.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">image</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">Image</span><span class="p">(</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    <span class="n">python</span><span class="o">=</span><span class="s2">&quot;3.13&quot;</span><span class="p">,</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="n">pip</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;torch&quot;</span><span class="p">,</span> <span class="s2">&quot;numpy&quot;</span><span class="p">,</span> <span class="s2">&quot;transformers&quot;</span><span class="p">],</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    <span class="n">apt</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;ffmpeg&quot;</span><span class="p">,</span> <span class="s2">&quot;libsndfile1&quot;</span><span class="p">],</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">env</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;KERAS_BACKEND&quot;</span><span class="p">:</span> <span class="s2">&quot;jax&quot;</span><span class="p">},</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>    <span class="n">includes</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;./my_module/&quot;</span><span class="p">],</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="p">)</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">image</span><span class="o">=</span><span class="n">image</span><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="o">...</span>
+</code></pre></div>
+<p>Each field maps to a phase of the bootstrap:</p>
+<ul>
+<li><code>base</code> — the container image to start from. <code>sky.DockerImage</code> is a <code>str</code> subclass whose value <em>is</em> the tag, so <code>base=sky.DockerImage.pytorch("2.8")</code> flows straight through.</li>
+<li><code>python</code> — the Python version to install. Defaults to matching your local version. Nodes use <code>uv</code> as the package manager, so installation is fast.</li>
+<li><code>pip</code> — Python packages installed into the node's virtual environment.</li>
+<li><code>pip_indexes</code> — extra or replacement package indexes, as <code>sky.PipIndex</code> values.</li>
+<li><code>apt</code> — system packages installed before Python setup.</li>
+<li><code>env</code> — environment variables set before your function executes.</li>
+<li><code>includes</code> — local directories synced to the nodes. This is how your own code reaches remote machines without being published as a package. It's packed client-side into a blob, and the spec carries only its hash, so the same code is uploaded once no matter how many nodes read it.</li>
+<li><code>excludes</code> — glob patterns skipped during that sync (<code>["__pycache__", "*.pyc"]</code>).</li>
+<li><code>metrics</code> — which <code>sky.metrics.*</code> samplers the node runs in the background.</li>
+</ul>
+<p>Because <code>Image</code> is frozen, two computes built from the same image produce the same environment — same Python version, same packages, same system dependencies. This is reproducibility without writing a Dockerfile: the environment specification lives in your Python code, versioned alongside your experiments.</p>
+<p><code>skyward</code> controls how Skyward itself reaches the nodes. The default detects whether you're running from an editable install and, if so, ships your local source instead of installing from PyPI — so changes to Skyward's own code appear on remote machines immediately during development.</p>
+<h2 id="runtime-context">Runtime context<a class="headerlink" href="#runtime-context" title="Permanent link">&para;</a></h2>
+<p>Skyward operates in two worlds. The <strong>client side</strong> is your machine — where <code>Compute</code> lives, where operators dispatch, where results come back. The <strong>node side</strong> is the remote machine, where your <code>@sky.function</code> body actually executes. Separate processes, separate machines.</p>
+<p>Inside the function you're in the node world. You have the machine's resources — GPUs, local disk, network — but no reference to the compute object or your client's memory. What you do have is <code>sky.instance_info()</code>: this node's view of the topology.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">function</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">distributed_task</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    <span class="n">info</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">instance_info</span><span class="p">()</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank </span><span class="si">{</span><span class="n">info</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">info</span><span class="o">.</span><span class="n">nodes</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>    <span class="k">if</span> <span class="n">info</span><span class="o">.</span><span class="n">is_head</span><span class="p">:</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>        <span class="n">coordinate_others</span><span class="p">()</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>    <span class="k">return</span> <span class="n">process</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+</code></pre></div>
+<p><code>Info</code> is a frozen dataclass read from environment variables the daemon sets before starting the worker. It carries <code>node</code>, <code>compute</code>, <code>rank</code>, <code>peers</code>, <code>worker</code>, and <code>workers_per_node</code>, plus derived values: <code>nodes</code>, <code>total_workers</code>, <code>global_worker_index</code>, <code>host</code>, <code>head</code>, <code>head_addr</code>, <code>head_port</code>, <code>job_id</code>, and <code>is_head</code>. Off a node it raises <code>NotOnANodeError</code>.</p>
+<p>A compute has no head node — every node is symmetric, and the client reaches each one directly. <code>head</code> and <code>is_head</code> exist by convention for the training libraries that need a rendezvous address, and they mean rank zero, nothing more.</p>
+<p>This is the same mechanism the plugins use. The <code>Torch</code> plugin reads <code>instance_info()</code> to set <code>MASTER_ADDR</code>, <code>WORLD_SIZE</code>, and <code>RANK</code> before calling <code>init_process_group</code>. You don't need a plugin to reach it — <code>instance_info()</code> is available inside any <code>@sky.function</code> body.</p>
+<p>The module behind these runtime names imports the standard library and nothing else, which is what keeps httpx off a machine whose only job is a training loop.</p>
+<h3 id="data-sharding">Data sharding<a class="headerlink" href="#data-sharding" title="Permanent link">&para;</a></h3>
+<p>A common pattern is to send the <em>same function</em> to all nodes and have each operate on a <em>different slice</em>. <code>sky.shard()</code> automates it: it reads this node's rank and returns only the portion belonging to it.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">function</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">(</span><span class="n">full_dataset</span><span class="p">):</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>    <span class="n">local_data</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">shard</span><span class="p">(</span><span class="n">full_dataset</span><span class="p">)</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>    <span class="k">return</span> <span class="n">analyze</span><span class="p">(</span><span class="n">local_data</span><span class="p">)</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">nodes</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>    <span class="n">results</span> <span class="o">=</span> <span class="n">process</span><span class="p">(</span><span class="n">dataset</span><span class="p">)</span> <span class="o">@</span> <span class="n">compute</span>  <span class="c1"># each node gets 1/4</span>
+</code></pre></div>
+<p>The function receives the <em>full</em> dataset as an argument — serialization is paid once — but each node only processes its shard.</p>
+<p>The split is contiguous: rank <code>r</code> of <code>n</code> gets <code>data[len*r//n : len*(r+1)//n]</code>. With eight nodes and three items, three nodes get work and five get an empty sequence; that's a valid split, not an error.</p>
+<p>Sharding is type-preserving. Lists produce lists, tuples produce tuples, NumPy arrays produce arrays, PyTorch tensors produce tensors — so you can shard a tensor and hand it straight to a model.</p>
+<p>When sharding several sequences, the same positions are taken from each, so paired data stays aligned:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">function</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span><span class="n">x_full</span><span class="p">,</span> <span class="n">y_full</span><span class="p">):</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">shard</span><span class="p">(</span><span class="n">x_full</span><span class="p">,</span> <span class="n">y_full</span><span class="p">,</span> <span class="n">shuffle</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    <span class="c1"># x[i] still corresponds to y[i]</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    <span class="k">return</span> <span class="n">fit</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
+</code></pre></div>
+<p><code>shuffle=True</code> permutes before splitting. The seed defaults to the compute id, so every node of one compute shuffles identically and two computes don't — pass <code>seed=</code> to pin it. <code>drop_last=True</code> discards the remainder so every shard has the same length, which is what a training step with fixed batch dimensions usually wants.</p>
+<p><code>node=</code> and <code>total_nodes=</code> override the topology, for testing or for sharding against a compute you aren't part of.</p>
+<h3 id="output-policy">Output policy<a class="headerlink" href="#output-policy" title="Permanent link">&para;</a></h3>
+<p>Four nodes printing the same progress bar is four times the noise. <code>sky.stdout(only=...)</code>, <code>sky.stderr(only=...)</code>, and <code>sky.silent</code> narrow which nodes' output makes the trip back. <code>only</code> takes a rank, a tuple of ranks, <code>"head"</code>, or a predicate on <code>Info</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">function</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">stdout</span><span class="p">(</span><span class="n">only</span><span class="o">=</span><span class="s2">&quot;head&quot;</span><span class="p">)</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="k">for</span> <span class="n">epoch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># only rank zero&#39;s output comes back</span>
+</code></pre></div>
+<p>The filtering happens on the node, where the output is written, so what is silenced is never shipped rather than shipped and dropped.</p>
+<h2 id="streaming">Streaming<a class="headerlink" href="#streaming" title="Permanent link">&para;</a></h2>
+<p>The operators above all share a shape: serialize, ship, execute, serialize the result, ship it back. The full result materializes on the node before anything crosses the network. For most workloads that's fine. But some computations produce results incrementally — a training loop yielding metrics every epoch, a pipeline emitting rows, a search finding matches progressively. Waiting for the whole result wastes time and memory.</p>
+<p><code>@sky.stream</code> is the generator counterpart. It produces a <code>Streaming[T]</code>, and dispatching it returns a synchronous iterator whose elements arrive as the node yields them:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nd">@sky</span><span class="o">.</span><span class="n">stream</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="k">def</span><span class="w"> </span><span class="nf">generate_samples</span><span class="p">(</span><span class="n">n</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">):</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>        <span class="k">yield</span> <span class="n">expensive_sample</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">())</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>    <span class="k">for</span> <span class="n">sample</span> <span class="ow">in</span> <span class="n">generate_samples</span><span class="p">(</span><span class="mi">1000</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>        <span class="n">save</span><span class="p">(</span><span class="n">sample</span><span class="p">)</span>
+</code></pre></div>
+<p>The request that consumes the stream is also what starts the execution, so a node never produces items with no one reading them. A stream is not replayable and not resumable: it is a live connection to a running generator, not a stored result.</p>
+<h2 id="choosing-hardware">Choosing hardware<a class="headerlink" href="#choosing-hardware" title="Permanent link">&para;</a></h2>
+<h3 id="providers">Providers<a class="headerlink" href="#providers" title="Permanent link">&para;</a></h3>
+<p>A provider account is a frozen value: which cloud, and what it takes to log in.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">aws</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;production&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">&quot;us-east-1&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="n">runpod</span> <span class="o">=</span> <span class="n">sky</span><span class="o">.</span><span class="n">RunPod</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;experiments&quot;</span><span class="p">,</span> <span class="n">bid_multiplier</span><span class="o">=</span><span class="mf">1.3</span><span class="p">)</span>
+</code></pre></div>
+<p><code>name</code> is the account alias, defaulting to the provider kind, so two accounts of the same kind coexist by having two names. Credentials are resolved in your process — from what you passed, then from the environment or credential file — and the daemon stores them on a provider row. The daemon never reads your environment.</p>
+<p>See <a href="../providers/">Providers</a> for every account's fields, and <a href="../choosing-a-provider/">Choosing the best provider</a> for which to reach for.</p>
+<h3 id="accelerators">Accelerators<a class="headerlink" href="#accelerators" title="Permanent link">&para;</a></h3>
+<p>Every provider spells its hardware differently. One canonical catalog normalizes them, so <code>sky.accelerators.H100()</code> and a provider's <code>NVIDIA H100 80GB SXM5</code> resolve to the same accelerator and VRAM:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">A100</span><span class="p">()</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">H100</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>   <span class="c1"># 4 per node</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">RTX_4090</span><span class="p">()</span>
+</code></pre></div>
+<p><code>count</code> is accelerators per node and is independent of <code>nodes</code>, the machine count. See <a href="../accelerators/">Accelerators</a>.</p>
+<h3 id="allocation-strategies">Allocation strategies<a class="headerlink" href="#allocation-strategies" title="Permanent link">&para;</a></h3>
+<p><code>allocation</code> decides how offers are bought:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">allocation</span><span class="o">=</span><span class="s2">&quot;spot_if_available&quot;</span><span class="p">)</span>  <span class="c1"># default</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">allocation</span><span class="o">=</span><span class="s2">&quot;spot&quot;</span><span class="p">)</span>               <span class="c1"># cheaper, interruptible</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">allocation</span><span class="o">=</span><span class="s2">&quot;on_demand&quot;</span><span class="p">)</span>          <span class="c1"># guaranteed, expensive</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">allocation</span><span class="o">=</span><span class="s2">&quot;cheapest&quot;</span><span class="p">)</span>           <span class="c1"># whichever costs least</span>
+</code></pre></div>
+<p>Spot instances are 50-90% cheaper. The trade-off is that the provider can reclaim them. Skyward detects the interruption and provisions a replacement, but your workflow has to tolerate a restart — which in practice means checkpointing.</p>
+<h3 id="multi-spec-selection">Multi-spec selection<a class="headerlink" href="#multi-spec-selection" title="Permanent link">&para;</a></h3>
+<p>When one provider isn't enough, pass one <code>Spec</code> per alternative:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="k">with</span> <span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>    <span class="n">sky</span><span class="o">.</span><span class="n">Spec</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">Verda</span><span class="p">(),</span> <span class="n">accelerator</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">H100</span><span class="p">()),</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>    <span class="n">sky</span><span class="o">.</span><span class="n">Spec</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">accelerator</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">accelerators</span><span class="o">.</span><span class="n">H100</span><span class="p">(),</span> <span class="n">max_hourly_cost</span><span class="o">=</span><span class="mf">5.0</span><span class="p">),</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a>    <span class="n">nodes</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>    <span class="n">selection</span><span class="o">=</span><span class="s2">&quot;cheapest&quot;</span><span class="p">,</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="p">)</span> <span class="k">as</span> <span class="n">compute</span><span class="p">:</span>
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>    <span class="n">train</span><span class="p">(</span><span class="n">data</span><span class="p">)</span> <span class="o">&gt;&gt;</span> <span class="n">compute</span>
+</code></pre></div>
+<p><code>Spec</code> carries <code>provider</code>, <code>accelerator</code>, <code>cpus</code>, <code>memory_gb</code>, <code>region</code>, <code>disk_gb</code>, <code>architecture</code>, and <code>max_hourly_cost</code> — everything that describes <em>one placement choice</em>. <code>nodes</code>, <code>allocation</code>, <code>image</code>, <code>plugins</code>, <code>executor</code>, <code>options</code>, <code>ports</code>, and <code>volumes</code> belong to <code>Compute</code>, because they apply after a placement has been picked.</p>
+<p><code>selection="cheapest"</code> (the default) ranks every matching offer across all specs into one list by price. <code>selection="first"</code> respects the order you wrote. Either way, if provisioning fails on the chosen offer the daemon moves to the next one, so an out-of-stock provider becomes a fallback rather than a failure.</p>
+<p>Both <code>allocation</code> and <code>selection</code> travel on the spec to the daemon. They are wire fields, not client behaviour.</p>
+<h2 id="executors-and-concurrency">Executors and concurrency<a class="headerlink" href="#executors-and-concurrency" title="Permanent link">&para;</a></h2>
+<p><code>Executor</code> picks what runs your tasks inside a node:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="n">sky</span><span class="o">.</span><span class="n">Compute</span><span class="p">(</span><span class="n">provider</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">AWS</span><span class="p">(),</span> <span class="n">executor</span><span class="o">=</span><span class="n">sky</span><span class="o">.</span><span class="n">Executor</span><span class="p">(</span><span class="nb">type</span><span class="o">=</span><span class="s2">&quot;thread&quot;</span><span class="p">,</span> <span class="n">concurrency</span><span class="o">=</span><span class="mi">4</span><span class="p">))</span>
+</code></pre></div>
+<ul>
+<li><code>"thread"</code> — the default. Shares the worker's address space, so the distributed collections reach the cluster with nothing in between.</li>
+<li><code>"process"</code> — a subprocess per task, which is what a task holding the GIL or leaking state wants. <code>reuse=False</code> spends a fresh subprocess per task.</li>
+<li><code>"loky"</code> — a reusable process pool that also restarts a worker that died.</li>
+</ul>
+<p><code>concurrency</code> is how many tasks run at once. <code>buffer</code> is the slack above it: that many more tasks are admitted and their payloads made ready, so a slot that frees finds the next one in hand rather than a round trip away. It's also the queue depth the daemon reads as backpressure when deciding to grow an elastic compute.</p>
+<p><code>sky.Options(...)</code> carries the operational knobs — SSH timeouts, worker timeout, autoscaling, health probes. Most travel to the daemon; <code>ready_timeout</code> and <code>shutdown_timeout</code> stay client-side, because they govern how long <em>this</em> process waits for its own compute.</p>
+<h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><a href="../getting-started/">Getting started</a></strong> — installation, credentials, and a first remote function</li>
+<li><strong><a href="../architecture/">Architecture</a></strong> — the daemon, persistence, reconciliation, and the node runtime</li>
+<li><strong><a href="../providers/">Providers</a></strong> — provider accounts and offer catalogs</li>
+<li><strong><a href="../distributed-training/">Distributed training</a></strong> — multi-node framework setup</li>
+<li><strong><a href="../distributed-collections/">Distributed collections</a></strong> — shared state across nodes</li>
+<li><strong><a href="../plugins/">Plugins</a></strong> — extending what a node does</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+      
+        <script src="../javascripts/gpu-compare.js"></script>
+      
+    
+  </body>
+</html>

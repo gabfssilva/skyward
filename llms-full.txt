@@ -1,0 +1,287 @@
+# Skyward
+
+This file is the compact, single-file reference for the current public surface.
+The canonical pages linked below contain the longer explanations and runnable
+guides.
+
+## Mental model
+
+`@sky.function` turns a Python call into a frozen `Pending` value. It does not run
+the function locally. `Compute` describes the resources that may run it. The
+control plane stores the Compute, reconciles its desired state with provider
+machines, dispatches tasks, records events, and serves the same resources from a
+daemon or, when asked for a database of its own, from the client's process.
+
+```python
+import skyward as sky
+
+@sky.function
+def square(value: int) -> int:
+    return value * value
+
+with sky.Compute(provider=sky.Container()) as compute:
+    result = square(4) >> compute
+```
+
+With no `url`, the SDK uses the daemon at `http://127.0.0.1:17590`, over
+`~/.skyward/skyward.sqlite` by default, and starts one there when none is
+running — it stays up afterwards, and `sky server stop` ends it. With `url` or
+`SKYWARD_URL`, it uses that daemon and starts none; with `database=`, it runs the
+control plane in its own process. `Compute.attached(ref)` attaches to an existing
+resource without restating its definition and does not delete it on exit by default.
+
+See [Core concepts](concepts.md), [Getting started](getting-started.md), and
+[Architecture](architecture.md).
+
+## Installation
+
+```bash
+uv add "skyward[client,server]"
+# or: pip install "skyward[client,server]"
+```
+
+Optional extras are `client`, `server`, `cli`, `tui`, `notebook`, `storage`, and
+`all`. Three providers carry an sdk of their own and have an extra each — `aws`,
+`gcp`, `salad`, with `providers` for all three; an adapter whose sdk is missing
+is not registered. ML frameworks are not extras: put framework packages in
+`Image(pip=[...])` or use a plugin.
+
+## Lazy functions and dispatch
+
+```python
+@sky.function(timeout=600)
+def train(data: list[float]) -> float:
+    return sum(data)
+
+with sky.Compute(provider=sky.Container()) as compute:
+    one = train([1, 2]) >> compute
+    many = train([1, 2]) @ compute
+    future = train([1, 2]) > compute
+    group = (train([1]) & train([2])) >> compute
+    gathered = sky.gather(train([1]), train([2])) >> compute
+```
+
+- `>>` dispatches one `Pending` and returns its result.
+- `@` broadcasts one `Pending` to every ready node and returns a list.
+- `>` dispatches asynchronously and returns a future.
+- `&` creates a `Group`; `Group >> compute` runs its members in parallel.
+- `gather(*pendings, stream=False, ordered=True)` creates a `Group`.
+- `@sky.stream` marks a generator function as `Streaming`; `Streaming >> compute`
+  returns an iterator consumed from the node.
+- `Pending.with_timeout(seconds)` returns a new pending value.
+
+`Compute.map(fn, items)` submits one call per item and returns results in input
+order. The active Compute is also available as the `sky` dispatch target inside
+its context.
+
+## Compute and placement
+
+The public constructor accepts either flat placement arguments or positional
+`Spec` values:
+
+```python
+sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.A100(count=1),
+    nodes=4,
+    allocation="spot_if_available",
+    selection="cheapest",
+    image=sky.Image(pip=["torch"]),
+    executor=sky.Executor(type="thread", concurrency=2),
+    options=sky.Options(ready_timeout=1800),
+)
+```
+
+`Spec` contains `provider`, `accelerator`, `accelerator_count`, `cpus`,
+`memory_gb`, `region`, `disk_gb`, `architecture`, and `max_hourly_cost`.
+`nodes`, `allocation`, `selection`, `image`, `plugins`, `executor`, `options`,
+`ports`, and `volumes` belong to `Compute`.
+
+`nodes` accepts an integer, a `(min, max)` tuple, or `Nodes(initial, min=None,
+max=None)`, where `initial` is the size the pool opens at, `min` the floor it
+is held to afterwards, and `max` the ceiling that makes it elastic.
+`allocation` is one of `spot`, `on_demand`, `spot_if_available`, or
+`cheapest`. `selection` is `cheapest` or `first`.
+Operational timeouts, retries, health checks, and autoscaling settings belong in
+`Options`.
+
+The Compute resource has a desired `spec` and observed `status`. A Compute can
+outlive the Python process when `delete_on_exit=False`; leases identify the
+current owner and events report reconciliation and task progress.
+
+## Providers and offers
+
+Provider classes are account descriptors. Credentials are resolved in the
+client process and registered with the daemon; provider read operations never
+return credentials. The accounts are:
+
+`AWS`, `GCP`, `Hyperstack`, `JarvisLabs`, `Lambda`, `MassedCompute`, `Novita`,
+`RunPod`, `Salad`, `Scaleway`, `TensorDock`, `VastAI`, `Verda`, `Vultr`, and
+`Container`.
+
+```python
+with sky.Compute(
+    sky.Spec(sky.AWS(name="aws-prod"), accelerator="a100"),
+    sky.Spec(sky.VastAI(name="marketplace"), accelerator="a100"),
+) as compute:
+    result = train(data) >> compute
+```
+
+The daemon owns the provider account and its offer cache. Use the CLI or
+`GET /v1/offers` to inspect normalized accelerator, VRAM, price, region, and
+provider-account fields:
+
+```bash
+sky offers list --accelerator H100 --min-vram 80 --limit 10
+sky offers fetch
+sky offers summary --accelerator A100
+```
+
+See [Providers](providers.md), [Choosing a provider](choosing-a-provider.md),
+and [Accelerators](accelerators.md).
+
+## Runtime API
+
+Inside a running `@sky.function`, `sky.instance_info()` returns `Info`:
+
+```python
+info = sky.instance_info()
+print(info.rank, info.nodes, info.peers, info.workers_per_node)
+if info.is_head:
+    save_checkpoint()
+```
+
+Important fields include `node`, `rank`, `nodes`, `peers`, `worker`,
+`workers_per_node`, `total_workers`, `global_worker_index`, `host`, `head`,
+`head_addr`, `head_port`, and `job_id`.
+
+`sky.shard(*data, shuffle=False, seed=None, drop_last=False, node=None,
+total_nodes=None)` partitions aligned inputs into contiguous rank-ordered slices.
+When `node` and `total_nodes` are omitted, they come from `Info`.
+
+`sky.stdout`, `sky.stderr`, `sky.silent`, and `sky.redirect_output` control
+worker output. `sky.is_head(info)` is a head-node predicate.
+
+See [Runtime reference](reference/runtime.md), [Distributed training](distributed-training.md),
+and [Data sharding](guides/data-sharding.md).
+
+## Images, executors, plugins, and storage
+
+```python
+image = sky.Image(
+    python="3.12",
+    pip=["numpy", "torch"],
+    apt=["git"],
+    env={"TOKENIZERS_PARALLELISM": "false"},
+)
+
+with sky.Compute(
+    provider=sky.AWS(),
+    image=image,
+    plugins=[sky.plugins.Torch(backend="nccl")],
+    volumes=[sky.Volume(bucket="datasets", mount="/data")],
+) as compute:
+    train() >> compute
+```
+
+`Executor(type="thread" | "process" | "loky", reuse=True, concurrency=None,
+buffer=0)` controls task execution per node. Built-in plugins include `Torch`,
+`HuggingFace`, `Jax`, `Keras`, `Accelerate`, `Joblib`, `Sklearn`, `Cuml`, `Mig`,
+and `Mps`.
+
+`Volume(bucket, mount, prefix="", read_only=True, storage=None)` maps storage to
+an absolute path. `Storage` provides synchronous local CRUD operations inside a
+context manager. See [Plugins](plugins/index.md) and [Volumes](volumes.md).
+
+## Distributed collections
+
+Collections are named shared state available inside a running task:
+
+```python
+values = sky.dict("values")
+seen = sky.set("seen")
+count = sky.counter("count")
+work = sky.queue("work")
+sync = sky.barrier("epoch", parties=sky.instance_info().nodes)
+mutex = sky.lock("checkpoint")
+models = sky.registry("models")
+```
+
+Use `dict`, `set`, `counter`, `queue`, `barrier`, `lock`, and `registry` with
+their documented methods. `strong` is the default consistency; pass
+`consistency="eventual"` when weaker acknowledgement is acceptable.
+
+See [Distributed collections](distributed-collections.md) and the
+[API reference](reference/distributed.md).
+
+## CLI and notebooks
+
+```bash
+pip install "skyward[cli,server]"
+sky server start
+sky compute create --provider aws --accelerator A100 --nodes 4
+sky compute list
+sky compute view <id-or-name>
+sky compute scale <id-or-name> --nodes 8
+sky compute upload <id-or-name> ./train.py /workspace/train.py
+sky compute exec <id-or-name> --node 0 nvidia-smi
+sky compute run <id-or-name> train.py
+sky offers list --accelerator H100
+sky providers list
+sky providers set runpod --config cloud_type=community
+sky config show
+```
+
+Other top-level commands include `console`, `repl`, `monitor`, `status`,
+`sessions`, `stop`, `log`, `notebook`, and `new`. The monitor/live dashboard is
+still subject to the current branch's pending implementation changes.
+
+Install a remote Jupyter kernel with `sky notebook install <compute>` and remove
+it with `sky notebook remove <compute>`. The local environment needs the
+`notebook` extra and the Compute image needs `ipykernel`.
+
+See [CLI](cli.md) and [Jupyter notebooks](notebook.md).
+
+## HTTP and events
+
+The daemon exposes an ASGI application under `/v1`. Main resources are
+`/computes`, `/nodes`, `/tasks`, `/functions`, `/blobs`, `/providers`,
+`/provider-kinds`, `/offers`, and `/events`. Compute generations, leases, task
+executions, task results, and task streams have dedicated endpoints.
+
+`GET /v1/events` is an SSE stream. It supports replay with `Last-Event-ID` and
+filters for Compute or task resources. Events are persisted in the daemon; live
+metrics are not an event-history substitute.
+
+The full OpenAPI document is published at
+https://gabfssilva.github.io/skyward/openapi.json and rendered at
+https://gabfssilva.github.io/skyward/http-api/. It is generated from
+`skyward.server.http.app.create_app()` by `scripts/gen_openapi.py`.
+
+## Constraints
+
+- Function code, captured arguments, plugin values, and results cross a
+  serialization boundary. Keep them picklable and avoid unnecessarily large
+  arguments.
+- `@sky.function` and distributed collections require a running Compute task.
+- Broadcast functions run on every node; guard one-time side effects with
+  `info.is_head`.
+- Provider credentials stay in the client/daemon account flow and are not
+  returned by provider reads.
+- A provider without the required networking or volume capability fails with a
+  capability error; it is not silently converted to a different topology.
+
+## API index
+
+Public root symbols include:
+
+`Compute`, `Spec`, `Options`, `Executor`, `Nodes`, `Image`, `Volume`, `Port`,
+`Provider`, `Pending`, `Group`, `Streaming`, `function`, `stream`, `gather`,
+`instance_info`, `shard`, `is_head`, `stdout`, `stderr`, `silent`,
+`redirect_output`, `dict`, `set`, `counter`, `queue`, `barrier`, `lock`,
+`registry`, `DistributedRegistry`, `Consistency`, `Storage`, `DockerImage`,
+`SkywardError`, `TaskFailedError`, and `TaskIndeterminateError`.
+
+For the complete navigation, use [API reference](reference/pool.md),
+[Providers](providers.md), [Events](reference/events.md), and the runnable
+[Guides](guides/hello-skyward.md).
