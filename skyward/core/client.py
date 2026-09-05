@@ -186,8 +186,11 @@ class Client:
                     yield bytes(buffer[4 : 4 + size])
                     del buffer[: 4 + size]
 
-    async def events(self, compute: str) -> AsyncGenerator[tuple[str, bytes]]:
+    async def events(self, compute: str | None = None, *, types: tuple[str, ...] = ()) -> AsyncGenerator[tuple[str, bytes]]:
         """One compute's event log, replayed and then followed, across reconnects.
+
+        Without a compute it is the daemon's whole log, which is only reasonable
+        narrowed by ``types`` — the frame names to keep, such as ``compute.created``.
 
         The replay is what makes subscribing late harmless: the log is in the store,
         and the stream starts at the beginning of it. Nothing said before anybody was
@@ -204,10 +207,11 @@ class Client:
         """
         cursor: str | None = None
         deadline = time.monotonic() + RETRY_SECONDS
+        params: dict[str, str | tuple[str, ...]] = {**({"compute": compute} if compute else {}), **({"types": types} if types else {})}
         while True:
             headers = {"Last-Event-ID": cursor} if cursor is not None else {}
             try:
-                async with self._http.stream("GET", "/v1/events", params={"compute": compute}, headers=headers) as response:
+                async with self._http.stream("GET", "/v1/events", params=params, headers=headers) as response:
                     if response.status_code >= 400:
                         await response.aread()
                         raise refused(response.status_code, response.content)
@@ -229,7 +233,7 @@ class Client:
                 await asyncio.sleep(1)
             else:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(f"the event stream for {compute} closed after {RETRY_SECONDS:.0f}s without an event")
+                    raise RuntimeError(f"the event stream for {compute or 'the daemon'} closed after {RETRY_SECONDS:.0f}s without an event")
                 await asyncio.sleep(1)
 
     async def forward_up(self, compute: str, cid: str, port: int, route: str, chunks: AsyncIterator[bytes]) -> None:

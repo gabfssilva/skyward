@@ -34,10 +34,12 @@ dependencies = [
 client = [
     "httpx>=0.28",
 ]
-# The live terminal dashboard. Without it the pool still prints its log, one
-# line at a time — the extra buys the pinned panel, not the ability to watch.
+# The live terminal dashboard, and `sky app`. Without it the pool still prints
+# its log, one line at a time — the extra buys the pinned panel and the screen,
+# not the ability to watch.
 tui = [
     "rich>=13.7",
+    "textual>=8.2.8",
 ]
 # What the daemon needs and the node does not. A machine rented by the hour
 # should not be waiting on a web framework it will never serve with.

@@ -52,6 +52,7 @@ from skyward.cli import offers as offers  # noqa: E402, F401
 from skyward.cli import providers as providers  # noqa: E402, F401
 from skyward.cli import server as server  # noqa: E402, F401
 from skyward.cli import sessions as sessions  # noqa: E402, F401
+from skyward.cli import tui as tui  # noqa: E402, F401
 from skyward.cli.compute import create_compute  # noqa: E402
 from skyward.cli.notebook import notebook_app  # noqa: E402
 
