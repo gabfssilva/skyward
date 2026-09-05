@@ -25,6 +25,8 @@ The API key can come from `SALAD_API_KEY`. `organization` and `project` can come
 | `priority` | `"low"` | `high`, `medium`, `low` or `batch`. Selects the price and how readily the workload is preempted. |
 | `country_codes` | every country | Restrict placement to these ISO country codes. |
 | `image` | a CUDA runtime image | Base image, overridden by `Image(base=...)`. An image that already carries sshd, curl and websocat is used as is; otherwise it must be Debian or Ubuntu based, because the container command installs them with `apt-get`. |
+| `cpus` | `4` | vCPUs per node. |
+| `memory_gb` | `16` | RAM per node, in whole GiB up to 60. Salad quotes no size with a GPU class, so this is what the offer advertises and what the container is created with. |
 | `storage_gb` | `50` | Container storage. Salad's floor is 1 GiB. |
 | `request_timeout` | `30` | Seconds for one Salad API call. |
 

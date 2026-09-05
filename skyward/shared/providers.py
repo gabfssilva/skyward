@@ -229,6 +229,14 @@ class Salad(Provider, frozen=True, kw_only=True):
     priority: Literal["high", "medium", "low", "batch"] = "low"
     country_codes: str | Sequence[str] | None = None
     image: str | None = None
+    cpus: int = 4
+    memory_gb: int = 16
+    """What a node's container is given, in vCPUs and whole GiB up to 60.
+
+    A container is sized by the request that creates it, and Salad quotes no size
+    with a GPU class — so these are what the offer advertises and what the node
+    gets, and a spec asking for more than them is a spec no Salad offer fits.
+    """
     storage_gb: int = 50
     request_timeout: int = 30
 

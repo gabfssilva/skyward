@@ -39,6 +39,7 @@ from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
+import httpx
 import msgspec
 from salad_cloud_sdk import SaladCloudSdkAsync
 from salad_cloud_sdk.models import (
@@ -51,24 +52,33 @@ from salad_cloud_sdk.models import (
     CreateContainerGroupNetworking,
     CreateContainerResourceRequirements,
 )
+from salad_cloud_sdk.net.environment.environment import Environment
 from salad_cloud_sdk.net.transport.api_error import ApiError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
 from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.observability import logger
 from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import Salad
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 SSH_USER = "root"
-DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
+DEFAULT_IMAGE = "saladtechnologies/misc:ubuntu24-dev"
 GATEWAY_PORT = 8888
 WEBSOCAT_URL = "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl"
 
+APT_LIST = "/tmp/skyward-apt.list"
 NODE_COMMAND = (
     "([ -x /usr/sbin/sshd ] && command -v curl > /dev/null || ("
-    "apt-get update && "
-    "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server curl ca-certificates"
+    ". /etc/os-release && APT_OPTS='' && "
+    'if [ "$ID" = ubuntu ]; then '
+    "printf 'deb http://archive.ubuntu.com/ubuntu %s main\\ndeb http://archive.ubuntu.com/ubuntu %s-updates main\\n"
+    "deb http://security.ubuntu.com/ubuntu %s-security main\\n' "
+    f'"$VERSION_CODENAME" "$VERSION_CODENAME" "$VERSION_CODENAME" > {APT_LIST} && '
+    f"APT_OPTS='-o Dir::Etc::SourceList={APT_LIST} -o Dir::Etc::SourceParts=/dev/null'; fi && "
+    "apt-get $APT_OPTS -o Acquire::Languages=none update && "
+    "DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y --no-install-recommends openssh-server curl ca-certificates"
     ")) && "
     "mkdir -p /run/sshd /root/.ssh && "
     'printf \'%s\\n\' "$PUBLIC_KEY" > /root/.ssh/authorized_keys && '
@@ -89,7 +99,15 @@ it rather than leaving one Salad still believes in.
 
 The two guards are what an image is allowed to satisfy in advance: one that
 already carries sshd, curl and websocat reaches the bridge without a package
-manager, which is the difference between a cold start and a dice roll.
+manager.
+
+An image that does not is installed into over the node's own connection, and a
+Salad node is somebody's home computer: ``apt-get update`` against the sources an
+Ubuntu image ships fetches 40 MB of indexes, of which ``universe`` alone is 19 MB,
+and on a slow uplink that is longer than any connect timeout. Everything the
+bridge needs is in ``main``, so on Ubuntu apt is pointed at a list of ``main``
+alone — a few megabytes — written to ``/tmp`` rather than ``/etc/apt`` so the
+image's own sources are untouched. Any other distribution keeps its sources.
 
 The bridge binds ``[::]`` because the gateway reaches the container over IPv6: a
 listener on ``0.0.0.0`` passes every probe inside the container and still leaves
@@ -136,8 +154,8 @@ class _Bridge:
                 finally:
                     for stream in streams:
                         stream.cancel()
-        except (OSError, WebSocketException):
-            pass
+        except (OSError, WebSocketException) as error:
+            logger.debug("salad bridge to {} failed: {}", self._url, error)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
@@ -172,6 +190,22 @@ async def _bridge(group_name: str, dns: str) -> _Bridge:
         return bridge
 
 
+async def _answering(dns: str) -> bool:
+    """Whether the gateway has something to route to.
+
+    The gateway answers 503 for as long as nothing in the container listens on its
+    port, and Salad calls the instance running from the moment the container's
+    command starts — before sshd is even installed. A handshake that completes is
+    the bridge itself, so this is the only test that means "dial it".
+    """
+    try:
+        async with connect(f"wss://{dns}/", ping_interval=None, open_timeout=10):
+            return True
+    except (OSError, WebSocketException) as error:
+        logger.debug("salad gateway {} is not answering: {}", dns, error)
+        return False
+
+
 async def _release_bridge(group_name: str) -> None:
     async with _BRIDGE_LOCK:
         bridge = _BRIDGES.pop(group_name, None)
@@ -191,6 +225,7 @@ class SaladProvider:
         self._project = _required(config.project, "project", name).lower()
         self._priority = config.priority
         self._config = config
+        self._api_key = api_key
         self._sdk = SaladCloudSdkAsync(timeout=config.request_timeout * 1000)
         self._sdk.set_api_key(api_key, "Salad-Api-Key")
 
@@ -231,8 +266,8 @@ class SaladProvider:
                 instance_type=gpu_class_name,
                 accelerator=gpu_class_name,
                 accelerator_count=_integer(getattr(gpu_class, "gpu_count", None), 1),
-                cpus=_integer(getattr(gpu_class, "max_vcpu", None)),
-                memory_gb=_integer(getattr(gpu_class, "max_ram", None)) / 1024,
+                cpus=self._config.cpus,
+                memory_gb=self._config.memory_gb,
                 disk_gb=_integer(getattr(gpu_class, "max_storage", None)) / 1024**3,
                 spot_price=None,
                 on_demand_price=price,
@@ -262,8 +297,8 @@ class SaladProvider:
             "priority": self._priority,
             "image": image.format(python=spec.image.python or "3.13"),
             "public_key": public_key,
-            "cpu": max(1, offer.cpus),
-            "memory": max(1024, int(offer.memory_gb * 1024)),
+            "cpu": self._config.cpus,
+            "memory": self._config.memory_gb * 1024,
             "storage": max(1024**3, self._config.storage_gb * 1024**3),
         }
 
@@ -296,15 +331,31 @@ class SaladProvider:
         plane told only ``pending`` cannot tell it from a group that will never come
         up — so it gives up at its deadline and the replacement pulls the same image
         again.
+
+        Salad's ``running`` is the container's command started, not the bridge up,
+        and between the two lies the install over the node's own uplink. A machine
+        is reported running only once its gateway answers; until then it is pending
+        with the container's last line of output as its progress, so a boot that is
+        still moving keeps its deadline and one that has stopped meets it.
+
+        A group is created with ``autostart_policy`` on, but the start is something
+        Salad schedules a few seconds after the creation, and it is dropped when the
+        account's replica quota is full at that moment — groups of a compute deleted
+        minutes ago still count: the group sits ``stopped`` with no instance, and
+        nothing about it says it was ever meant to run. Such a group is started here,
+        at every pass until it moves, and a refusal is what its progress reads.
         """
         prefix = _prefix(_binding_text(binding, "compute_id"))
         machines: dict[str, Machine] = {}
-        for group_name, dns in await self._groups(binding):
+        for group_name, dns, status in await self._groups(binding):
+            node = claimed(group_name, prefix)
+            if status == "stopped":
+                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER, progress=await self._start(group_name), node=node)
+                continue
             instances = await self._instances(group_name)
             if instances is None:
                 continue
             instance = next(iter(instances), None)
-            node = claimed(group_name, prefix)
             if _state(instance) != "running" or not dns:
                 machines[group_name] = Machine(
                     id=group_name,
@@ -312,6 +363,15 @@ class SaladProvider:
                     user=SSH_USER,
                     progress=_progress(instance),
                     completion=_completion(instance),
+                    node=node,
+                )
+                continue
+            if group_name not in _BRIDGES and not await _answering(dns):
+                machines[group_name] = Machine(
+                    id=group_name,
+                    state="pending",
+                    user=SSH_USER,
+                    progress=await self._booting(group_name),
                     node=node,
                 )
                 continue
@@ -333,19 +393,36 @@ class SaladProvider:
 
     async def release(self, binding: Binding) -> None:
         """Take down everything the compute still has, including what nobody recorded."""
-        for group_name, _ in await self._groups(binding):
+        for group_name, _, _ in await self._groups(binding):
             await self._discard(group_name)
             await _release_bridge(group_name)
 
-    async def _groups(self, binding: Binding) -> tuple[tuple[str, str], ...]:
-        """Every container group of this compute, by name and gateway, as Salad has them."""
+    async def _groups(self, binding: Binding) -> tuple[tuple[str, str, str], ...]:
+        """Every container group of this compute, by name, gateway and status, as Salad has them."""
         prefix = _prefix(_binding_text(binding, "compute_id"))
         collection = await self._sdk.container_groups.list_container_groups(self._organization, self._project)
         return tuple(
-            (name, _dns(group) or "")
+            (name, _dns(group) or "", _status(group))
             for group in collection.items or ()
             if (name := _text(getattr(group, "name", None)) or "").startswith(prefix)
         )
+
+    async def _start(self, group_name: str) -> str:
+        """Ask Salad to start a group it left stopped, and say how that went.
+
+        A refusal is the answer the user needs — the one seen so far is the account's
+        replica quota, which a creation is allowed to exceed and a start is not — and
+        it holds the same progress token, so the deadline runs against it.
+        """
+        try:
+            await self._sdk.container_groups.start_container_group(self._organization, self._project, group_name)
+        except ApiError as error:
+            if error.status != 400:
+                raise
+            body = getattr(error.response, "body", None)
+            reason = _text(body.get("type")) if isinstance(body, Mapping) else None
+            return f"salad refused to start it: {reason or error.message or 'bad request'}"
+        return "starting"
 
     async def _discard(self, group_name: str) -> None:
         try:
@@ -411,6 +488,33 @@ class SaladProvider:
             return await self._instances_from_system_logs(group_name)
         return tuple(collection.instances or ())
 
+    async def _booting(self, group_name: str) -> str:
+        """The container's last line of output, as the token a booting group progresses by.
+
+        Asked over plain HTTP: the sdk has this endpoint, but its model of the reply
+        demands a field the reply does not carry and refuses every page.
+        """
+        now = datetime.now(UTC).replace(microsecond=0)
+        query = {
+            "start_time": _stamp(now - timedelta(hours=1)),
+            "end_time": _stamp(now),
+            "query": f'resource.labels.container_group_name = "{group_name}" and resource.type = "container"',
+            "page_size": 1,
+            "sort_order": "desc",
+        }
+        async with httpx.AsyncClient(timeout=self._config.request_timeout) as client:
+            response = await client.post(
+                f"{Environment.DEFAULT.url}/organizations/{self._organization}/log-entries",
+                headers={"Salad-Api-Key": self._api_key},
+                json=query,
+            )
+        if response.is_server_error:
+            return "booting"
+        response.raise_for_status()
+        entry = next(iter(response.json().get("items", ())), None)
+        line = _text(entry.get("text_log")) if isinstance(entry, Mapping) else None
+        return f"booting: {line.strip()[:80]}" if line else "booting"
+
     async def _instances_from_system_logs(self, group_name: str) -> tuple[object, ...]:
         try:
             logs = await self._sdk.system_logs.get_system_logs(self._organization, self._project, group_name)
@@ -462,8 +566,17 @@ def _state(instance: object) -> MachineState:
     return "running" if _enum_value(getattr(instance, "state", None)) == "running" and ready else "pending"
 
 
+def _stamp(moment: datetime) -> str:
+    """A time the log query accepts: millisecond precision, and nothing finer."""
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def _dns(group: object) -> str | None:
     return _text(getattr(getattr(group, "networking", None), "dns", None))
+
+
+def _status(group: object) -> str:
+    return _enum_value(getattr(getattr(group, "current_state", None), "status", None)) or "pending"
 
 
 def _prefix(compute_id: str) -> str:

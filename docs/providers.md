@@ -500,6 +500,8 @@ with sky.Compute(
 | `priority` | `"high", "medium", "low", "batch"` | `"low"` | Allocation priority. Higher is faster to place and more expensive. |
 | `country_codes` | `str or Sequence[str] or None` | `None` | Restrict placement to these countries. |
 | `image` | `str or None` | `None` | Container image override. |
+| `cpus` | `int` | `4` | vCPUs per node. |
+| `memory_gb` | `int` | `16` | RAM per node, in whole GiB up to 60. |
 | `storage_gb` | `int` | `50` | Container storage in GB. |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
 

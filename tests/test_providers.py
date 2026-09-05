@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import msgspec
 import pytest
+from salad_cloud_sdk.net.transport.api_error import ApiError
 
 import skyward as sky
 from skyward.core.provider import resolve
@@ -102,14 +103,29 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
     class _Salad:
         """The project as Salad has it: some of this compute's groups, and another's."""
 
-        def __init__(self, instances: dict[str, str], pulled: float) -> None:
+        def __init__(self, instances: dict[str, str], pulled: float, stopped: frozenset[str] = frozenset()) -> None:
             self._instances = instances
             self._pulled = pulled
+            self._stopped = stopped
             self.deleted: list[str] = []
+            self.started: list[str] = []
+            self.quota_full = False
 
         async def list_container_groups(self, organization: str, project: str) -> Any:
-            mine = [SimpleNamespace(name=name, networking=SimpleNamespace(dns=f"{name}.salad.cloud")) for name in self._instances]
-            return SimpleNamespace(items=[*mine, SimpleNamespace(name="skyward-cmp-2-bbbb", networking=None)])
+            mine = [
+                SimpleNamespace(
+                    name=name,
+                    networking=SimpleNamespace(dns=f"{name}.salad.cloud"),
+                    current_state=SimpleNamespace(status="stopped" if name in self._stopped else "deploying"),
+                )
+                for name in self._instances
+            ]
+            return SimpleNamespace(items=[*mine, SimpleNamespace(name="skyward-cmp-2-bbbb", networking=None, current_state=None)])
+
+        async def start_container_group(self, organization: str, project: str, name: str) -> None:
+            self.started.append(name)
+            if self.quota_full:
+                raise ApiError("Bad Request", 400, SimpleNamespace(body={"type": "replicas_quota_exceeded", "status": 400}))
 
         async def list_container_group_instances(self, organization: str, project: str, name: str) -> Any:
             state = self._instances[name]
@@ -118,9 +134,9 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
         async def delete_container_group(self, organization: str, project: str, name: str) -> None:
             self.deleted.append(name)
 
-    def _salad(instances: dict[str, str], pulled: float = 0.43) -> tuple[SaladProvider, _Salad]:
+    def _salad(instances: dict[str, str], pulled: float = 0.43, stopped: frozenset[str] = frozenset()) -> tuple[SaladProvider, _Salad]:
         provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj"})
-        groups = _Salad(instances, pulled)
+        groups = _Salad(instances, pulled, stopped)
         provider._sdk = SimpleNamespace(container_groups=groups)
         return provider, groups
 
@@ -141,6 +157,24 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
 
         assert observed["skyward-cmp-1-aaaa"].progress == "waiting for salad to allocate a machine", "one answer, so the deadline runs"
         assert observed["skyward-cmp-1-aaaa"].completion is None, "there is no fraction of a machine that was never allocated"
+
+    async def it_is_started_when_salad_created_it_stopped() -> None:
+        """Salad's autostart is a start it schedules after creating the group, and one it sometimes never sends."""
+        provider, groups = _salad({"skyward-cmp-1-aaaa": ""}, stopped=frozenset({"skyward-cmp-1-aaaa"}))
+
+        observed = await provider.machines({"compute_id": "cmp_1"})
+
+        assert groups.started == ["skyward-cmp-1-aaaa"], "asked for again, since the one asked for at creation never happened"
+        assert observed["skyward-cmp-1-aaaa"].state == "pending"
+        assert observed["skyward-cmp-1-aaaa"].progress == "starting", "a start is movement, so the deadline is measured against it"
+
+    async def it_says_why_when_salad_will_not_start_it() -> None:
+        provider, groups = _salad({"skyward-cmp-1-aaaa": ""}, stopped=frozenset({"skyward-cmp-1-aaaa"}))
+        groups.quota_full = True
+
+        observed = await provider.machines({"compute_id": "cmp_1"})
+
+        assert observed["skyward-cmp-1-aaaa"].progress == "salad refused to start it: replicas_quota_exceeded", "the reason, on the node"
 
     async def it_reports_the_pull_as_a_fraction_whichever_way_salad_says_it() -> None:
         """Salad sends a fraction where its own sdk promises a percentage."""
