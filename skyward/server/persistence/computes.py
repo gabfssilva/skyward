@@ -7,6 +7,7 @@ from typing import Any
 import msgspec
 from msgspec import Struct, field
 from piccolo.columns import Column
+from piccolo.custom_types import Combinable
 
 from skyward.server.persistence.db import transaction
 from skyward.server.persistence.events import EventStore
@@ -47,6 +48,11 @@ from skyward.shared.tls import Authority
 from skyward.worker import plugins
 
 LIVE: tuple[ComputeState, ...] = ("requested", "provisioning", "ready", "degraded", "deleting")
+
+
+def _named(name: str) -> Combinable:
+    """The compute holding ``name`` — the one the store's partial unique index admits."""
+    return (ComputeRow.name == name) & (ComputeRow.status_state != "deleted")
 """The states in which a compute still has something owed to it."""
 
 ATTEMPTS = 3
@@ -166,13 +172,13 @@ class ComputeStore:
     async def create(self, body: ComputeCreate, idempotency_key: str) -> tuple[Compute, bool]:
         """Write the definition down, and say plainly when the name is not free.
 
-        The name is unique across every compute the store has ever held, deleted
-        ones included, and the caller chose it. Left to the database that is an
-        integrity error on the way out — a 500 for something the caller could have
-        been told, and could fix by picking another name.
+        The name is unique among the computes that are not deleted — one that is
+        gone leaves its name to the next — and the caller chose it. Left to the
+        database that is an integrity error on the way out — a 500 for something
+        the caller could have been told, and could fix by picking another name.
         """
         async def insert() -> str:
-            if body.name and (taken := await ComputeRow.objects().where(ComputeRow.name == body.name).first()):
+            if body.name and (taken := await ComputeRow.objects().where(_named(body.name)).first()):
                 raise NameTakenError(
                     f"the name {body.name!r} is compute {taken.id}'s, which is {taken.status_state}",
                     name=body.name,
@@ -392,10 +398,11 @@ class ComputeStore:
         return row
 
     async def _row(self, ref: str) -> ComputeRow:
-        row = await ComputeRow.objects().where((ComputeRow.id == ref) | (ComputeRow.name == ref)).first()
-        if row is None:
+        """By id, or by name: the one alive under it, else the last one that was."""
+        rows = await ComputeRow.objects().where((ComputeRow.id == ref) | (ComputeRow.name == ref)).order_by(ComputeRow.created_at, ascending=False)
+        if not rows:
             raise NotFoundError(f"no such compute: {ref}")
-        return row
+        return next((row for row in rows if row.status_state != "deleted"), rows[0])
 
     async def _status(self, compute_id: str) -> dict[str, Any]:
         """The columns :meth:`apply` decides by — not the row, which carries the key and three JSON blobs."""

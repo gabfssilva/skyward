@@ -7,6 +7,7 @@ and can do nothing at all with an internal error.
 """
 
 import asyncio
+import sqlite3
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,42 @@ def describe_naming_a_compute() -> None:
 
         assert refused.value.details["compute"] == first.id
         assert refused.value.status == 409
+
+    async def it_is_free_again_once_that_compute_is_deleted(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
+        await store.apply(ComputeDeleting(compute=first.id, nodes_ready=0, nodes_total=0))
+        await store.apply(ComputeDeleted(compute=first.id))
+
+        second, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="second")
+
+        assert second.id != first.id
+        assert (await store.get("training")).id == second.id, "the name resolves to the compute that is alive"
+        assert (await store.get(first.id)).status.state == "deleted", "the old one is still there by id"
+
+    async def it_is_still_taken_while_that_compute_is_deleting(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
+        await store.apply(ComputeDeleting(compute=first.id, nodes_ready=0, nodes_total=0))
+
+        with pytest.raises(NameTakenError):
+            await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="second")
+
+    async def a_file_that_held_the_name_unique_forever_is_relaxed(tmp_path: Path) -> None:
+        path = tmp_path / "skyward.sqlite"
+        with sqlite3.connect(path) as old:
+            old.execute(OLD_COMPUTES)
+            old.execute("CREATE INDEX computes_name ON computes (name)")
+            old.execute("INSERT INTO computes (id, name, status_state) VALUES ('cmp_old', 'training', 'deleted')")
+
+        await connect(path)
+        store = ComputeStore(EventStore())
+        fresh, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="again")
+
+        assert (await store.get("training")).id == fresh.id
+        assert await ComputeRow.select(ComputeRow.id).where(ComputeRow.id == "cmp_old").first(), "the rows survived the rebuild"
+        with pytest.raises(sqlite3.IntegrityError):
+            await ComputeRow(id="cmp_dup", name="training", status_state="requested").save().run()
 
     async def it_lets_two_computes_go_unnamed(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
@@ -306,6 +343,18 @@ async def _answering(progress: deque[tuple[str, float | None]]) -> Any:
 async def _listing(progress: deque[tuple[str, float | None]]) -> dict[str, Machine]:
     seen = progress.popleft() if len(progress) > 1 else next(iter(progress), (None, None))
     return {"m1": Machine(id="m1", state="running", progress=seen[0], completion=seen[1])}
+
+
+OLD_COMPUTES = """CREATE TABLE "computes" ("id" VARCHAR(255) PRIMARY KEY NOT NULL DEFAULT '', "name" VARCHAR(255) UNIQUE DEFAULT null,
+"revision" INTEGER NOT NULL DEFAULT 1, "generation" INTEGER NOT NULL DEFAULT 1, "spec" JSONB NOT NULL DEFAULT '{}',
+"provider_id" VARCHAR(255) DEFAULT null, "offer_id" VARCHAR(255) DEFAULT null, "offer" JSONB DEFAULT null,
+"binding" JSONB NOT NULL DEFAULT '{}', "private_key" TEXT DEFAULT null, "markets" JSONB NOT NULL DEFAULT '[]',
+"volumes" JSONB NOT NULL DEFAULT '[]', "status_state" VARCHAR(255) NOT NULL DEFAULT '',
+"status_observed_generation" INTEGER NOT NULL DEFAULT 0, "status_nodes_ready" INTEGER NOT NULL DEFAULT 0,
+"status_nodes_total" INTEGER NOT NULL DEFAULT 0, "status_drift" JSONB NOT NULL DEFAULT '[]', "status_error" JSONB DEFAULT null,
+"lease_owner" VARCHAR(255) DEFAULT null, "lease_expires_at" TIMESTAMPTZ DEFAULT null,
+"created_at" TIMESTAMPTZ NOT NULL DEFAULT current_timestamp, "authority" JSONB DEFAULT null)"""
+"""The ``computes`` table as a daemon wrote it while a name was unique forever."""
 
 
 async def _store(tmp_path: Path) -> ComputeStore:

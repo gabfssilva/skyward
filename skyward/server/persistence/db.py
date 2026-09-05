@@ -45,6 +45,17 @@ the whole plane stalls on it. Each statement matches only rows still carrying th
 old shape, so running the list on every start is a no-op after the first.
 """
 
+INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS computes_name_live ON computes (name) WHERE status_state != 'deleted'",
+)
+"""What the models cannot say.
+
+A compute's name is unique among the computes that are not deleted, so a name
+outlives no compute: the next one may take it. Piccolo has no partial index, and
+``unique=True`` on the column would hold the name for every row the table ever
+held, so the index is written here in SQL.
+"""
+
 
 class PooledSQLiteEngine(SQLiteEngine):
     """Piccolo's SQLite engine, reusing a fixed pool instead of a connection per query.
@@ -158,8 +169,9 @@ async def connect(path: Path | None = None) -> None:
     for table in TABLES:
         await table.create_table(if_not_exists=True).run()
         await _widen(table)
+        await _relax(table)
 
-    for statement in MENDS:
+    for statement in (*INDEXES, *MENDS):
         await TABLES[0].raw(statement).run()
 
 
@@ -177,3 +189,28 @@ async def _widen(table: type[Table]) -> None:
     for column in table._meta.columns:
         if column._meta.db_column_name not in present:
             await table.raw(f"ALTER TABLE {table._meta.tablename} ADD COLUMN {column.ddl}").run()
+
+
+async def _relax(table: type[Table]) -> None:
+    """Rebuild a table whose file still says ``UNIQUE`` where the model no longer does.
+
+    A uniqueness declared on the column is part of the table's definition, and
+    SQLite has no ``ALTER`` that takes it back: the table is renamed aside,
+    created again from the model, its rows copied over and the old one dropped —
+    in one transaction, so a daemon killed halfway leaves the file as it found it.
+    Only a table the model has no unique column in is rebuilt; the rest keep theirs.
+    """
+    name = table._meta.tablename
+    indexes = await table.raw(f"PRAGMA index_list({name})").run()
+    if any(column._meta.unique for column in table._meta.columns) or not any(index["origin"] == "u" for index in indexes):
+        return
+
+    columns = ", ".join(column._meta.db_column_name for column in table._meta.columns)
+    async with table._meta.db.transaction():
+        await table.raw(f"ALTER TABLE {name} RENAME TO {name}_old").run()
+        for index in indexes:
+            if index["origin"] == "c":
+                await table.raw(f"DROP INDEX {index['name']}").run()
+        await table.create_table().run()
+        await table.raw(f"INSERT INTO {name} ({columns}) SELECT {columns} FROM {name}_old").run()
+        await table.raw(f"DROP TABLE {name}_old").run()

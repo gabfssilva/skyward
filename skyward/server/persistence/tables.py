@@ -82,7 +82,7 @@ class ComputeRow(Table, tablename="computes"):
     """
 
     id = Varchar(primary_key=True)
-    name = Varchar(unique=True, null=True, default=None, index=True)
+    name = Varchar(null=True, default=None, index=True)
     revision = Integer(default=1)
     generation = Integer(default=1)
     spec = JSONB(default="{}")
