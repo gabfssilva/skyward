@@ -19,6 +19,17 @@ class Failed(Struct, frozen=True, tag="failed", tag_field="status"):
     traceback: str
 
 
+class Lost(Struct, frozen=True, tag="lost", tag_field="status"):
+    """The process running the function died under it, and the function did not answer.
+
+    Not ``Failed``: nothing was raised, and there is no traceback to show. The
+    function may have done half its work, so this is the worker's way of saying
+    ``indeterminate`` — the caller decides whether running it again is safe.
+    """
+
+    error: str
+
+
 class Chunk(Struct, frozen=True, tag="chunk", tag_field="status"):
     """One thing a generator yielded."""
 
@@ -37,8 +48,8 @@ class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
     """The worker has never heard of the task."""
 
 
-type Outcome = Done | Failed
-type Lookup = Done | Failed | Pending | Unknown
+type Outcome = Done | Failed | Lost
+type Lookup = Done | Failed | Lost | Pending | Unknown
 
 type Step = Chunk | Failed | End
 """What one pull on a generator produces, as the worker answers the daemon."""

@@ -18,7 +18,7 @@ import os
 import sys
 import traceback
 from collections.abc import AsyncIterator, Callable, Iterator
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
@@ -28,7 +28,7 @@ import casty
 import msgspec
 
 from skyward.shared import codec
-from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
 from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
 from skyward.worker import distributed, ipc, plugins
@@ -92,12 +92,12 @@ generators: dict[str, Iterator[object]] = {}
 installed: tuple[Plugin, ...] = ()
 """The compute's plugins, rebuilt on this machine from what the spec said they were."""
 
-task_pool: Executor
-"""Where a task runs: the thread pool, or a subprocess pool. Set by :func:`main`."""
-thread_pool: Executor
-"""Where a generator always runs, whatever the task pool is: pulling an item blocks,
-and a subprocess cannot hold the far end of a stream the caller is pacing. It is the
-task pool itself under ``thread``, a pool of its own otherwise."""
+thread_pool: ThreadPoolExecutor
+"""Where a generator always runs, and a task under ``thread``: pulling an item blocks,
+and a subprocess cannot hold the far end of a stream the caller is pacing. Set by
+:func:`main`."""
+subprocesses: ipc.Pool | None = None
+"""Where a task runs under ``process`` and ``loky``. Set by :func:`main`."""
 
 
 async def health(
@@ -317,7 +317,11 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
             value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, wrapped)
             return Done(value=await codec.payload.encode(value))
 
-        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, id, code, args, os.environ["SKYWARD_PEERS"])
+        assert subprocesses is not None
+        try:
+            ok, payload = await subprocesses.run(_run_in_process, id, code, args, os.environ["SKYWARD_PEERS"])
+        except BrokenExecutor as exc:
+            return Lost(error=f"the process running the task died: {exc}")
         if ok:
             assert isinstance(payload, bytes)
             return Done(value=payload)
@@ -455,7 +459,7 @@ async def main() -> None:
     casty's heartbeats while doing it, and be evicted from the cluster it was in the
     middle of joining.
     """
-    global installed, task_pool, thread_pool
+    global installed, thread_pool, subprocesses
 
     seeds = [seed for seed in os.environ.get("SKYWARD_SEEDS", "").split(",") if seed]
     for seed in seeds:
@@ -474,8 +478,12 @@ async def main() -> None:
     stack = ExitStack()
     try:
         bind_distributed(system)
-        task_pool = stack.enter_context(ipc.executor(MODE, REUSE, CONCURRENCY))
-        thread_pool = task_pool if MODE == "thread" else stack.enter_context(ThreadPoolExecutor(max_workers=CONCURRENCY))
+        thread_pool = stack.enter_context(ThreadPoolExecutor(max_workers=CONCURRENCY))
+        match MODE:
+            case "process" | "loky" as kind:
+                subprocesses = stack.enter_context(ipc.pool(kind, REUSE, CONCURRENCY))
+            case "thread":
+                pass
         await asyncio.to_thread(setup, stack)
 
         health_monitor = await start_health(health_checks())

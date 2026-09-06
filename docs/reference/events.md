@@ -101,7 +101,7 @@ Console output goes straight to the log rather than through the daemon's interna
 | `task.started` | The task was placed on a node and began |
 | `task.succeeded` | It returned |
 | `task.failed` | It raised, timed out, or its node went away |
-| `task.indeterminate` | Its outcome cannot be established — the node is gone and the result never arrived |
+| `task.indeterminate` | Its outcome cannot be established — the node is gone and the result never arrived, or the process running the function died under it |
 
 Each carries `compute`, `task`, and the `state` its name says.
 

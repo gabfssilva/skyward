@@ -13,20 +13,24 @@ call against the cluster it holds. The subprocess never learns casty exists.
 
 from __future__ import annotations
 
+import asyncio
 import multiprocessing
 import queue
 import threading
 import traceback
-from collections.abc import Iterator, Mapping
-from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import BrokenExecutor, Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing.connection import Connection, wait
 from multiprocessing.context import BaseContext
 from multiprocessing.queues import Queue
+from typing import Literal
 
-from skyward.shared.schemas import Executor as Kind
 from skyward.worker import distributed, slot
+
+type Kind = Literal["process", "loky"]
 
 type Registrations = Queue[Connection]
 type Slots = Queue[int]
@@ -94,6 +98,12 @@ class Bridge:
     One thread waits on all the children's pipes at once and hands each request to a
     small pool, because a collection call runs on the worker's loop and blocks the
     thread that made it — one blocked answer must not hold up the next child's.
+
+    A registration is read from the child that made it — the queue carries a handle,
+    and the descriptor behind it is fetched from the process that owns it — so a
+    child that died between registering and being read has nothing to hand over.
+    That is a child with no calls to answer, not a reason for the thread that
+    answers every other child to stop.
     """
 
     def __init__(self, registrations: Registrations) -> None:
@@ -118,6 +128,8 @@ class Bridge:
                     live.add(self._registrations.get_nowait())
                 except queue.Empty:
                     break
+                except (OSError, EOFError):
+                    continue
             if not live:
                 self._stop.wait(0.1)
                 continue
@@ -139,60 +151,93 @@ class Bridge:
             conn.send((False, f"{exc}\n{traceback.format_exc()}"))
 
 
-@contextmanager
-def executor(kind: Kind, reuse: bool, workers: int) -> Iterator[Executor]:
-    """The pool the tasks run on, and the bridge behind it if they run off-process.
+class Pool:
+    """The subprocess pool the tasks run on, and the means to build it again.
 
-    ``workers`` is the executor's width — how many tasks run at once. It is the
+    A child that dies abruptly — killed for memory, crashed in a native extension —
+    breaks the executor it belonged to for good: every task after it fails on
+    arrival, in milliseconds, with the pool's own error and not the user's. A
+    worker that kept such a pool would be a node that is up, answers its pings,
+    and fails everything it is given, which is the worst thing a node can be. So
+    the pool is disposable and the worker is not: the broken one is dropped, the
+    next task gets a fresh one, and only the tasks that were in the dead child
+    are lost.
+    """
+
+    def __init__(self, kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations) -> None:
+        self._kind = kind
+        self._reuse = reuse
+        self._workers = workers
+        self._spawn = spawn
+        self._registrations = registrations
+        self._slots: Slots = spawn.Queue()
+        self._executor = self._build()
+
+    async def run[**P, T](self, fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        """Run ``fn`` in a child, and let ``BrokenExecutor`` through to the caller.
+
+        The caller sees the same exception the executor raised — that is its verdict
+        on the task in flight — but by the time it does, the pool behind this object
+        is already a new one. Two tasks that die together both raise and both ask
+        for the rebuild; the second finds it done.
+        """
+        executor = self._executor
+        try:
+            return await asyncio.get_running_loop().run_in_executor(executor, partial(fn, *args, **kwargs))
+        except BrokenExecutor:
+            if executor is self._executor:
+                executor.shutdown(wait=False)
+                self._executor = self._build()
+            raise
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False)
+
+    def _build(self) -> Executor:
+        for index in range(self._workers):
+            self._slots.put(index)
+        match self._kind:
+            case "loky":
+                from loky import get_reusable_executor
+
+                return get_reusable_executor(
+                    max_workers=self._workers,
+                    initializer=_install,
+                    initargs=(self._registrations, self._slots),
+                    reuse="auto",
+                )
+            case "process" if self._reuse:
+                return ProcessPoolExecutor(
+                    max_workers=self._workers,
+                    mp_context=self._spawn,
+                    initializer=_install,
+                    initargs=(self._registrations, self._slots),
+                )
+            case _:
+                return ProcessPoolExecutor(
+                    max_workers=self._workers,
+                    mp_context=self._spawn,
+                    initializer=_install,
+                    initargs=(self._registrations,),
+                    max_tasks_per_child=1,
+                )
+
+
+@contextmanager
+def pool(kind: Kind, reuse: bool, workers: int) -> Iterator[Pool]:
+    """The pool the tasks run on, and the bridge behind it.
+
+    ``workers`` is the pool's width — how many tasks run at once. It is the
     ``concurrency`` the pool was asked for; the buffer lives above it, in how many
     calls casty admits, not in how many the pool runs.
     """
-    if kind == "thread":
-        pool = ThreadPoolExecutor(max_workers=workers)
-        try:
-            yield pool
-        finally:
-            pool.shutdown(wait=False)
-        return
-
     spawn = multiprocessing.get_context("spawn")
     registrations: Registrations = spawn.Queue()
-    slots: Slots = spawn.Queue()
-    for index in range(workers):
-        slots.put(index)
     bridge = Bridge(registrations)
     bridge.start()
-    pool = _pool(kind, reuse, workers, spawn, registrations, slots)
+    subprocesses = Pool(kind, reuse, workers, spawn, registrations)
     try:
-        yield pool
+        yield subprocesses
     finally:
-        pool.shutdown(wait=False)
+        subprocesses.close()
         bridge.close()
-
-
-def _pool(kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations, slots: Slots) -> Executor:
-    match kind:
-        case "loky":
-            from loky import get_reusable_executor
-
-            return get_reusable_executor(
-                max_workers=workers,
-                initializer=_install,
-                initargs=(registrations, slots),
-                reuse="auto",
-            )
-        case _ if reuse:
-            return ProcessPoolExecutor(
-                max_workers=workers,
-                mp_context=spawn,
-                initializer=_install,
-                initargs=(registrations, slots),
-            )
-        case _:
-            return ProcessPoolExecutor(
-                max_workers=workers,
-                mp_context=spawn,
-                initializer=_install,
-                initargs=(registrations,),
-                max_tasks_per_child=1,
-            )

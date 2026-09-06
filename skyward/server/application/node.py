@@ -8,7 +8,7 @@ import msgspec
 
 from skyward.server.application.events import events
 from skyward.server.application.source import Source
-from skyward.server.application.ssh import SshChannel
+from skyward.server.application.ssh import SshChannel, SshUnavailableError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
@@ -358,13 +358,29 @@ class Node:
         follows the file and not the process. A dropped link ends the tail; the
         loop resumes from the line it had reached, and nothing said in between is
         lost — it is on the machine's disk, not in flight.
+
+        It is also where the node learns that the machine is gone, because it is
+        the one coroutine that lives as long as the node does: the lifecycle has
+        returned by then and the probe is optional. Two things say so. A channel
+        that gave up reconnecting will never carry another line. And a channel that
+        reconnected onto a machine without the worker — a container rescheduled
+        onto another host, a preempted VM restarted from its image — is a machine
+        the provider still lists as running and this daemon never bootstrapped;
+        so a ready node whose tail ended asks, before following again, whether the
+        worker is still there.
         """
         line = 1
-        while True:
-            async for seen, event in events(self._ssh, first=line):
-                line = seen + 1
-                self._observe(event)
-            await asyncio.sleep(1.0)
+        try:
+            while True:
+                async for seen, event in events(self._ssh, first=line):
+                    line = seen + 1
+                    self._observe(event)
+                await asyncio.sleep(1.0)
+                if self.tunnel is not None and not await self._serving():
+                    self._listener("lost", "the machine came back without its worker")
+                    return
+        except SshUnavailableError as exc:
+            self._listener("lost", str(exc))
 
     async def _health(self, command: str) -> None:
         """Ask the machine whether it is still usable, and give up on it when it is not.
@@ -376,12 +392,18 @@ class Node:
         counting as capacity, and the reconciler closes the deficit with a replacement.
 
         Once it has said it, there is nothing left to watch: the node is on its way out
-        and a second opinion about a machine already being deleted helps nobody.
+        and a second opinion about a machine already being deleted helps nobody. The
+        same goes for a channel that has given up: the tail reports that loss, and the
+        probe has nothing left to run on.
         """
         failures = 0
         while True:
             await asyncio.sleep(self._health_interval)
-            result = await self._ssh.run(command)
+            try:
+                result = await self._ssh.run(command)
+            except SshUnavailableError as exc:
+                self._log.debug("health probe stopped: {}", exc)
+                return
 
             if result.exit_code == 0:
                 failures = 0

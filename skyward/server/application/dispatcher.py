@@ -23,7 +23,7 @@ from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import ComputeNotAcceptingError
 from skyward.shared.events import TaskEvent
-from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Error, Execution, ExecutionState, Task
 from skyward.worker import worker
@@ -338,7 +338,7 @@ class Dispatcher:
                 logger.bind(node_id=execution.node_id).debug("execution {} is still running", execution.id)
             case Unknown():
                 await self._lost(task, execution, RuntimeError("the worker no longer has it"))
-            case Done() | Failed() as outcome:
+            case Done() | Failed() | Lost() as outcome:
                 await self._settle(task, execution, outcome)
                 self._wake("task.changed", task_id=task.id)
 
@@ -357,6 +357,8 @@ class Dispatcher:
                     error=Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
                 )
                 await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="failed"))
+            case Lost(error=error):
+                await self._lost(task, execution, RuntimeError(error))
 
     async def _lost(self, task: Task, execution: Execution, exc: Exception) -> None:
         """The call died, and we do not know whether the function did.
@@ -365,6 +367,10 @@ class Dispatcher:
         user's code to completion and lost the reply on the way back, so calling it
         ``failed`` — which is retryable without asking — would be the system deciding
         on the user's behalf that a duplicate side effect is acceptable.
+
+        The worker says the same thing itself, as ``Lost``, when the subprocess
+        running the function died under it: nothing was raised, and the function
+        may have done half of what it was going to.
         """
         logger.warning("execution {} lost", execution.id, exc_info=exc)
         await self._tasks.observe(
