@@ -113,6 +113,14 @@ def describe_the_windows_a_long_run_never_outgrows() -> None:
         assert len(view.nodes[0].tail) == TAIL
         assert view.nodes[0].tail[-1] == f"line {TAIL + 9}"
 
+    def the_compute_tail_interleaves_the_nodes_in_the_order_they_spoke() -> None:
+        view = ComputeView(id="cmp_1")
+        for index in range(TAIL + 4):
+            view = observe(view, ConsoleEvent(compute="cmp_1", node=f"nod_{index % 2}", content=f"line {index}"))
+
+        assert len(view.tail) == TAIL
+        assert view.tail[-2:] == (("nod_0", f"line {TAIL + 2}"), ("nod_1", f"line {TAIL + 3}"))
+
     def a_gauge_keeps_a_short_history() -> None:
         view = ComputeView(id="cmp_1")
         for index in range(HISTORY + 3):

@@ -132,6 +132,7 @@ class ComputeView:
     errors: tuple[str, ...] = ()
     nodes: tuple[NodeView, ...] = ()
     tasks: tuple[TaskView, ...] = ()
+    tail: tuple[tuple[str, str], ...] = ()
 
     @property
     def nodes_ready(self) -> int:
@@ -180,6 +181,7 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
     spec = compute.spec.specs[0] if compute.spec.specs else None
     previous = {node.id: node for node in view.nodes}
     rows = tuple(_hydrated(node, previous.get(node.id, NodeView(node.id))) for node in nodes.items if node.state != "deleted")
+    kept = {node.id for node in rows}
     hydrated = replace(
         view,
         name=compute.name,
@@ -197,6 +199,7 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
         created_at=compute.created_at,
         nodes_total=compute.status.nodes_total,
         nodes=rows,
+        tail=tuple(line for line in view.tail if line[0] in kept),
     )
     return _noted(hydrated, compute.status.last_error.message if compute.status.last_error else None)
 
@@ -275,6 +278,7 @@ def _phased(view: ComputeView, event: PhaseEvent) -> ComputeView:
 def _spoken(view: ComputeView, node_id: str, content: str) -> ComputeView:
     if not node_id:
         return view
+    view = replace(view, tail=(*view.tail, (node_id, content))[-TAIL:])
     return _amend(view, node_id, lambda node: replace(node, tail=(*node.tail, content)[-TAIL:]))
 
 

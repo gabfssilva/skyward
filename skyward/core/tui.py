@@ -280,13 +280,13 @@ def doing(running: tuple[TaskView, ...], now: datetime) -> Text:
 
 
 def tail(view: ComputeView, lines: int) -> Text:
-    """The last lines the nodes printed, newest node output last, at most ``lines``."""
+    """The last lines the nodes printed, in the order they were printed, at most ``lines``."""
+    ranks = {node.id: node.rank for node in view.nodes}
     text = Text()
-    spoken = [(node.rank, line) for node in sorted(view.nodes, key=lambda node: node.rank) for line in node.tail[-lines:]]
-    for index, (rank, line) in enumerate(spoken[-lines:]):
+    for index, (node_id, line) in enumerate(view.tail[-lines:]):
         if index:
             text.append("\n")
-        text.append(f"[node {rank}] ", style=DIM)
+        text.append(f"[node {ranks[node_id]}] ", style=DIM)
         text.append(line)
     return text
 
