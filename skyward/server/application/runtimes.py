@@ -39,13 +39,13 @@ logger = logger.bind(component="runtimes")
 type Listener = Callable[[str, str, NodeState, str | None], None]
 """(compute, node, state, error)"""
 
-type Output = Callable[[str, str, str, str | None], None]
+type Output = Callable[[str, str, str, str | None], Awaitable[None]]
 """(compute, node, content, task)"""
 
-type Sample = Callable[[str, str, str, float], None]
+type Sample = Callable[[str, str, str, float], Awaitable[None]]
 """(compute, node, name, value)"""
 
-type Phased = Callable[[str, str, PhaseMark, str, str | None], None]
+type Phased = Callable[[str, str, PhaseMark, str, str | None], Awaitable[None]]
 """(compute, node, event, phase, error)"""
 
 CALL_TIMEOUT = 86_400.0

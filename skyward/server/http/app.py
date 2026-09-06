@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Coroutine
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -132,22 +131,13 @@ def services() -> Services:
         """A gauge reading goes out to whoever is watching, and is not written down."""
         await events.publish(MetricEvent(compute=compute, node=node, name=name, value=value))
 
-    def spoken(recording: Coroutine[None, None, None]) -> None:
-        """A node's output goes straight to the log, not through the wakeup bus.
-
-        The emitter coalesces identical payloads, and two identical lines of a
-        user's `print` are not a duplicate event — they are two lines. This is the
-        one thing a node emits that is data rather than a trigger.
-        """
-        asyncio.get_running_loop().create_task(recording)
-
     runtimes = Runtimes(
         listener=lambda compute, node, state, error: wake(
             "node.observed", compute_id=compute, node_id=node, state=state, error=error,
         ),
-        output=lambda compute, node, content, task: spoken(console(compute, node, content, task)),
-        sample=lambda compute, node, name, value: spoken(sampled(compute, node, name, value)),
-        phase=lambda compute, node, event, phase, error: spoken(phased(compute, node, event, phase, error)),
+        output=console,
+        sample=sampled,
+        phase=phased,
     )
 
     offers = OfferCache(providers)

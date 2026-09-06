@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import msgspec
 
@@ -21,9 +21,9 @@ logger = logger.bind(component="node")
 DEFAULT_OPTIONS = Options()
 
 type Listener = Callable[[NodeState, str | None], None]
-type Output = Callable[[str, str | None], None]
-type Sample = Callable[[str, float], None]
-type Phased = Callable[[PhaseMark, str, str | None], None]
+type Output = Callable[[str, str | None], Awaitable[None]]
+type Sample = Callable[[str, float], Awaitable[None]]
+type Phased = Callable[[PhaseMark, str, str | None], Awaitable[None]]
 
 
 class BootstrapFailedError(RuntimeError):
@@ -117,6 +117,7 @@ class Node:
         self._probe: asyncio.Task[None] | None = None
         self._reached: dict[str, asyncio.Future[str | None]] = {}
         self._failure: str | None = None
+        self._said: asyncio.Queue[Console | Metric | Phase | None] = asyncio.Queue()
         self.tunnel: int | None = None
         """The local port the daemon's casty client dials to reach this worker."""
 
@@ -354,6 +355,13 @@ class Node:
     async def _watch(self) -> None:
         """Follow the node's event log for as long as the node lives.
 
+        What the log says is reported through the callbacks by one task per node, in
+        the order it was read: each callback is a write to the daemon's store, and
+        writes started concurrently commit in whichever order the database gets to
+        them, which is how ``completed`` once landed before ``started``. The tail
+        itself never waits on a write — the queue between them is what keeps a
+        slow store from holding the link.
+
         It survives the bootstrap ending and the worker starting, because it
         follows the file and not the process. A dropped link ends the tail; the
         loop resumes from the line it had reached, and nothing said in between is
@@ -369,6 +377,15 @@ class Node:
         so a ready node whose tail ended asks, before following again, whether the
         worker is still there.
         """
+        reporter = asyncio.create_task(self._report())
+        try:
+            await self._follow()
+            self._said.put_nowait(None)
+            await reporter
+        finally:
+            reporter.cancel()
+
+    async def _follow(self) -> None:
         line = 1
         try:
             while True:
@@ -417,15 +434,10 @@ class Node:
 
     def _observe(self, event: NodeEvent) -> None:
         match event:
-            case Console(content=content, task=task):
-                self._output(content, task)
-            case Metric(name=name, value=value):
-                self._sample(name, value)
             case Health(reason=reason):
                 self._listener("lost", reason)
             case Phase() as reached:
                 self._log.debug("phase {} {}{}", reached.phase, reached.event, f": {reached.error}" if reached.error else "")
-                self._phase(reached.event, reached.phase, reached.error)
                 match reached:
                     case Phase(event="completed", phase=phase):
                         self._settle(phase, None)
@@ -433,6 +445,23 @@ class Node:
                         self._abort(f"{phase}: {error or 'failed'}")
                     case Phase():
                         pass
+                self._said.put_nowait(reached)
+            case Console() | Metric():
+                self._said.put_nowait(event)
+
+    async def _report(self) -> None:
+        """Hand the log over, one line at a time, until told there are no more."""
+        while (event := await self._said.get()) is not None:
+            try:
+                match event:
+                    case Console(content=content, task=task):
+                        await self._output(content, task)
+                    case Metric(name=name, value=value):
+                        await self._sample(name, value)
+                    case Phase(event=mark, phase=phase, error=error):
+                        await self._phase(mark, phase, error)
+            except Exception:
+                self._log.exception("could not report {}", event)
 
     def _settle(self, phase: str, error: str | None) -> None:
         waiter = self._waiter(phase)

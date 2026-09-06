@@ -9,6 +9,7 @@ else was watching.
 """
 
 import asyncio
+import random
 from collections.abc import AsyncIterator
 
 import pytest
@@ -60,6 +61,10 @@ class _Link(Ssh):
         return bool(self._tails)
 
 
+async def _quiet(*_: object) -> None:
+    pass
+
+
 def _node(link: _Link, reports: list[Report], ready: bool = True, options: Options = DEFAULT_OPTIONS) -> Node:
     node = Node(
         Machine(id="m-1", state="running", host="10.0.0.1"),
@@ -68,9 +73,9 @@ def _node(link: _Link, reports: list[Report], ready: bool = True, options: Optio
         image=Image(),
         source=Source(arguments=("skyward",)),
         listener=lambda state, error: reports.append((state, error)),
-        output=lambda content, task: None,
-        sample=lambda name, value: None,
-        phase=lambda event, phase, error: None,
+        output=_quiet,
+        sample=_quiet,
+        phase=_quiet,
         options=options,
     )
     node._ssh = link
@@ -116,7 +121,11 @@ def describe_a_link_that_heals() -> None:
         phases: list[str] = []
         link = _Link(tails=[[], ['{"type":"phase","event":"completed","phase":"later"}']], worker_alive=True)
         node = _node(link, reports)
-        node._phase = lambda event, phase, error: phases.append(phase)
+
+        async def noted(event: str, phase: str, error: str | None) -> None:
+            phases.append(phase)
+
+        node._phase = noted
 
         async with asyncio.timeout(5):
             await node._watch()
@@ -134,3 +143,41 @@ def describe_a_link_that_heals() -> None:
 
         assert link.commands == []
         assert reports == [("lost", "127.0.0.1: reconnection exhausted")]
+
+
+def describe_what_the_log_says() -> None:
+    async def is_reported_in_the_order_it_was_read_however_long_each_report_takes() -> None:
+        lines = [
+            '{"type":"phase","event":"started","phase":"apt"}',
+            '{"type":"console","content":"Reading package lists..."}',
+            '{"type":"phase","event":"completed","phase":"apt"}',
+            '{"type":"phase","event":"started","phase":"uv"}',
+            '{"type":"metric","name":"cpu","value":3.5}',
+            '{"type":"phase","event":"completed","phase":"uv"}',
+            '{"type":"phase","event":"started","phase":"venv"}',
+            '{"type":"phase","event":"completed","phase":"venv"}',
+        ]
+        said: list[str] = []
+        node = _node(_Link(tails=[lines]), [])
+
+        async def slowly(*words: object) -> None:
+            await asyncio.sleep(random.uniform(0, 0.01))
+            said.append(" ".join(str(word) for word in words if word is not None))
+
+        node._output = slowly
+        node._sample = slowly
+        node._phase = slowly
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert said == [
+            "started apt",
+            "Reading package lists...",
+            "completed apt",
+            "started uv",
+            "cpu 3.5",
+            "completed uv",
+            "started venv",
+            "completed venv",
+        ]

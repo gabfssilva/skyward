@@ -139,7 +139,10 @@ def describe_listing_computes() -> None:
 
 def describe_reaching_a_compute_this_daemon_is_not_holding() -> None:
     async def it_is_told_rather_than_raised_through(tmp_path: Path) -> None:
-        files = Files(Runtimes(listener=lambda *_: None, output=lambda *_: None, sample=lambda *_: None, phase=lambda *_: None))
+        async def quiet(*_: object) -> None:
+            pass
+
+        files = Files(Runtimes(listener=lambda *_: None, output=quiet, sample=quiet, phase=quiet))
 
         with pytest.raises(ComputeNotConnectedError) as refused:
             await files.run("cmp_elsewhere", "all", "echo hello")
@@ -367,14 +370,16 @@ def _runtime(cluster: bool = True) -> Runtime:
 
 
 def _node(host: str = "127.0.0.1") -> ApplicationNode:
-    quiet = lambda *args: None  # noqa: E731
+    async def quiet(*_: object) -> None:
+        pass
+
     return ApplicationNode(
         Machine(id="m1", state="running", host=host),
         compute="cmp_1",
         private_key="key",
         image=Image(),
         source=Source(arguments=("skyward",)),
-        listener=quiet,
+        listener=lambda *_: None,
         output=quiet,
         sample=quiet,
         phase=quiet,
