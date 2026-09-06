@@ -15,8 +15,11 @@ from dataclasses import dataclass, replace
 from types import ModuleType
 from typing import Protocol, overload
 
+from msgspec import UNSET, UnsetType
+
 from skyward.core import context
 from skyward.core.context import _Sky
+from skyward.shared.retry import Retry
 
 
 class Pool(Protocol):
@@ -49,13 +52,23 @@ def _pool(target: Target) -> Pool:
 
 @dataclass(frozen=True, slots=True)
 class Pending[T]:
+    """One call, described and not yet made.
+
+    ``retry`` is the call's retry decision: unset takes the pool's, ``None`` turns
+    retrying off for this call, and a function decides — see :func:`function`.
+    """
+
     fn: Callable[..., T]
     args: tuple[object, ...]
     kwargs: dict[str, object]
     timeout: float | None = None
+    retry: Retry | None | UnsetType = UNSET
 
     def with_timeout(self, timeout: float) -> Pending[T]:
         return replace(self, timeout=timeout)
+
+    def with_retry(self, retry: Retry | None) -> Pending[T]:
+        return replace(self, retry=retry)
 
     def __rshift__(self, target: Target) -> T:
         return _pool(target).run(self)
@@ -135,18 +148,30 @@ def function[**P, T](fn: Callable[P, T]) -> Callable[P, Pending[T]]: ...
 
 
 @overload
-def function[**P, T](*, timeout: float) -> Callable[[Callable[P, T]], Callable[P, Pending[T]]]: ...
+def function[**P, T](
+    *, timeout: float | None = None, retry: Retry | None | UnsetType = UNSET
+) -> Callable[[Callable[P, T]], Callable[P, Pending[T]]]: ...
 
 
 def function[**P, T](
     fn: Callable[P, T] | None = None,
     *,
     timeout: float | None = None,
+    retry: Retry | None | UnsetType = UNSET,
 ) -> Callable[P, Pending[T]] | Callable[[Callable[P, T]], Callable[P, Pending[T]]]:
     """Turn a function into one that describes a call instead of making it.
 
-    Bare (``@function``) or with a default timeout (``@function(timeout=600)``),
-    which any single call can override with ``.with_timeout``.
+    Bare (``@function``) or with defaults (``@function(timeout=600)``), which any
+    single call can override with ``.with_timeout`` and ``.with_retry``.
+
+    ``retry`` is a ``(reason, attempt) -> bool`` asked when an attempt does not
+    answer. ``reason`` is the exception the function raised, or a :class:`sky.Lost`
+    when the attempt was lost — the process died under it, the worker restarted, the
+    machine went away — and ``attempt`` is the one that just failed, from one. An
+    exception is asked about on the node, where it was raised; a loss on the daemon.
+    Left unset, the call takes the pool's decision, whose default tries once more
+    after a loss and never after an exception: a function that raised is retried
+    only if the decision says so. ``None`` turns retrying off for this function.
     """
 
     def decorate(target: Callable[P, T]) -> Callable[P, Pending[T]]:
@@ -154,7 +179,7 @@ def function[**P, T](
             raise TypeError(f"{target.__name__} is a generator: decorate it with @stream, which gives back its items")
 
         def pending(*args: P.args, **kwargs: P.kwargs) -> Pending[T]:
-            return Pending(target, args, kwargs, timeout)
+            return Pending(target, args, kwargs, timeout, retry)
 
         return pending
 

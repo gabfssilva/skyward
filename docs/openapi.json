@@ -421,7 +421,14 @@
             "type": "array"
           },
           "retry": {
-            "$ref": "#/components/schemas/RetryPolicy"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "selection": {
             "default": "cheapest",
@@ -2153,26 +2160,6 @@
         "title": "Result",
         "type": "object"
       },
-      "RetryPolicy": {
-        "default": {
-          "ambiguous_retries": 0,
-          "safe_retries": 3
-        },
-        "description": "How many times to try again, split by whether trying again is safe.\n\nA task that never started can be re-run freely. A task whose node went silent\nafter it may have run is a different question, and it defaults to zero because\nthe system does not know whether it had side effects and will not pretend to.",
-        "properties": {
-          "ambiguous_retries": {
-            "default": 0,
-            "type": "integer"
-          },
-          "safe_retries": {
-            "default": 3,
-            "type": "integer"
-          }
-        },
-        "required": [],
-        "title": "RetryPolicy",
-        "type": "object"
-      },
       "Spec": {
         "description": "One shape of machine that would do, from one account.\n\nA compute carries several of these as a preference list and buys exactly one:\neverything here is what the market filters offers on, and everything that must\nbe true of the whole fleet \u2014 volumes, plugins, node counts \u2014 is on the compute\ninstead.",
         "properties": {
@@ -2363,7 +2350,14 @@
             ]
           },
           "retry": {
-            "$ref": "#/components/schemas/RetryPolicy"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "state": {
             "enum": [
@@ -2457,7 +2451,10 @@
           "retry": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/RetryPolicy"
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2482,12 +2479,17 @@
       },
       "TaskEvent": {
         "properties": {
+          "attempt": {
+            "default": 1,
+            "type": "integer"
+          },
           "compute": {
             "type": "string"
           },
           "state": {
             "enum": [
               "started",
+              "retrying",
               "succeeded",
               "failed",
               "indeterminate"

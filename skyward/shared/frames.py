@@ -15,8 +15,15 @@ class Done(Struct, frozen=True, tag="done", tag_field="status"):
 
 
 class Failed(Struct, frozen=True, tag="failed", tag_field="status"):
+    """The function raised.
+
+    ``retry`` is the user's retry decision, taken on the worker where the exception
+    was alive, so the daemon can act on it without ever unpickling what was raised.
+    """
+
     error: str
     traceback: str
+    retry: bool = False
 
 
 class Lost(Struct, frozen=True, tag="lost", tag_field="status"):

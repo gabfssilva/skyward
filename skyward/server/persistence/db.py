@@ -35,14 +35,18 @@ MENDS = (
     "UPDATE generations SET spec = json_remove(json_set(spec, '$.nodes.initial', "
     "json_extract(spec, '$.nodes.desired')), '$.nodes.desired') "
     "WHERE json_extract(spec, '$.nodes.desired') IS NOT NULL",
+    "UPDATE computes SET spec = json_remove(spec, '$.retry') WHERE json_type(spec, '$.retry') = 'object'",
+    "UPDATE generations SET spec = json_remove(spec, '$.retry') WHERE json_type(spec, '$.retry') = 'object'",
 )
 """Rewrites for rows written under an older vocabulary.
 
 ``_widen`` adds the columns a release added; this rewrites the JSON already inside
 them. A spec written before ``NodeBounds.desired`` became ``initial`` fails to
 decode, and the reconciler decodes every compute on every tick — one old row and
-the whole plane stalls on it. Each statement matches only rows still carrying the
-old shape, so running the list on every start is a no-op after the first.
+the whole plane stalls on it. A task's ``retry`` used to be a JSON object of
+counters nothing read; it is a blob digest now, and the old objects are cleared.
+Each statement matches only rows still carrying the old shape, so running the
+list on every start is a no-op after the first.
 """
 
 INDEXES = (

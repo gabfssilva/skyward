@@ -94,6 +94,7 @@ if TYPE_CHECKING:
         StraysTerminated,
         TaskEvent,
     )
+    from skyward.shared.retry import Lost, Retry
     from skyward.shared.schemas import ComputeState, NodeState, TaskState
     from skyward.worker import metrics, plugins, storage
     from skyward.worker.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
@@ -146,6 +147,9 @@ nothing a bare node could not import.
 SCHEMAS = ("ComputeState", "NodeState", "TaskState")
 """The state words, out of ``skyward.shared.schemas``, for the same reason."""
 
+RETRY = ("Lost", "Retry")
+"""What a retry decision is asked about, out of ``skyward.shared.retry``."""
+
 __all__ = [
     "AWS",
     "Accelerator",
@@ -184,6 +188,7 @@ __all__ = [
     "Lambda",
     "LeaseClaimed",
     "LeaseReleased",
+    "Lost",
     "MassedCompute",
     "MetricEvent",
     "MetricSpec",
@@ -200,6 +205,7 @@ __all__ = [
     "Port",
     "ProgressEvent",
     "Provider",
+    "Retry",
     "RunPod",
     "Salad",
     "Scaleway",
@@ -259,6 +265,8 @@ def __getattr__(name: str) -> object:
             value = getattr(importlib.import_module("skyward.shared.events"), name)
         case _ if name in SCHEMAS:
             value = getattr(importlib.import_module("skyward.shared.schemas"), name)
+        case _ if name in RETRY:
+            value = getattr(importlib.import_module("skyward.shared.retry"), name)
         case _ if name in RUNTIME:
             value = getattr(importlib.import_module("skyward.worker.api"), name)
         case _ if name in SHARED:

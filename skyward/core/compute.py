@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 import msgspec
+from msgspec import UNSET, UnsetType
 
 from skyward.core import context, usercode
 from skyward.core.accelerators import Accelerator
@@ -31,7 +32,7 @@ from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
 from skyward.core.view import EventCallback, decoded
-from skyward.shared import codec
+from skyward.shared import codec, retry
 from skyward.shared.accelerators import resolve
 from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
@@ -120,6 +121,11 @@ class Compute:
     reconciling them. ``database`` is the exception: it runs the control plane in
     this process, over that file.
 
+    ``retry`` is the pool's answer to an attempt that did not answer, a
+    ``(reason, attempt) -> bool`` — see :func:`function`, whose ``retry`` overrides
+    it per call. The default tries once more after a loss and never after an
+    exception; ``None`` retries nothing.
+
     ``attach`` is :meth:`attached`'s: the compute that already exists, in place of
     a definition. It is a constructor argument only so that the class has one
     constructor.
@@ -143,6 +149,7 @@ class Compute:
         ports: Sequence[Port] = (),
         volumes: Sequence[Volume] = (),
         ttl: int = 600,
+        retry: retry.Retry | None = retry.default,
         name: str | None = None,
         url: str | None = None,
         database: Path | None = None,
@@ -182,6 +189,7 @@ class Compute:
             ttl=ttl,
         )
         self._name = name
+        self._retry = retry
         self._plugins = tuple(plugins)
         self._ports = tuple(ports)
         self._volumes = tuple(volumes)
@@ -385,6 +393,7 @@ class Compute:
             await self._ensure_providers()
             await self._upload_includes()
             await self._upload_volumes()
+            await self._upload_retry()
             compute = await self.client.call(
                 "POST",
                 "/v1/computes",
@@ -461,6 +470,22 @@ class Compute:
             self._spec,
             image=msgspec.structs.replace(image, includes_sha256=sha),
         )
+
+    async def _upload_retry(self) -> None:
+        """Put the pool's retry decision where the daemon and the nodes can ask it.
+
+        A function, so it travels as a blob like the user's code does, and the spec
+        carries its digest. ``None`` is written as no digest: a pool that retries
+        nothing has nothing to upload.
+        """
+        if self._retry is not None:
+            self._spec = msgspec.structs.replace(self._spec, retry=await self._store_decision(self._retry))
+
+    async def _store_decision(self, decision: retry.Retry) -> str:
+        blob = await codec.payload.encode(decision)
+        sha = await codec.digest(blob)
+        await self.client.upload(f"/v1/blobs/{sha}", blob)
+        return sha
 
     async def _upload_volumes(self) -> None:
         """Put the volumes on the spec, and the credentials for them somewhere else.
@@ -638,6 +663,21 @@ class Compute:
         args = await codec.payload.encode((pending.args, pending.kwargs))
         inline, stored = await self._args(args)
 
+        match pending:
+            case Streaming():
+                chosen = None
+            case Pending(retry=chosen):
+                pass
+
+        decision: str | None | UnsetType
+        match chosen:
+            case None:
+                decision = None
+            case UnsetType():
+                decision = UNSET
+            case _:
+                decision = await self._store_decision(chosen)
+
         return await self.client.call(
             "POST",
             "/v1/tasks",
@@ -650,6 +690,7 @@ class Compute:
                     args_inline=inline,
                     args_sha256=stored,
                     timeout_seconds=int(pending.timeout) if pending.timeout else None,
+                    retry=decision,
                 ),
             ),
             headers={"Idempotency-Key": uuid.uuid4().hex},

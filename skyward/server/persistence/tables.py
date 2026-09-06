@@ -199,7 +199,11 @@ class TaskRow(Table, tablename="tasks"):
     args_sha256 = Varchar()
     dispatch = Varchar()
     state = Varchar(index=True)
-    retry = JSONB(default="{}")
+    decision = Varchar(null=True, default=None)
+    """The digest of the task's retry decision. Not ``retry``: that column exists in
+    older files as a ``NOT NULL`` object nobody read, and a file cannot be told to
+    let it go — so it is left where it is, filled by its own default, and this one
+    is the column that is read."""
     correlation_id = Varchar(null=True, default=None, index=True)
     submitted_at = Timestamptz()
     deadline_at = Timestamptz(null=True, default=None)

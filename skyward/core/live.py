@@ -328,6 +328,8 @@ class RichConsole:
                 _emit_task(self._console, "task", "done", "")
             case TaskEvent(state="failed"):
                 _emit_task(self._console, "task", "failed", "")
+            case TaskEvent(state="retrying", attempt=attempt):
+                _emit_task(self._console, "task", f"retrying, attempt {attempt}", "yellow")
             case ComputeDegraded(error=error):
                 _emit(self._console, "error", error, "red")
             case _:

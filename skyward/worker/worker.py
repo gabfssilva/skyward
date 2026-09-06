@@ -27,8 +27,9 @@ from typing import Literal
 import casty
 import msgspec
 
-from skyward.shared import codec
+from skyward.shared import codec, retry
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
+from skyward.shared.observability import logger
 from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
 from skyward.worker import distributed, ipc, plugins
@@ -190,9 +191,11 @@ class Worker:
     the compute needs another node.
     """
 
-    async def run(self, id: str, code: bytes, args: bytes) -> bytes:
+    async def run(self, id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> bytes:
+        """Run one attempt. ``decision`` is the task's retry decision, pickled, and
+        ``attempt`` which attempt this is — asked together if the function raises."""
         outcomes[id] = None
-        outcome = await execute(id, code, args)
+        outcome = await execute(id, code, args, decision, attempt)
         outcomes[id] = outcome
         return encode(outcome)
 
@@ -272,7 +275,7 @@ class Control:
         return encode(lookup)
 
 
-async def execute(id: str, code: bytes, args: bytes) -> Outcome:
+async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Outcome:
     """Run one task, off the event loop, start to finish.
 
     The code and the arguments arrive as two blobs and are unpickled here, on the
@@ -319,19 +322,37 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
 
         assert subprocesses is not None
         try:
-            ok, payload = await subprocesses.run(_run_in_process, id, code, args, os.environ["SKYWARD_PEERS"])
+            ok, payload = await subprocesses.run(_run_in_process, id, code, args, os.environ["SKYWARD_PEERS"], decision, attempt)
         except BrokenExecutor as exc:
             return Lost(error=f"the process running the task died: {exc}")
         if ok:
             assert isinstance(payload, bytes)
             return Done(value=payload)
         assert isinstance(payload, tuple)
-        error, trace = payload
-        return Failed(error=error, traceback=trace)
+        error, trace, again = payload
+        return Failed(error=error, traceback=trace, retry=again)
     except Exception as exc:
-        return Failed(error=str(exc), traceback=traceback.format_exc())
+        return Failed(error=str(exc), traceback=traceback.format_exc(), retry=_again(decision, exc, attempt))
     finally:
         task.reset(token)
+
+
+def _again(decision: bytes, exc: Exception, attempt: int) -> bool:
+    """The user's retry decision, asked here because the exception is alive here.
+
+    The daemon never unpickles what a function raised — it has none of the
+    libraries that raised it — so the question is put on the worker and the answer
+    travels back as one bit of the ``Failed`` frame. A decision that cannot be
+    loaded is a no, said in the log.
+    """
+    if not decision:
+        return False
+    try:
+        fn: retry.Retry = codec.loads(decision)
+    except Exception:
+        logger.warning("the task's retry decision could not be loaded; not retrying", exc_info=True)
+        return False
+    return retry.decide(fn, exc, attempt)
 
 
 async def advance(id: str) -> Step:
@@ -387,7 +408,9 @@ def _installed() -> tuple[Plugin, ...]:
     return child_plugins
 
 
-def _run_in_process(id: str, code: bytes, args: bytes, peers: str) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
+def _run_in_process(
+    id: str, code: bytes, args: bytes, peers: str, decision: bytes = b"", attempt: int = 1
+) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str, bool]]:
     """Run one task in a subprocess, and bring back an answer that survives the trip.
 
     The code and the arguments are unpickled here, where the user's libraries are,
@@ -423,7 +446,7 @@ def _run_in_process(id: str, code: bytes, args: bytes, peers: str) -> tuple[Lite
             sys.stderr.flush()
         return True, codec.dumps(value)
     except Exception as exc:
-        return False, (str(exc), traceback.format_exc())
+        return False, (str(exc), traceback.format_exc(), _again(decision, exc, attempt))
     finally:
         task.reset(token)
 

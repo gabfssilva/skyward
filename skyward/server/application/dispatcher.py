@@ -20,7 +20,7 @@ from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared import codec
+from skyward.shared import codec, retry
 from skyward.shared.errors import ComputeNotAcceptingError
 from skyward.shared.events import TaskEvent
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
@@ -37,6 +37,10 @@ _OUTCOMES: codec.Msgpack[Outcome] = codec.Msgpack(Outcome)
 _LOOKUPS: codec.Msgpack[Lookup] = codec.Msgpack(Lookup)
 """What a worker answers with wraps the user's payload, so it is decoded through
 the codec — off the loop past the threshold — rather than inline."""
+_DECISIONS: codec.Pickle[retry.Retry] = codec.Pickle()
+"""The user's retry decision, the one piece of theirs the daemon unpickles. It is
+asked about a :class:`retry.Lost` — a type of skyward's — and a decision that needs
+the user's libraries to load is one that cannot be asked here, and is a no."""
 
 IN_FLIGHT: tuple[ExecutionState, ...] = ("dispatching", "accepted", "started")
 """Sent, and not yet answered for.
@@ -207,7 +211,7 @@ class Dispatcher:
                     case Chunk():
                         yield frame
         except Exception as exc:
-            await self._lost(task, execution, exc)
+            await self._lost(task, execution, exc, retry.Lost("unknown", node_id))
             return
         finally:
             runtime.dispatched.discard(execution.id)
@@ -265,29 +269,39 @@ class Dispatcher:
     async def _placement(self, task: Task, execution: Execution, free: tuple[str, ...]) -> str | None:
         """One node, or the one node this execution is owed.
 
+        A retry goes somewhere else when there is somewhere else: the node that lost
+        the last attempt, or raised on it, is the one node with a known reason to do
+        it again. With nowhere else to go, it goes there anyway.
+
         A broadcast is pinned: its ranks were frozen when it was admitted, and rank
         3's execution belongs on the machine that is rank 3. If that machine is not
         there, the execution waits — placing it elsewhere would run the user's code
         twice on one node and never on another.
         """
         if task.dispatch == "one":
-            return free[execution.ordinal % len(free)]
+            previous = next((e.node_id for e in task.executions if e.id == execution.retry_of), None)
+            elsewhere = tuple(node for node in free if node != previous) or free
+            return elsewhere[execution.ordinal % len(elsewhere)]
 
         ranks = {node.rank: node.id for node in await self._nodes.of(task.compute_id)}
         pinned = ranks.get(execution.rank)
         return pinned if pinned in free else None
 
     async def _run(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> None:
+        started = False
         try:
             code = await self._blobs.get(task.function)
             args = await self._blobs.get(task.args_sha256)
+            decision = await self._blobs.get(task.retry) if task.retry else b""
 
             node = await self._worker(runtime, node_id)
 
             await self._tasks.observe(execution.id, "started", node_id=node_id)
-            await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="started"))
+            await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="started", attempt=execution.ordinal))
+            started = True
 
-            await self._settle(task, execution, await _OUTCOMES.decode(await node.run(execution.id, code, args)))
+            outcome = await _OUTCOMES.decode(await node.run(execution.id, code, args, decision, execution.ordinal))
+            await self._settle(task, execution, outcome, node_id)
         except LINK_ERRORS as exc:
             logger.bind(compute_id=task.compute_id, node_id=node_id).warning(
                 "the link dropped with execution {} in flight ({}); the worker will be asked for it when the link is back",
@@ -295,7 +309,7 @@ class Dispatcher:
                 exc,
             )
         except Exception as exc:
-            await self._lost(task, execution, exc)
+            await self._lost(task, execution, exc, retry.Lost("unknown" if started else "never_started", node_id))
         finally:
             runtime.dispatched.discard(execution.id)
             self._wake("task.changed", task_id=task.id)
@@ -318,7 +332,12 @@ class Dispatcher:
 
         node = await self._nodes.get(task.compute_id, execution.node_id)
         if node.state != "ready" or execution.node_id not in runtime.ready:
-            await self._lost(task, execution, RuntimeError(f"node {execution.node_id} went away while it held the task"))
+            await self._lost(
+                task,
+                execution,
+                RuntimeError(f"node {execution.node_id} went away while it held the task"),
+                retry.Lost("node_gone", execution.node_id),
+            )
             return
         if execution.node_id not in runtime.reachable:
             return
@@ -337,48 +356,74 @@ class Dispatcher:
             case Pending():
                 logger.bind(node_id=execution.node_id).debug("execution {} is still running", execution.id)
             case Unknown():
-                await self._lost(task, execution, RuntimeError("the worker no longer has it"))
+                await self._lost(task, execution, RuntimeError("the worker no longer has it"), retry.Lost("worker_restarted", execution.node_id))
             case Done() | Failed() | Lost() as outcome:
-                await self._settle(task, execution, outcome)
+                await self._settle(task, execution, outcome, execution.node_id)
                 self._wake("task.changed", task_id=task.id)
 
-    async def _settle(self, task: Task, execution: Execution, outcome: Outcome) -> None:
+    async def _settle(self, task: Task, execution: Execution, outcome: Outcome, node_id: str | None) -> None:
         log = logger.bind(compute_id=task.compute_id)
         match outcome:
             case Done(value=value):
                 log.info("execution {} succeeded", execution.id)
                 await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
-                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="succeeded"))
-            case Failed(error=error, traceback=trace):
+                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="succeeded", attempt=execution.ordinal))
+            case Failed(error=error, traceback=trace, retry=again):
                 log.info("execution {} failed: {}", execution.id, error)
-                await self._tasks.observe(
-                    execution.id,
-                    "failed",
-                    error=Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
-                )
-                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="failed"))
+                failure = Error(code="task_failed", message=error, retryable=False, details={"traceback": trace})
+                if again:
+                    await self._again(task, execution, "failed", failure)
+                    return
+                await self._tasks.observe(execution.id, "failed", error=failure)
+                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="failed", attempt=execution.ordinal))
             case Lost(error=error):
-                await self._lost(task, execution, RuntimeError(error))
+                await self._lost(task, execution, RuntimeError(error), retry.Lost("process_died", node_id))
 
-    async def _lost(self, task: Task, execution: Execution, exc: Exception) -> None:
+    async def _lost(self, task: Task, execution: Execution, exc: Exception, loss: retry.Lost) -> None:
         """The call died, and we do not know whether the function did.
 
         This is the only honest verdict available. The worker may have run the
         user's code to completion and lost the reply on the way back, so calling it
-        ``failed`` — which is retryable without asking — would be the system deciding
-        on the user's behalf that a duplicate side effect is acceptable.
+        ``failed`` would be the system deciding on the user's behalf that a duplicate
+        side effect is acceptable. Whether to try again is the task's retry decision
+        to make, and it is asked here with what the daemon knows: the loss, and
+        which attempt it was.
 
         The worker says the same thing itself, as ``Lost``, when the subprocess
         running the function died under it: nothing was raised, and the function
         may have done half of what it was going to.
         """
         logger.warning("execution {} lost", execution.id, exc_info=exc)
-        await self._tasks.observe(
-            execution.id,
-            "indeterminate",
-            error=Error(code="task_indeterminate", message=f"{type(exc).__name__}: {exc}", retryable=False),
+        failure = Error(code="task_indeterminate", message=f"{type(exc).__name__}: {exc}", retryable=False)
+        if await self._retry(task, loss, execution.ordinal):
+            await self._again(task, execution, "indeterminate", failure)
+            return
+        await self._tasks.observe(execution.id, "indeterminate", error=failure)
+        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="indeterminate", attempt=execution.ordinal))
+
+    async def _retry(self, task: Task, loss: retry.Lost, attempt: int) -> bool:
+        if task.retry is None:
+            return False
+        try:
+            decision = await _DECISIONS.decode(await self._blobs.get(task.retry))
+        except Exception:
+            logger.bind(compute_id=task.compute_id).warning("the retry decision of task {} cannot be loaded here; not retrying", task.id, exc_info=True)
+            return False
+        return retry.decide(decision, loss, attempt)
+
+    async def _again(self, task: Task, execution: Execution, state: ExecutionState, error: Error) -> None:
+        """The attempt is over and the next one is written down, in one breath.
+
+        The task never shows a terminal state in between, so a caller waiting on it
+        is not handed the ending a moment before the retry that was meant to spare
+        them. The new execution is ``created``, and the next pass places it.
+        """
+        logger.bind(compute_id=task.compute_id).info(
+            "execution {} {}; attempt {} of task {} is written down", execution.id, state, execution.ordinal + 1, task.id
         )
-        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="indeterminate"))
+        await self._tasks.observe(execution.id, state, error=error, again=True)
+        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="retrying", attempt=execution.ordinal + 1))
+        self._wake("compute.dispatch", compute_id=task.compute_id)
 
     async def _worker(self, runtime: Runtime, node_id: str) -> worker.Worker:
         system = await runtime.system(node_id)

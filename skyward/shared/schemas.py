@@ -356,18 +356,6 @@ class NodeBounds(Struct, frozen=True):
     max: int | None = None
 
 
-class RetryPolicy(Struct, frozen=True):
-    """How many times to try again, split by whether trying again is safe.
-
-    A task that never started can be re-run freely. A task whose node went silent
-    after it may have run is a different question, and it defaults to zero because
-    the system does not know whether it had side effects and will not pretend to.
-    """
-
-    safe_retries: int = 3
-    ambiguous_retries: int = 0
-
-
 class Options(Struct, frozen=True):
     """Operational knobs the daemon reads off the spec.
 
@@ -447,7 +435,10 @@ class ComputeSpec(Struct, frozen=True):
     worker: Worker = Worker()
     options: Options = Options()
     plugins: tuple[PluginRef, ...] = ()
-    retry: RetryPolicy = RetryPolicy()
+    retry: str | None = None
+    """The digest of the blob holding the compute's retry decision, a pickled
+    ``(reason, attempt) -> bool``. ``None`` is no retry at all. A task that names no
+    decision of its own takes this one."""
     delete_on_exit: bool = False
     desired: Desired = "running"
     ttl: int = 600
@@ -611,7 +602,9 @@ class TaskCreate(Struct, frozen=True):
     args_sha256: str | None = None
     rank: int | None = None
     timeout_seconds: int | None = None
-    retry: RetryPolicy | UnsetType = UNSET
+    retry: str | None | UnsetType = UNSET
+    """The digest of this task's retry decision. Unset takes the compute's; ``None``
+    turns retrying off for this task alone."""
     correlation_id: str | None = None
 
 
@@ -631,7 +624,7 @@ class Task(Struct, frozen=True):
     args_sha256: str
     dispatch: Dispatch
     state: TaskState
-    retry: RetryPolicy
+    retry: str | None
     executions: tuple[Execution, ...]
     submitted_at: datetime
     correlation_id: str | None = None
@@ -822,11 +815,13 @@ class Readiness(Struct, frozen=True):
 type PhaseMark = Literal["started", "completed", "failed"]
 """Whether a bootstrap phase opened, closed, or broke."""
 
-type TaskEventState = Literal["started", "succeeded", "failed", "indeterminate"]
-"""What the stream says about a task: that it began, or how it ended.
+type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "indeterminate"]
+"""What the stream says about a task: that it began, that it is being tried again, or how it ended.
 
 Narrower than :data:`TaskState`, which is the task resource's own vocabulary. A
 task that was never placed has a state and no event, and ``started`` is a moment
 rather than a state — the two are not the same alphabet and are not merged.
+``retrying`` is the moment an attempt ended and another was written down in its
+place; the task is queued again, and nothing terminal has been said.
 """
 

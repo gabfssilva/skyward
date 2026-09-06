@@ -267,11 +267,17 @@ class MetricEvent(Struct, frozen=True, tag_field="type", tag="node.metrics"):
 
 
 class TaskEvent(Struct, frozen=True, tag_field="type", tag="task.state"):
-    """A task began, or reached the one terminal outcome it is allowed."""
+    """A task began, is being tried again, or reached the one terminal outcome it is allowed.
+
+    ``attempt`` counts the executions from one: on ``started`` it is the one that
+    began, on ``retrying`` the one that is about to, and on an ending the one that
+    ended — so a reader can tell a first run from a second without the task.
+    """
 
     compute: str
     task: str
     state: TaskEventState
+    attempt: int = 1
 
 
 type Event = (

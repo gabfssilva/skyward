@@ -305,6 +305,8 @@ def _tasked(view: ComputeView, task_id: str, state: TaskEventState) -> ComputeVi
     match state:
         case "started":
             landed = "running"
+        case "retrying":
+            landed = "queued"
         case "succeeded" | "failed" | "indeterminate":
             landed = state
         case _ as unreachable:

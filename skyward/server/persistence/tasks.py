@@ -28,7 +28,6 @@ from skyward.shared.schemas import (
     ExecutionCreate,
     ExecutionState,
     Page,
-    RetryPolicy,
     Task,
     TaskCreate,
     TaskState,
@@ -74,7 +73,7 @@ class TaskStore:
                 raise NotFoundError(f"no such args blob: {args}")
 
             task = ident("tsk")
-            retry = body.retry if body.retry is not UNSET else compute.spec.retry
+            retry = compute.spec.retry if body.retry is UNSET else body.retry
             timeout = body.timeout_seconds or compute.spec.options.default_compute_timeout
             await TaskRow(
                 id=task,
@@ -84,7 +83,7 @@ class TaskStore:
                 args_sha256=args,
                 dispatch=body.dispatch,
                 state="queued",
-                retry=await packed(retry),
+                decision=retry,
                 correlation_id=body.correlation_id,
                 submitted_at=now(),
                 deadline_at=now() + timedelta(seconds=timeout) if timeout else None,
@@ -165,8 +164,15 @@ class TaskStore:
         node_id: str | None = None,
         result_sha256: str | None = None,
         error: Error | None = None,
+        again: bool = False,
     ) -> None:
-        """What a worker did with an attempt, and the outcome that follows from it."""
+        """What a worker did with an attempt, and the outcome that follows from it.
+
+        ``again`` writes the next attempt down in the same breath as this one's end,
+        so the task is never terminal in between: a caller waiting on the result
+        would otherwise be woken by the ending and handed it, a moment before the
+        retry that was meant to spare them exactly that.
+        """
         row = await ExecutionRow.objects().where(ExecutionRow.id == execution_id).first()
         if row is None:
             raise NotFoundError(f"no such execution: {execution_id}")
@@ -180,6 +186,9 @@ class TaskStore:
         if state not in PENDING:
             row.finished_at = now()
         await row.save().run()
+
+        if again:
+            await self.attempt(row.task_id, row.rank, row.ordinal + 1, retry_of=row.id)
 
         await self.settle(row.task_id)
 
@@ -385,10 +394,9 @@ def _verdict(attempts: list[ExecutionRow]) -> TaskState:
     saying otherwise would hand the caller a result while the machine is still
     computing it.
 
-    Once they are all in, the worst one wins, and ``indeterminate`` is the worst.
-    It is the only outcome that forbids an automatic retry, so a broadcast in which
-    one node cleanly failed and another is unaccounted for must not be quietly
-    repeated on the strength of the clean failure.
+    Once they are all in, the worst one wins, and ``indeterminate`` is the worst:
+    a broadcast in which one node cleanly failed and another is unaccounted for is
+    a task that may have run somewhere, and says so.
     """
     states = {attempt.state for attempt in attempts}
 
@@ -431,7 +439,7 @@ async def _to_task(row: TaskRow) -> Task:
         args_sha256=row.args_sha256,
         dispatch=msgspec.convert(row.dispatch, Dispatch),
         state=msgspec.convert(row.state, TaskState),
-        retry=await unpacked(row.retry, RetryPolicy),
+        retry=row.decision,
         executions=tuple([await _to_execution(attempt) for attempt in attempts]),
         submitted_at=row.submitted_at,
         correlation_id=row.correlation_id,
