@@ -69,7 +69,7 @@ class FunctionStore:
 
     async def list(self, cursor: str | None, limit: int) -> Page[Function]:
         query = FunctionRow.objects()
-        if pivot := await after(FunctionRow, cursor, column="sha256"):
+        if pivot := await after(cursor, FunctionRow.sha256, FunctionRow.created_at):
             query = query.where(FunctionRow.created_at > pivot)
 
         rows = await query.order_by(FunctionRow.created_at).limit(limit)

@@ -98,6 +98,11 @@ class _Member:
             case _:
                 return None
 
+    def refreshed(self, view: ComputeView) -> None:
+        """The view the API was read into, unless the compute is gone: ``event`` took it out of the fleet, and this must not put it back."""
+        if view.state != "deleted":
+            self._fleet._publish(self._compute, view)
+
     def closed(self, view: ComputeView) -> None:
         return None
 

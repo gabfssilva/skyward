@@ -28,7 +28,6 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from skyward.server.application.mock import OFFER, SPEC
 from skyward.server.application.runtimes import Runtime
-from skyward.server.application.source import Source
 from skyward.server.persistence.computes import ComputeStore, Infrastructure
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
@@ -200,7 +199,7 @@ def describe_the_cluster_a_compute_forms() -> None:
 
 def describe_the_material_the_daemon_writes() -> None:
     async def it_is_written_once_and_taken_away_with_the_compute(tmp_path: Path) -> None:
-        runtime = Runtime("cmp_7f3a1c", Source(arguments=("skyward",)), "a private key", True, tls.authority())
+        runtime = Runtime("cmp_7f3a1c", "pypi", "a private key", True, tls.authority())
 
         daemon = runtime._material()
         assert daemon is not None
@@ -213,6 +212,6 @@ def describe_the_material_the_daemon_writes() -> None:
         assert not directory.exists()
 
     def it_writes_nothing_for_a_compute_without_an_authority() -> None:
-        runtime = Runtime("cmp_7f3a1c", Source(arguments=("skyward",)), "a private key")
+        runtime = Runtime("cmp_7f3a1c", "pypi", "a private key")
 
         assert runtime._material() is None

@@ -28,7 +28,7 @@ import casty
 import msgspec
 
 from skyward.shared import codec, retry
-from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lost, Outcome, Step, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
@@ -86,7 +86,8 @@ encode = msgspec.msgpack.encode
 function: codec.Codec[Callable[..., object]] = codec.Pickle()
 generator: codec.Codec[Callable[..., Iterator[object]]] = codec.Pickle()
 arguments: codec.Codec[Arguments] = codec.Pickle()
-outcomes: dict[str, Outcome | None] = {}
+outcomes: dict[str, asyncio.Future[Outcome]] = {}
+"""Every attempt this worker was handed, by execution: its outcome, or the promise of one."""
 generators: dict[str, Iterator[object]] = {}
 """Streams in flight, by execution. Alive only as long as somebody is pulling on them."""
 
@@ -193,10 +194,21 @@ class Worker:
 
     async def run(self, id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> bytes:
         """Run one attempt. ``decision`` is the task's retry decision, pickled, and
-        ``attempt`` which attempt this is — asked together if the function raises."""
-        outcomes[id] = None
-        outcome = await execute(id, code, args, decision, attempt)
-        outcomes[id] = outcome
+        ``attempt`` which attempt this is — asked together if the function raises.
+
+        An attempt that ends without an outcome — the call cancelled under it, or
+        ``execute`` itself broken — is settled as lost before the error goes on, so a
+        daemon holding :meth:`Control.result` on it hears the loss instead of waiting
+        out the call's timeout.
+        """
+        settled: asyncio.Future[Outcome] = asyncio.get_running_loop().create_future()
+        outcomes[id] = settled
+        try:
+            outcome = await execute(id, code, args, decision, attempt)
+        except BaseException as exc:
+            settled.set_result(Lost(error=f"the attempt ended without an outcome: {exc!r}"))
+            raise
+        settled.set_result(outcome)
         return encode(outcome)
 
     async def open(self, id: str, code: bytes, args: bytes) -> None:
@@ -263,16 +275,24 @@ class Control:
         os.environ["SKYWARD_PEERS"] = ",".join(peers)
 
     async def result(self, id: str) -> bytes:
-        """What the daemon asks after coming back up and finding a task in flight."""
-        lookup: Lookup
-        match outcomes.get(id, Unknown()):
-            case Unknown():
-                lookup = Unknown()
+        """An attempt's outcome, for a daemon that lost the call carrying it.
+
+        Answered when the attempt is over and not before, so the daemon holds this
+        call the way it held the one it lost, instead of asking again and again
+        whether the function is done. An attempt this worker has never heard of is
+        answered at once: the worker restarted under it, and nothing here will ever
+        finish it. The wait is shielded, because a waiter cancelled with the service
+        must not cancel the outcome :meth:`Worker.run` is about to set.
+
+        Here and not on :class:`Worker` because a wait must not take a slot. This
+        service admits calls without limit, which is also what keeps :meth:`ping`
+        answering on a node whose every attempt is being waited on.
+        """
+        match outcomes.get(id):
             case None:
-                lookup = Pending()
-            case outcome:
-                lookup = outcome
-        return encode(lookup)
+                return encode(Unknown())
+            case settled:
+                return encode(await asyncio.shield(settled))
 
 
 async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Outcome:

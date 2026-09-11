@@ -322,6 +322,9 @@ class MockDispatcher:
     async def resume(self, compute_id: str) -> None:
         self.dispatched.append(f"resume:{compute_id}")
 
+    async def deleted(self, compute_id: str) -> None:
+        self.dispatched.append(f"deleted:{compute_id}")
+
     async def stream(self, task_id: str) -> AsyncIterator[bytes]:
         self.dispatched.append(f"stream:{task_id}")
         return

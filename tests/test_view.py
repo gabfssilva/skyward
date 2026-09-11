@@ -18,12 +18,14 @@ from skyward.core.view import (
     ERRORS,
     HISTORY,
     TAIL,
+    TASKS,
     ComputeView,
     NodeView,
     observe,
 )
 from skyward.shared.events import (
     ComputeDegraded,
+    ComputeProvisioning,
     ComputeReady,
     ConsoleEvent,
     CostEvent,
@@ -53,6 +55,11 @@ def describe_folding_the_lifecycle() -> None:
         view = observe(ComputeView(id="cmp_1"), CostEvent(compute="cmp_1", cost=1.25, nodes=2, at=datetime.now(UTC)))
 
         assert view.cost == 1.25
+
+    def a_compute_event_carries_the_count_of_its_machines() -> None:
+        view = observe(ComputeView(id="cmp_1"), ComputeProvisioning(compute="cmp_1", nodes_ready=1, nodes_total=3, generation=1))
+
+        assert view.nodes_total == 3
 
     def ready_nodes_are_counted_from_the_rows() -> None:
         view = ComputeView(id="cmp_1", nodes=(NodeView(id="a", state="ready"), NodeView(id="b", state="bootstrapping")))
@@ -132,6 +139,14 @@ def describe_the_windows_a_long_run_never_outgrows() -> None:
         view = observe(ComputeView(id="cmp_1"), MetricEvent(compute="cmp_1", node="nod_1", name="custom_thing", value=1.0))
 
         assert view.nodes == ()
+
+    def the_tasks_keep_the_latest_only() -> None:
+        view = ComputeView(id="cmp_1")
+        for index in range(TASKS + 5):
+            view = observe(view, TaskEvent(compute="cmp_1", task=f"tsk_{index}", state="started"))
+
+        assert len(view.tasks) == TASKS
+        assert (view.tasks[0].id, view.tasks[-1].id) == ("tsk_5", f"tsk_{TASKS + 4}")
 
 
 def describe_what_a_machine_says_before_it_has_an_address() -> None:

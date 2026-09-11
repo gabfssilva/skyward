@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from datetime import timedelta
+from itertools import batched
 from typing import Any
 
 import msgspec
 from msgspec import UNSET
 
-from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.computes import LIVE, ComputeStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import after, ident, now, once, packed, unpacked
-from skyward.server.persistence.tables import ExecutionRow, TaskRow
+from skyward.server.persistence.tables import ComputeRow, ExecutionRow, TaskRow
 from skyward.shared.errors import (
     ComputeNotAcceptingError,
     DuplicationNotAcknowledgedError,
@@ -36,6 +38,9 @@ from skyward.shared.schemas import (
 ACCEPTING: tuple[ComputeState, ...] = ("requested", "provisioning", "ready", "degraded")
 
 PENDING: tuple[ExecutionState, ...] = ("created", "assigned", "dispatching", "accepted", "started", "cancel_requested")
+
+BATCH = 500
+"""How many tasks' attempts one query reads."""
 
 
 class TaskStore:
@@ -98,13 +103,21 @@ class TaskStore:
         return await self.get(task_id), created
 
     async def get(self, task_id: str) -> Task:
-        return await _to_task(await self._row(task_id))
+        (task,) = await _tasks([await self._row(task_id)])
+        return task
 
     async def list(self, cursor: str | None, limit: int, compute: str | None, state: TaskState | None, correlation_id: str | None) -> Page[Task]:
+        """Newest first.
+
+        A compute that keeps working keeps adding tasks, so what it has the most of
+        is what it has already done: paged from the oldest end, the first page is the
+        first tasks the compute ever ran, and the ones it is running now are the last
+        page anybody reaches.
+        """
         query = TaskRow.objects()
 
-        if pivot := await after(TaskRow, cursor):
-            query = query.where(TaskRow.submitted_at > pivot)
+        if pivot := await after(cursor, TaskRow.id, TaskRow.submitted_at):
+            query = query.where(TaskRow.submitted_at < pivot)
         if compute:
             query = query.where(TaskRow.compute_id == compute)
         if state:
@@ -112,8 +125,7 @@ class TaskStore:
         if correlation_id:
             query = query.where(TaskRow.correlation_id == correlation_id)
 
-        rows = await query.order_by(TaskRow.submitted_at).limit(limit)
-        items = tuple([await _to_task(row) for row in rows])
+        items = await _tasks(await query.order_by(TaskRow.submitted_at, ascending=False).limit(limit))
         return Page(items=items, next_cursor=items[-1].id if items and len(items) == limit else None)
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
@@ -244,8 +256,41 @@ class TaskStore:
         return await ExecutionRow.objects().where(ExecutionRow.task_id == task_id).order_by(ExecutionRow.ordinal)
 
     async def unsettled(self) -> tuple[str, ...]:
-        """Tasks that have not reached a verdict — what the sweep re-offers."""
-        rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]))
+        """Tasks that have not reached a verdict and still have a compute to reach one on — what the sweep re-offers.
+
+        A deleted compute's tasks are not among them. Nothing is left to run them, and
+        offering them anyway is a read per task per tick that grows with every compute
+        the daemon has ever deleted; :meth:`stranded` is how the sweep finds them instead.
+        """
+        live = ComputeRow.select(ComputeRow.id).where(ComputeRow.status_state.is_in(list(LIVE)))
+        rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]) & TaskRow.compute_id.is_in(live))
+        return tuple(row["id"] for row in rows)
+
+    async def stranded(self) -> tuple[str, ...]:
+        """Deleted computes still holding an attempt without a verdict.
+
+        Their attempts are answered for the moment the compute is deleted, so this is
+        empty unless that moment was missed: a daemon that died in between, or a store
+        written before anything answered for them.
+
+        An attempt and not merely a task, because an attempt is what gets answered for.
+        A broadcast admitted while no node was ready has none, and a task a crash left
+        between an attempt's end and its verdict has only finished ones: a compute
+        offered for either would be offered on every tick, with nothing to answer.
+        """
+        deleted = ComputeRow.select(ComputeRow.id).where(ComputeRow.status_state == "deleted")
+        owing = ExecutionRow.select(ExecutionRow.task_id).where(ExecutionRow.state.is_in(list(PENDING)))
+        rows = await TaskRow.select(TaskRow.compute_id).where(
+            TaskRow.state.is_in(["queued", "running"]) & TaskRow.compute_id.is_in(deleted) & TaskRow.id.is_in(owing),
+        ).distinct()
+        return tuple(row["compute_id"] for row in rows)
+
+    async def owed(self, compute: str) -> tuple[str, ...]:
+        """Every task of this compute with an attempt still without a verdict, oldest first, whatever state the compute is in."""
+        owing = ExecutionRow.select(ExecutionRow.task_id).where(ExecutionRow.state.is_in(list(PENDING)))
+        rows = await TaskRow.select(TaskRow.id).where(
+            (TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]) & TaskRow.id.is_in(owing),
+        ).order_by(TaskRow.submitted_at)
         return tuple(row["id"] for row in rows)
 
     async def expire(self) -> tuple[str, ...]:
@@ -429,8 +474,21 @@ def _cause(task: Task) -> dict[str, Any]:
     return dict(errors[0].details) if errors and errors[0].details else {}
 
 
-async def _to_task(row: TaskRow) -> Task:
-    attempts = await ExecutionRow.objects().where(ExecutionRow.task_id == row.id).order_by(ExecutionRow.ordinal)
+async def _tasks(rows: Sequence[TaskRow]) -> tuple[Task, ...]:
+    """Each task with its attempts, the attempts of all of them read together.
+
+    One query per task made a page of two hundred cost two hundred and one
+    statements. The ids go in batches only because each one is a bound
+    parameter, and SQLite caps how many a statement takes.
+    """
+    attempts: defaultdict[str, list[ExecutionRow]] = defaultdict(list)
+    for ids in batched([row.id for row in rows], BATCH):
+        for attempt in await ExecutionRow.objects().where(ExecutionRow.task_id.is_in(list(ids))).order_by(ExecutionRow.ordinal):
+            attempts[attempt.task_id].append(attempt)
+    return tuple([await _to_task(row, attempts[row.id]) for row in rows])
+
+
+async def _to_task(row: TaskRow, attempts: Sequence[ExecutionRow]) -> Task:
     return Task(
         id=row.id,
         compute_id=row.compute_id,

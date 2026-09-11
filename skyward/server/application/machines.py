@@ -425,7 +425,7 @@ class Machines:
         if not image.warm:
             return None
 
-        match image.skyward if image.skyward != "auto" else detect():
+        match image.skyward if image.skyward != "auto" else await detect():
             case "local":
                 return None
             case mode:

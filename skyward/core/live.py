@@ -278,6 +278,12 @@ class RichConsole:
         if isinstance(event, ComputeDeleted):
             self._summarize()
 
+    def refreshed(self, view: ComputeView) -> None:
+        if self._live is None:
+            return
+        self._footer.state = _state(view)
+        self._live.update(self._footer)
+
     def closed(self, view: ComputeView) -> None:
         if self._live is not None:
             self._live.stop()

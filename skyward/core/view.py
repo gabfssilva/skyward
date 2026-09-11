@@ -10,8 +10,8 @@ address or a task's timings.
 It lives outside the UI because the UI is only one subscriber. The Rich panel,
 the line console, and every callback a user registers with ``callbacks=`` are
 handed the same view, folded once. The windows (``tail``, ``metrics``,
-``errors``) are bounded so a compute that stays up for days never grows the
-view with it — the full history is in the event log, not here.
+``errors``, ``tasks``) are bounded so a compute that stays up for days never
+grows the view with it — the full history is in the event log, not here.
 """
 
 from __future__ import annotations
@@ -27,7 +27,11 @@ import msgspec
 from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
+    ComputeDeleted,
+    ComputeDeleting,
     ComputeDeletionFailed,
+    ComputeProvisioning,
+    ComputeReady,
     ConsoleEvent,
     CostEvent,
     Event,
@@ -58,6 +62,9 @@ TAIL = 40
 
 ERRORS = 32
 """Messages kept of what has gone wrong, oldest dropped first."""
+
+TASKS = 200
+"""Tasks kept, the most recent: what a read of the API brings back, and what the stream adds until the next read."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +156,8 @@ def observe(view: ComputeView, event: Event) -> ComputeView:
     A compute event moves the state to wherever the lifecycle table says it leads —
     the same table the daemon moved the row by, read without the origin check,
     because a replay from the log's beginning is folded into a view the API may
-    already have hydrated past it.
+    already have hydrated past it. The ones that count the machines carry the
+    count along with it.
     """
     match event:
         case MetricEvent(node=node, name=name, value=value):
@@ -168,6 +176,8 @@ def observe(view: ComputeView, event: Event) -> ComputeView:
             return _tasked(view, task, state)
         case ComputeDegraded(error=error) | ComputeDeletionFailed(error=error):
             view = _noted(view, error)
+        case ComputeProvisioning(nodes_total=total) | ComputeReady(nodes_total=total) | ComputeDeleting(nodes_total=total) | ComputeDeleted(nodes_total=total):
+            view = replace(view, nodes_total=total)
     state = lifecycle.leads(event)
     return view if state is None or state == view.state else replace(view, state=state)
 
@@ -205,7 +215,11 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
 
 
 def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str]) -> ComputeView:
-    """The tasks as the API tells them, with the function's real name when known."""
+    """The tasks as the API tells them, oldest first, with the function's real name when known.
+
+    Oldest first whatever order the page came in, so that a task the stream adds
+    lands after them and the window drops from the old end.
+    """
     rows = tuple(
         TaskView(
             id=task.id,
@@ -216,7 +230,7 @@ def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str]
             started_at=task.executions[-1].started_at if task.executions else None,
             finished_at=task.finished_at,
         )
-        for task in tasks.items
+        for task in sorted(tasks.items, key=lambda task: task.submitted_at)
     )
     return replace(view, tasks=rows)
 
@@ -316,7 +330,7 @@ def _tasked(view: ComputeView, task_id: str, state: TaskEventState) -> ComputeVi
         case _ as unreachable:
             assert_never(unreachable)
     if not any(task.id == task_id for task in view.tasks):
-        return replace(view, tasks=(*view.tasks, TaskView(id=task_id, state=landed)))
+        return replace(view, tasks=(*view.tasks, TaskView(id=task_id, state=landed))[-TASKS:])
     return replace(view, tasks=tuple(replace(task, state=landed) if task.id == task_id else task for task in view.tasks))
 
 

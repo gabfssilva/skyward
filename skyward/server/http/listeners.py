@@ -93,6 +93,18 @@ def build_listeners(
         """A slot came free, or a machine arrived. Offer the queue what it can now have."""
         await dispatcher.resume(compute_id)
 
+    @listener("compute.deleted")
+    async def on_compute_deleted(compute_id: str) -> None:
+        """The machines are gone for good: let go of the connections, then answer for the work they held.
+
+        In that order, because a task woken once the runtime is gone has nothing to
+        reattach through — it cannot find a node that is never coming back, call the
+        attempt lost and write the next one down behind the verdict.
+        """
+        if connector:
+            await connector.close(compute_id)
+        await dispatcher.deleted(compute_id)
+
     return [
         on_compute_changed,
         on_node_requested,
@@ -102,4 +114,5 @@ def build_listeners(
         on_node_observed,
         on_task_changed,
         on_compute_dispatch,
+        on_compute_deleted,
     ]

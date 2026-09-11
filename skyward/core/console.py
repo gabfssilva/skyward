@@ -16,19 +16,21 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import replace
+from functools import partial, reduce
 from typing import Literal, Protocol, TextIO
 
 from skyward.core.client import Client
-from skyward.core.view import ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
+from skyward.core.view import TASKS, ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
 from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
     ComputeDeletionFailed,
     ConsoleEvent,
     Event,
+    GenerationCreated,
     NodeEvent,
     ProgressEvent,
     TaskEvent,
@@ -42,21 +44,37 @@ from skyward.shared.schemas import Function, Node, Page, Task
 type ConsoleMode = Literal["rich", "log"]
 
 POLL = 2.0
-"""How stale the API half of the view may get before an event prompts a re-read."""
+"""The closest two reads of the API half of the view come to each other.
+
+An event that moved what only a read can show asks for one, and a burst of them
+gets one: whatever asks while a read is out, or sooner than this after the last,
+is answered by the next.
+"""
+
+QUIET = 10.0
+"""The longest the API half of the view goes unread, whether anything asked or not.
+
+Not all of it moves with an event. A machine is bought and given an address, and
+a task is queued, cancelled or timed out, without the stream saying so — and a
+task queued behind one that runs for an hour would otherwise go unshown for the
+hour.
+"""
 
 
 class Watcher(Protocol):
     """A console attached to the pool for its whole life.
 
     The :class:`Observer` opens it once, feeds it every event with the view
-    folded up to it, tells it when the API half of the view was re-read, and
-    closes it when the stream ends. A user's callback is narrower — one
-    callable, events only — and does not need this shape.
+    folded up to it, hands it the view again whenever the API half is re-read
+    between events, and closes it when the stream ends. A user's callback is
+    narrower — one callable, events only — and does not need this shape.
     """
 
     def opened(self, view: ComputeView) -> None: ...
 
     def event(self, event: Event, view: ComputeView) -> None: ...
+
+    def refreshed(self, view: ComputeView) -> None: ...
 
     def closed(self, view: ComputeView) -> None: ...
 
@@ -79,6 +97,14 @@ class Observer:
     stream is read once, folded once into a :class:`ComputeView`, and each
     subscriber is handed the same value. A callback that raises is reported and
     skipped — a broken observer must not take the training run with it.
+
+    The API half of the view is read beside the stream, never in its way. A
+    stream that stopped for a read on every node and task event fell behind a
+    busy compute until the daemon hung up on it, and a replayed history asked for
+    a read per event it had ever recorded. What an event carries is folded from
+    the event; only what it cannot carry — a node's address, a task's timings, a
+    compute's new bounds — asks for a read, and every ask made before the read
+    goes out is the same read.
     """
 
     def __init__(
@@ -94,49 +120,73 @@ class Observer:
         self._callbacks = callbacks
         self._view = ComputeView(id=compute)
         self._names: dict[str, str] = {}
-        self._fetched = 0.0
+        self._asked = asyncio.Event()
+        self._overtaken: list[Event] | None = None
+        """What the stream moved while a read was out, or ``None`` while no read is."""
+        self._turn = asyncio.Lock()
 
     async def follow(self) -> None:
         with suppress(Exception):
-            self._view = await self._fetch(self._view)
-        await asyncio.to_thread(self._open)
+            await self._read()
+        await self._tell(self._open)
         try:
-            async for _, payload in self._client.events(self._compute):
-                if (event := decoded(payload)) is None:
-                    continue
-                view = observe(self._view, event)
-                if self._stale(event):
-                    with suppress(Exception):
-                        view = await self._fetch(view)
-                self._view = view
-                await asyncio.to_thread(self._dispatch, event, view)
-        except Exception as exc:
-            print(f"skyward: the event stream stopped ({exc})", file=sys.stderr, flush=True)
+            async with asyncio.TaskGroup() as group:
+                reading = group.create_task(self._reread())
+                try:
+                    async for _, payload in self._client.events(self._compute):
+                        if (event := decoded(payload)) is not None:
+                            await self._fold(event)
+                finally:
+                    reading.cancel()
+        except* Exception as stopped:
+            print(f"skyward: the event stream stopped ({stopped.exceptions[0]})", file=sys.stderr, flush=True)
         finally:
-            await asyncio.to_thread(self._close)
+            await self._tell(self._close)
 
-    def _stale(self, event: Event) -> bool:
-        """Whether this event obsoletes the API half of the view.
+    async def _fold(self, event: Event) -> None:
+        self._view = observe(self._view, event)
+        if _asks(event):
+            self._asked.set()
+        if self._overtaken is not None and _moves(event):
+            self._overtaken.append(event)
+        await self._tell(partial(self._dispatch, event))
 
-        A node or task transition always does — an address, a price, a timing
-        just appeared somewhere only a read can see. Anything else does only
-        once the last read has aged past ``POLL``, which turns the steady drip
-        of gauges and cost into the poll the panel used to run for itself.
+    async def _reread(self) -> None:
+        """Read the API half again once something asks: no sooner than ``POLL`` after the last read, and no later than ``QUIET``."""
+        while True:
+            await asyncio.sleep(POLL)
+            with suppress(TimeoutError):
+                async with asyncio.timeout(QUIET - POLL):
+                    await self._asked.wait()
+            self._asked.clear()
+            try:
+                await self._read()
+            except Exception:
+                continue
+            await self._tell(self._refreshed)
+
+    async def _read(self) -> None:
+        """Read the API half, and lay it over the view as the view is once the read is back.
+
+        The stream goes on while the read is out, so a read can land older than
+        the view it lands on: a node the stream saw become ready, read while it was
+        still bootstrapping. What the stream moved in the meantime is folded again
+        over the read, so a read never takes back what an event already said — all
+        but the errors, which the stream noted once and must not note twice.
         """
-        match event:
-            case NodeEvent() | TaskEvent():
-                return True
-            case _:
-                return time.monotonic() - self._fetched > POLL
-
-    async def _fetch(self, view: ComputeView) -> ComputeView:
-        compute = await self._client.call("GET", f"/v1/computes/{self._compute}", ComputeResource)
-        nodes = await self._client.call("GET", f"/v1/computes/{self._compute}/nodes", Page[Node])
-        tasks: Page[Task] = Page(items=())
-        with suppress(Exception):
-            tasks = await self._client.call("GET", "/v1/tasks", Page[Task], compute=self._compute, limit=200)
-        self._fetched = time.monotonic()
-        return refresh_tasks(refresh(view, compute, nodes), tasks, await self._names_for(tasks))
+        overtaken: list[Event] = []
+        self._overtaken = overtaken
+        try:
+            compute = await self._client.call("GET", f"/v1/computes/{self._compute}", ComputeResource)
+            nodes = await self._client.call("GET", f"/v1/computes/{self._compute}/nodes", Page[Node])
+            tasks: Page[Task] = Page(items=())
+            with suppress(Exception):
+                tasks = await self._client.call("GET", "/v1/tasks", Page[Task], compute=self._compute, limit=TASKS)
+            names = await self._names_for(tasks)
+        finally:
+            self._overtaken = None
+        read = refresh_tasks(refresh(self._view, compute, nodes), tasks, names)
+        self._view = replace(reduce(observe, overtaken, read), errors=read.errors)
 
     async def _names_for(self, tasks: Page[Task]) -> Mapping[str, str]:
         """Each function's name, asked once; a function that cannot be named is asked once too."""
@@ -147,9 +197,19 @@ class Observer:
                 self._names[sha] = ""
         return self._names
 
-    def _open(self) -> None:
+    async def _tell(self, call: Callable[[ComputeView], None]) -> None:
+        """Hand the view as it is now to the watchers, off the loop, one hand-off at a time.
+
+        Watchers draw in a thread so that a slow terminal never holds the loop up,
+        and both the stream and the reads hand them views: taking turns is what
+        keeps a view from being drawn over by an older one.
+        """
+        async with self._turn:
+            await asyncio.to_thread(call, self._view)
+
+    def _open(self, view: ComputeView) -> None:
         for one in self._watchers:
-            one.opened(self._view)
+            one.opened(view)
 
     def _dispatch(self, event: Event, view: ComputeView) -> None:
         for one in self._watchers:
@@ -160,10 +220,14 @@ class Observer:
             except Exception as exc:
                 print(f"skyward: a callback raised ({exc})", file=sys.stderr, flush=True)
 
-    def _close(self) -> None:
+    def _refreshed(self, view: ComputeView) -> None:
+        for one in self._watchers:
+            one.refreshed(view)
+
+    def _close(self, view: ComputeView) -> None:
         for one in self._watchers:
             with suppress(Exception):
-                one.closed(self._view)
+                one.closed(view)
 
 RESET = "\033[0m"
 DIM = "\033[2m"
@@ -211,6 +275,9 @@ class Console:
         if line := render(event, self.out.isatty()):
             print(line, file=self.out, flush=True)
 
+    def refreshed(self, view: ComputeView) -> None:
+        return None
+
     def closed(self, view: ComputeView) -> None:
         return None
 
@@ -245,6 +312,28 @@ def render(event: Event, color: bool = False) -> str | None:
             return f"{_who(event.compute, color)} {_sep(color)} {_badge(state, color)}"
         case _:
             return None
+
+
+def _asks(event: Event) -> bool:
+    """Whether the event moved what only a read can show: a node's address, a task's timings, a compute's bounds."""
+    match event:
+        case NodeEvent() | TaskEvent() | GenerationCreated():
+            return True
+        case _:
+            return False
+
+
+def _moves(event: Event) -> bool:
+    """Whether folding the event writes what a read writes too — a node's, a task's or the compute's state.
+
+    Those are the events a read that left before them would take back, so they
+    are the ones folded again over it.
+    """
+    match event:
+        case NodeEvent() | TaskEvent():
+            return True
+        case _:
+            return lifecycle.leads(event) is not None
 
 
 def _who(ident: str, color: bool) -> str:

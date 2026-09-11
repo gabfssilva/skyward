@@ -364,7 +364,7 @@ class Node:
 
         It survives the bootstrap ending and the worker starting, because it
         follows the file and not the process. A dropped link ends the tail; the
-        loop resumes from the line it had reached, and nothing said in between is
+        loop resumes from the byte it had reached, and nothing said in between is
         lost — it is on the machine's disk, not in flight.
 
         It is also where the node learns that the machine is gone, because it is
@@ -386,11 +386,11 @@ class Node:
             reporter.cancel()
 
     async def _follow(self) -> None:
-        line = 1
+        offset = 0
         try:
             while True:
-                async for seen, event in events(self._ssh, first=line):
-                    line = seen + 1
+                async for reached, event in events(self._ssh, offset):
+                    offset = reached
                     self._observe(event)
                 await asyncio.sleep(1.0)
                 if self.tunnel is not None and not await self._serving():

@@ -51,6 +51,7 @@ list on every start is a no-op after the first.
 
 INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS computes_name_live ON computes (name) WHERE status_state != 'deleted'",
+    "CREATE INDEX IF NOT EXISTS tasks_compute_submitted ON tasks (compute_id, submitted_at)",
 )
 """What the models cannot say.
 
@@ -58,6 +59,10 @@ A compute's name is unique among the computes that are not deleted, so a name
 outlives no compute: the next one may take it. Piccolo has no partial index, and
 ``unique=True`` on the column would hold the name for every row the table ever
 held, so the index is written here in SQL.
+
+A compute's tasks are paged newest first, and piccolo indexes one column at a
+time. On ``compute_id`` alone a page reads every task the compute ever ran and
+sorts them to keep the newest; on the pair it is read off the end of the index.
 """
 
 

@@ -15,15 +15,16 @@ from collections.abc import AsyncIterator, Callable
 from casty.errors import ActorUnavailableError, ConnectionLostError
 
 from skyward.server.application.runtimes import Runtime, Runtimes
+from skyward.server.application.ssh import SshUnavailableError
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
-from skyward.server.persistence.tasks import TaskStore
+from skyward.server.persistence.tasks import PENDING, TaskStore
 from skyward.shared import codec, retry
 from skyward.shared.errors import ComputeNotAcceptingError
 from skyward.shared.events import TaskEvent
-from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Step, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Error, Execution, ExecutionState, Task
 from skyward.worker import worker
@@ -55,9 +56,19 @@ LINK_ERRORS = (ConnectionLostError, ActorUnavailableError)
 """The call died on the wire, and says nothing about the function.
 
 The worker runs the function as its own task and keeps the outcome under the
-execution's id, so a reply lost to a dropped link is a reply that can be asked
-for again — see :meth:`Dispatcher._reattach`. Anything else that escapes the call
+execution's id, so a reply lost to a dropped link is a reply that can be waited
+for again — see :meth:`Dispatcher._await`. Anything else that escapes the call
 is the honest ``indeterminate``.
+"""
+
+RELINK = 2.0
+"""Seconds between a call dying on the wire and waiting on the link to try again.
+
+Two reasons not to go straight back. A channel notices its connection died a moment
+after the calls riding it do, and a link waited on in that moment is found up and
+dialled dead. And a call can die with the link up — a worker that does not answer
+behind a healthy channel — where going straight back is asking forever, as fast as
+the loop turns.
 """
 
 
@@ -133,7 +144,7 @@ class Dispatcher:
         emitter was built to coalesce.
 
         Reattaching stays here: it is per-execution by nature, and it takes no
-        slot — asking a worker for an outcome it already holds needs no lock.
+        slot — waiting on a worker for an outcome it owes needs no lock.
         """
         task = await self._tasks.get(task_id)
         if task.state not in ("queued", "running"):
@@ -158,6 +169,38 @@ class Dispatcher:
 
         if placeable:
             self._wake("compute.dispatch", compute_id=task.compute_id)
+
+    async def deleted(self, compute_id: str) -> None:
+        """The compute is gone, and every attempt it still owed an answer for gets the one there is.
+
+        Asked once its machines are terminated and its binding released, so nothing is
+        ever going to run these, and a caller waiting on one would otherwise wait for its
+        deadline — or forever, for a task that named none.
+
+        An attempt that never left the daemon is ``cancelled``: it did not run, and that
+        is certain. One that did leave is ``indeterminate``, for the reason :meth:`_lost`
+        gives, and the retry decision is not asked — there is nowhere left to try again.
+        Settling a task's last attempt is what hands whoever waits on its result the
+        error that goes with the verdict.
+        """
+        self._locks.pop(compute_id, None)
+        owed = await self._tasks.owed(compute_id)
+        for task_id in owed:
+            task = await self._tasks.get(task_id)
+            for execution in task.executions:
+                match execution.state:
+                    case "created" | "assigned":
+                        unplaced = f"compute {compute_id} was deleted before the task reached a machine"
+                        await self._tasks.observe(execution.id, "cancelled", error=Error(code="compute_not_accepting", message=unplaced, retryable=False))
+                    case state if state in PENDING:
+                        held = f"compute {compute_id} was deleted while a machine held the task"
+                        await self._tasks.observe(execution.id, "indeterminate", error=Error(code="task_indeterminate", message=held, retryable=False))
+                        await self._events.record(TaskEvent(compute=compute_id, task=task_id, state="indeterminate", attempt=execution.ordinal))
+                    case _:
+                        pass
+
+        if owed:
+            logger.bind(compute_id=compute_id).info("the compute is deleted: {} task(s) it still owed are answered for", len(owed))
 
     async def stream(self, task_id: str) -> AsyncIterator[bytes]:
         """A streaming task, dispatched by the caller who is reading it.
@@ -308,6 +351,8 @@ class Dispatcher:
                 execution.id,
                 exc,
             )
+            await asyncio.sleep(RELINK)
+            await self._await(task, execution, runtime, node_id)
         except Exception as exc:
             await self._lost(task, execution, exc, retry.Lost("unknown" if started else "never_started", node_id))
         finally:
@@ -316,22 +361,25 @@ class Dispatcher:
             self._wake("compute.dispatch", compute_id=task.compute_id)
 
     async def _reattach(self, task: Task, execution: Execution, runtime: Runtime) -> None:
-        """An attempt this process did not dispatch, and did not see finish.
+        """An attempt in flight that nothing in this process is waiting on.
 
         The daemon went away and came back; the machine never noticed. The worker
-        has been running the user's function the whole time and is holding its
-        outcome, so the answer is to ask for it rather than to declare a loss and
-        run it twice.
+        has been running the user's function the whole time and owes its outcome,
+        so the answer is to wait on it for that rather than to declare a loss and
+        run it twice. The wait is held in the background and marked dispatched, like
+        any call in flight, so the passes that follow leave the attempt alone.
 
-        A worker that has never heard of the execution is a worker that restarted
-        under it, and that is genuinely lost — the one case where the code may or
-        may not have run, and we say so instead of guessing.
+        Whether the node went away is the store's to say. A node the store still
+        calls ready and this process does not hold ready yet is one the connector
+        has not finished picking up — after a restart that is every node, for as
+        long as a local wheel takes to build and each link takes to come up — so
+        the attempt is left to a later pass, not called lost and run a second time.
         """
         if execution.node_id is None:
             return
 
         node = await self._nodes.get(task.compute_id, execution.node_id)
-        if node.state != "ready" or execution.node_id not in runtime.ready:
+        if node.state != "ready":
             await self._lost(
                 task,
                 execution,
@@ -339,27 +387,67 @@ class Dispatcher:
                 retry.Lost("node_gone", execution.node_id),
             )
             return
-        if execution.node_id not in runtime.reachable:
+        if execution.node_id not in runtime.ready:
             return
 
-        logger.bind(compute_id=task.compute_id, node_id=execution.node_id).debug("asking the worker for execution {}", execution.id)
-        try:
-            member = await runtime.member(execution.node_id)
-            system = await runtime.system(execution.node_id)
-            control = system.service(worker.Control, at=member)
-            lookup = await _LOOKUPS.decode(await control.result(execution.id))
-        except LINK_ERRORS as exc:
-            logger.bind(compute_id=task.compute_id, node_id=execution.node_id).debug("the link dropped while asking: {}", exc)
-            return
-
-        match lookup:
-            case Pending():
-                logger.bind(node_id=execution.node_id).debug("execution {} is still running", execution.id)
-            case Unknown():
-                await self._lost(task, execution, RuntimeError("the worker no longer has it"), retry.Lost("worker_restarted", execution.node_id))
-            case Done() | Failed() | Lost() as outcome:
-                await self._settle(task, execution, outcome, execution.node_id)
+        async def rejoin(node_id: str) -> None:
+            try:
+                answered = await self._await(task, execution, runtime, node_id)
+            finally:
+                runtime.dispatched.discard(execution.id)
+            if answered:
                 self._wake("task.changed", task_id=task.id)
+                self._wake("compute.dispatch", compute_id=task.compute_id)
+
+        logger.bind(compute_id=task.compute_id, node_id=execution.node_id).debug("waiting on the worker for execution {}", execution.id)
+        runtime.dispatched.add(execution.id)
+        asyncio.get_running_loop().create_task(rejoin(execution.node_id))
+
+    async def _await(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> bool:
+        """Wait on the worker for an attempt's outcome, across every drop of its link, and settle it.
+
+        The worker answers when the function is done, so this is a call held open the
+        way the one that carried the attempt was, and nobody asks twice. A link that
+        drops under it is waited on, and the worker asked again once the link is back:
+        on a provider that cuts its links on a clock, that is every few minutes for as
+        long as the function runs, and at no other time.
+
+        A worker that has never heard of the execution is a worker that restarted
+        under it, and that is genuinely lost — the one case where the code may or
+        may not have run, and we say so instead of guessing.
+
+        Returns whether the attempt got its verdict. It does not when the node's
+        channel is gone for good, or when the wait broke on something other than the
+        link: whether the attempt went with its node is the store's to say once the
+        node is reported, and the tick brings the task back to :meth:`task`, which
+        hears it or waits again.
+        """
+        log = logger.bind(compute_id=task.compute_id, node_id=node_id)
+
+        async def answer() -> Lookup:
+            while True:
+                try:
+                    await runtime.linked(node_id)
+                    member = await runtime.member(node_id)
+                    system = await runtime.system(node_id)
+                    return await _LOOKUPS.decode(await system.service(worker.Control, at=member).result(execution.id))
+                except LINK_ERRORS as exc:
+                    log.debug("the link dropped while waiting for execution {}: {}", execution.id, exc)
+                    await asyncio.sleep(RELINK)
+
+        try:
+            match await answer():
+                case Unknown():
+                    await self._lost(task, execution, RuntimeError("the worker no longer has it"), retry.Lost("worker_restarted", node_id))
+                case Done() | Failed() | Lost() as outcome:
+                    await self._settle(task, execution, outcome, node_id)
+        except SshUnavailableError as exc:
+            log.debug("stopped waiting for execution {}: {}", execution.id, exc)
+            return False
+        except Exception:
+            log.exception("could not wait for execution {}; the next pass waits again", execution.id)
+            return False
+        return True
 
     async def _settle(self, task: Task, execution: Execution, outcome: Outcome, node_id: str | None) -> None:
         log = logger.bind(compute_id=task.compute_id)

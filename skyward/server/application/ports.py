@@ -203,7 +203,12 @@ class Reconciler(Protocol):
         ...
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Computes and tasks whose intent has not been realized yet."""
+        """Computes and tasks whose intent has not been realized yet.
+
+        A deleted compute is among the computes while a task of it has an attempt without
+        a verdict, and that task is not among the tasks: it is answered for when the
+        compute is, not offered to a dispatcher that has nothing left to place it on.
+        """
         ...
 
 
@@ -215,6 +220,10 @@ class Dispatcher(Protocol):
 
     async def resume(self, compute_id: str) -> None:
         """Offer the queue a slot that just came free, or a machine that just arrived."""
+        ...
+
+    async def deleted(self, compute_id: str) -> None:
+        """Answer for every attempt a deleted compute still owed, with the verdict that is left."""
         ...
 
     def stream(self, task_id: str) -> AsyncIterator[bytes]:

@@ -25,12 +25,12 @@ import casty
 
 from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.ports import Route, Target
-from skyward.server.application.source import Source
-from skyward.server.application.ssh import Channel, Result
+from skyward.server.application.source import Source, resolve
+from skyward.server.application.ssh import Channel, Result, SshUnavailableError
 from skyward.shared.errors import ComputeNotConnectedError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
+from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef, SkywardSource
 from skyward.shared.tls import Authority, identity
 from skyward.worker import worker
 
@@ -88,9 +88,8 @@ class Runtime:
     nothing to connect to until a node says it is ready.
     """
 
-    def __init__(self, compute: str, source: Source, private_key: str, cluster: bool = True, authority: Authority | None = None) -> None:
+    def __init__(self, compute: str, skyward: SkywardSource, private_key: str, cluster: bool = True, authority: Authority | None = None) -> None:
         self.compute = compute
-        self.source = source
         self.private_key = private_key
         self.cluster = cluster
         self.authority = authority
@@ -105,6 +104,10 @@ class Runtime:
 
         self._claims: set[str] = set()
         """Machines a connect is mid-flight for, before there is a node to hold."""
+
+        self._skyward: SkywardSource = skyward
+        self._source: asyncio.Task[Source] | None = None
+        """The one resolution of what every node installs: in flight, done, or not yet asked for."""
 
         self._systems: dict[str | None, casty.Client] = {}
         self._tunnels: dict[str, str] = {}
@@ -142,6 +145,33 @@ class Runtime:
         picked up again.
         """
         self._claims.discard(node_id)
+
+    async def source(self) -> Source:
+        """What every node of this compute installs, resolved once for all of them.
+
+        The connector is offered every held machine on every pass, and a local skyward
+        is a ``uv build``: resolved per connect, that is a build per node per tick. The
+        first node that needs it starts the resolution, the ones arriving while it runs
+        wait on the same one — shielded, so a connect cancelled while waiting does not
+        cancel it for the rest — and one that failed is forgotten, so the next connect
+        tries again.
+
+        Once per compute and not once per daemon. Every node of a compute has to install
+        the same bytes, but the checkout a local wheel is built from goes on being edited
+        while the daemon runs — that is how unpublished code reaches a machine at all —
+        so a later compute gets the checkout as it is then, not the first wheel this
+        daemon happened to build.
+        """
+
+        def forget(done: asyncio.Task[Source]) -> None:
+            if done.cancelled() or done.exception() is not None:
+                self._source = None
+
+        if self._source is None:
+            self._source = asyncio.create_task(resolve(self._skyward))
+            self._source.add_done_callback(forget)
+
+        return await asyncio.shield(self._source)
 
     async def detach(self, node_id: str) -> None:
         """Let go of one machine on purpose, before it is terminated.
@@ -274,6 +304,20 @@ class Runtime:
                 if found := next((m for m in system.members() if m.addr == seed), None):
                     return found
                 await asyncio.sleep(0.2)
+
+    async def linked(self, node_id: str) -> None:
+        """Until the SSH link to one node is up, which it may already be.
+
+        A worker behind a link that is down is alive and cannot be dialled, so a
+        caller that lost a call to it waits here for the link rather than asking
+        again and again whether it is back. Raises :class:`SshUnavailableError` once
+        the node's channel has given up or been closed, or this runtime no longer
+        holds the node: either way that link is not coming back.
+        """
+        node = self.nodes.get(node_id)
+        if node is None:
+            raise SshUnavailableError(f"compute {self.compute} holds no node {node_id}")
+        await node._ssh.ready()
 
     async def open_channel(self, remote_port: int, route: Route = "round_robin") -> Channel:
         """One TCP channel to a ready node's port, chosen by ``route``.
@@ -439,12 +483,12 @@ class Runtimes:
     def open(
         self,
         compute: str,
-        source: Source,
+        skyward: SkywardSource,
         private_key: str,
         cluster: bool = True,
         authority: Authority | None = None,
     ) -> Runtime:
-        return self._runtimes.setdefault(compute, Runtime(compute, source, private_key, cluster, authority))
+        return self._runtimes.setdefault(compute, Runtime(compute, skyward, private_key, cluster, authority))
 
     async def start(
         self,
@@ -471,12 +515,13 @@ class Runtimes:
         else. The node itself has never heard of a compute, a task or a database,
         and is not going to.
         """
+        source = await runtime.source()
         node = Node(
             machine,
             compute=runtime.compute,
             private_key=runtime.private_key,
             image=image,
-            source=runtime.source,
+            source=source,
             rank=rank,
             peers=peers,
             seeds=seeds,

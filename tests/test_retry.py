@@ -6,12 +6,16 @@ reason: the worker for an exception, the daemon for a loss. Whichever side answe
 the daemon is the one that writes the next execution down and places it elsewhere.
 """
 
+import asyncio
 import json
 import os
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import casty
+import msgspec
 import pytest
 
 from skyward.core.function import Pending, function
@@ -29,7 +33,7 @@ from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec, retry
 from skyward.shared.errors import TaskIndeterminateError
 from skyward.shared.events import TaskEvent
-from skyward.shared.frames import Done, Failed
+from skyward.shared.frames import Done, Failed, Lookup, Lost, Unknown
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Error, Task, TaskCreate
 from skyward.worker import ipc, worker
@@ -48,6 +52,15 @@ def always(reason: retry.Reason, attempt: int) -> bool:
 
 def broken(reason: retry.Reason, attempt: int) -> bool:
     raise RuntimeError("the decision itself is broken")
+
+
+finished = threading.Event()
+"""What :func:`unfinished` waits for. Both at module level, so the function is pickled by reference: an event does not pickle."""
+
+
+def unfinished() -> int:
+    finished.wait(5)
+    return 42
 
 
 def describe_the_decision() -> None:
@@ -138,12 +151,83 @@ def describe_the_worker() -> None:
         assert isinstance(failed, Failed) and failed.retry
         assert isinstance(done, Done)
 
+    async def it_answers_a_wait_for_an_attempt_once_the_attempt_is_over(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        finished.clear()
+
+        system = casty.local()
+        try:
+            running = asyncio.create_task(system.service(worker.Worker).run("exe_waited_on", codec.dumps(unfinished), codec.dumps(((), {})), b"", 1))
+            async with asyncio.timeout(5):
+                while "exe_waited_on" not in worker.outcomes:
+                    await asyncio.sleep(0.01)
+
+            waiting = asyncio.create_task(system.service(worker.Control).result("exe_waited_on"))
+            never = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_never_sent"), type=Lookup)
+            await asyncio.sleep(0.1)
+
+            assert never == Unknown(), "an attempt the worker never had is answered at once"
+            assert not waiting.done(), "an attempt still running is not answered yet"
+
+            finished.set()
+            async with asyncio.timeout(5):
+                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
+                await running
+
+            assert isinstance(answered, Done)
+        finally:
+            finished.set()
+            await system.close()
+
+    async def it_answers_a_wait_with_a_loss_when_the_attempt_ends_without_an_outcome(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def breaks(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Done:
+            entered.set()
+            await release.wait()
+            raise RuntimeError("execute itself broke")
+
+        monkeypatch.setattr(worker, "execute", breaks)
+
+        system = casty.local()
+        try:
+            running = asyncio.create_task(system.service(worker.Worker).run("exe_broken", b"", b"", b"", 1))
+            async with asyncio.timeout(5):
+                await entered.wait()
+
+            waiting = asyncio.create_task(system.service(worker.Control).result("exe_broken"))
+            await asyncio.sleep(0.1)
+            assert not waiting.done(), "an attempt still running is not answered yet"
+
+            release.set()
+            async with asyncio.timeout(5):
+                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
+                (failed,) = await asyncio.gather(running, return_exceptions=True)
+
+            assert isinstance(answered, Lost), "a wait on an attempt that ended without an outcome hears a loss"
+            assert isinstance(failed, BaseException), "the call that ran it still fails"
+        finally:
+            release.set()
+            await system.close()
+
 
 class _Plane:
     """The daemon's stores over one compute, with two ready nodes and a task on one of them."""
 
-    def __init__(self, tasks: TaskStore, nodes: NodeStore, blobs: BlobStore, events: EventStore, dispatcher: Dispatcher, compute: str) -> None:
+    def __init__(
+        self,
+        tasks: TaskStore,
+        nodes: NodeStore,
+        blobs: BlobStore,
+        events: EventStore,
+        dispatcher: Dispatcher,
+        runtimes: Runtimes,
+        compute: str,
+    ) -> None:
         self.tasks, self.nodes, self.blobs, self.events, self.dispatcher, self.compute = tasks, nodes, blobs, events, dispatcher, compute
+        self.runtimes = runtimes
         self.woken: list[str] = []
         self.node_ids: tuple[str, ...] = ()
 
@@ -172,7 +256,7 @@ async def _plane(database: Path) -> _Plane:
         pass
 
     runtimes = Runtimes(listener=lambda *_: None, output=quiet, sample=quiet, phase=quiet)
-    plane = _Plane(tasks, nodes, blobs, events, Dispatcher(computes, tasks, nodes, blobs, events, runtimes, Wakeup()), compute.id)
+    plane = _Plane(tasks, nodes, blobs, events, Dispatcher(computes, tasks, nodes, blobs, events, runtimes, Wakeup()), runtimes, compute.id)
 
     ids = []
     for index in range(2):
@@ -232,6 +316,30 @@ def describe_the_daemon() -> None:
             await plane.dispatcher._lost(task, task.executions[0], RuntimeError("gone"), retry.Lost("node_gone", plane.node_ids[0]))
 
             assert (await plane.tasks.get(task.id)).state == "indeterminate"
+
+    def describe_when_it_comes_back_to_an_attempt_in_flight() -> None:
+        async def it_waits_for_a_node_it_has_not_picked_up_yet(tmp_path: Path) -> None:
+            plane = await _plane(tmp_path / "skyward.sqlite")
+            task = await plane.submit(retry.default)
+            plane.runtimes.open(plane.compute, "pypi", "a private key")
+
+            await plane.dispatcher.task(task.id)
+
+            task = await plane.tasks.get(task.id)
+            assert [(e.ordinal, e.state) for e in task.executions] == [(1, "started")], "the node is ready, and its worker still owes the outcome"
+            assert await plane.said(task.id) == []
+
+        async def it_calls_the_attempt_lost_once_the_node_is(tmp_path: Path) -> None:
+            plane = await _plane(tmp_path / "skyward.sqlite")
+            task = await plane.submit(retry.default)
+            plane.runtimes.open(plane.compute, "pypi", "a private key")
+            await plane.nodes.observe(plane.node_ids[0], "lost")
+
+            await plane.dispatcher.task(task.id)
+
+            task = await plane.tasks.get(task.id)
+            assert [(e.ordinal, e.state) for e in task.executions] == [(1, "indeterminate"), (2, "created")]
+            assert await plane.said(task.id) == [("retrying", 2)]
 
     def describe_when_the_function_raised() -> None:
         async def the_worker_s_answer_is_what_counts(tmp_path: Path) -> None:

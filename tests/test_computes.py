@@ -8,6 +8,7 @@ and can do nothing at all with an internal error.
 
 import asyncio
 import sqlite3
+import uuid
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,10 +30,11 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import ComputeRow
+from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import ComputeNotConnectedError, NameTakenError
 from skyward.shared.events import ComputeDeleted, ComputeDeleting
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, Image, Node
+from skyward.shared.schemas import Compute, ComputeCreate, Image, Node, Task, TaskCreate
 
 pytestmark = pytest.mark.local
 
@@ -135,6 +137,28 @@ def describe_listing_computes() -> None:
 
         assert [compute.name for compute in first.items] == ["c3", "c2"]
         assert [compute.name for compute in second.items] == ["c1", "c0"]
+
+
+def describe_listing_a_computes_tasks() -> None:
+    async def they_come_newest_first_each_with_its_own_attempts(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        submitted = [await _submit(tasks, compute) for _ in range(3)]
+        await tasks.observe(submitted[1].executions[0].id, "failed", again=True)
+
+        page = await tasks.list(None, 2, compute, None, None)
+
+        assert page.items == (await tasks.get(submitted[2].id), await tasks.get(submitted[1].id)), "the latest two, not the first two"
+        assert [len(task.executions) for task in page.items] == [1, 2]
+
+    async def a_page_picks_up_below_the_one_before_it(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        submitted = [await _submit(tasks, compute) for _ in range(4)]
+
+        first = await tasks.list(None, 2, compute, None, None)
+        second = await tasks.list(first.next_cursor, 2, compute, None, None)
+
+        assert [task.id for task in first.items] == [submitted[3].id, submitted[2].id]
+        assert [task.id for task in second.items] == [submitted[1].id, submitted[0].id]
 
 
 def describe_reaching_a_compute_this_daemon_is_not_holding() -> None:
@@ -365,8 +389,20 @@ async def _store(tmp_path: Path) -> ComputeStore:
     return ComputeStore(EventStore())
 
 
+async def _tasks(tmp_path: Path) -> tuple[TaskStore, str]:
+    """A task store, and a compute of its own to submit to."""
+    store = await _store(tmp_path)
+    compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+    return TaskStore(store, NodeStore(), BlobStore()), compute.id
+
+
+async def _submit(tasks: TaskStore, compute: str) -> Task:
+    task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
+    return task
+
+
 def _runtime(cluster: bool = True) -> Runtime:
-    return Runtime("cmp_1", Source(arguments=("skyward",)), private_key="key", cluster=cluster)
+    return Runtime("cmp_1", "pypi", private_key="key", cluster=cluster)
 
 
 def _node(host: str = "127.0.0.1") -> ApplicationNode:

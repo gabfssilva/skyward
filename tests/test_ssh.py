@@ -86,7 +86,30 @@ def describe_a_machine_that_hangs_up_mid_stream() -> None:
             await channel.close()
             acceptor.close()
 
-        assert lines == ["one"]
+        assert lines == [b"one\n"]
+
+
+def describe_a_line_longer_than_the_channel_window() -> None:
+    async def it_arrives_whole() -> None:
+        long = "x" * (3 << 20)
+
+        async def speak(process: asyncssh.SSHServerProcess[str]) -> None:
+            process.stdout.write(f"{long}\nnext\n")
+            await process.stdout.drain()
+            process.exit(0)
+
+        acceptor = await _serving(granted=lambda: True, process_factory=speak)
+        channel = _channel(acceptor.get_port(), connect_timeout=10.0)
+
+        try:
+            await channel.connect()
+            lines = [line async for line in channel.stream("tail -F journal")]
+        finally:
+            await channel.close()
+            acceptor.close()
+
+        assert [len(line) for line in lines] == [len(long) + 1, len(b"next\n")], "one line, not the parts asyncssh read it in"
+        assert lines[0].endswith(b"\n") and lines[1] == b"next\n"
 
 
 async def _serving(

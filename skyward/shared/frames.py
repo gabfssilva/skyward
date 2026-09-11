@@ -47,16 +47,13 @@ class End(Struct, frozen=True, tag="end", tag_field="status"):
     """The generator is exhausted. Said once, to the daemon, and never forwarded."""
 
 
-class Pending(Struct, frozen=True, tag="pending", tag_field="status"):
-    """The worker has the task and has not finished it."""
-
-
 class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
     """The worker has never heard of the task."""
 
 
 type Outcome = Done | Failed | Lost
-type Lookup = Done | Failed | Lost | Pending | Unknown
+type Lookup = Done | Failed | Lost | Unknown
+"""What a worker answers whoever waits on an attempt: its outcome once there is one, or that it never had it."""
 
 type Step = Chunk | Failed | End
 """What one pull on a generator produces, as the worker answers the daemon."""

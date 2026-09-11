@@ -15,7 +15,6 @@ from __future__ import annotations
 import msgspec
 
 from skyward.server.application.runtimes import Runtimes
-from skyward.server.application.source import resolve
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import LIVE, NodeStore
@@ -72,9 +71,8 @@ class Connector:
             log.debug("not connectable: {} and {} a machine", node.state, "with" if node.provider_binding else "without")
             return
 
-        source = await resolve(compute.spec.image.skyward)
         cluster = bool(infrastructure.binding.get("skyward_cluster", True))
-        runtime = self._runtimes.open(compute_id, source, infrastructure.private_key, cluster, infrastructure.authority)
+        runtime = self._runtimes.open(compute_id, compute.spec.image.skyward, infrastructure.private_key, cluster, infrastructure.authority)
         if node_id in runtime.nodes:
             await runtime.retopology(node_id, _peers(nodes))
             return
@@ -122,6 +120,15 @@ class Connector:
         going away — see :meth:`skyward.server.application.runtimes.Runtime.detach`.
         """
         await self._runtimes.detach(compute_id, node_id)
+
+    async def close(self, compute_id: str) -> None:
+        """Let go of everything this daemon holds for a compute that is deleted.
+
+        The mirror of :meth:`connect` for the compute as a whole. Its machines are gone,
+        and the casty client, the channels and the material written for it would
+        otherwise be held until the daemon itself shuts down.
+        """
+        await self._runtimes.close(compute_id)
 
 
 def _peers(nodes: tuple[Node, ...]) -> tuple[str, ...]:

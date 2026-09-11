@@ -112,6 +112,12 @@ class Reconciler:
         not what was asked for, and the next tick tries again. A compute on its way
         out has nowhere to be degraded to — the failure is a fact on the way to
         ``deleted``, and the next tick carries on giving the machines back.
+
+        A pass that finds nothing left to reconcile has found a compute that is deleted,
+        and says so to whatever still holds something for it: the connections to its
+        machines, and the work that was waiting on them. On every such pass rather than
+        once, because the tick offers a deleted compute for as long as that work has not
+        been answered for, and this is how the offer reaches anybody.
         """
         async with self._lock(compute_id):
             try:
@@ -121,6 +127,7 @@ class Reconciler:
             try:
                 if await self._pass(compute):
                     self._locks.pop(compute_id, None)
+                    self._wake("compute.deleted", compute_id=compute_id)
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
                 code = exc.code if isinstance(exc, SkywardError) else "reconcile_failed"
@@ -155,7 +162,13 @@ class Reconciler:
             await self._machines.bake(compute_id, node_id)
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return await self._computes.live(), await self._tasks.unsettled()
+        """The tick's worklist: the computes that still owe something, and the tasks that can still be answered.
+
+        A deleted compute stays on it while one of its tasks has an attempt without a
+        verdict, and that task is not on it: nothing is left to run it, so the compute is
+        what is offered, and its pass saying it is deleted is what gets the task answered for.
+        """
+        return (*await self._computes.live(), *await self._tasks.stranded()), await self._tasks.unsettled()
 
     async def _pass(self, compute: Compute) -> bool:
         """One pass; ``True`` once there is nothing left of the compute to reconcile."""

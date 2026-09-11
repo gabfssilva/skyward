@@ -54,7 +54,7 @@ class Ssh(Protocol):
 
     async def put(self, path: str, content: bytes) -> None: ...
 
-    def stream(self, command: str) -> AsyncIterator[str]: ...
+    def stream(self, command: str) -> AsyncIterator[bytes]: ...
 
     async def forward(self, remote_port: int, remote_host: str = "127.0.0.1") -> int: ...
 
@@ -162,6 +162,14 @@ class SshChannel:
         """
         return self._conn is not None and self._up.is_set() and self._failure is None and not self._closed
 
+    async def ready(self) -> None:
+        """Until the link is up, which it may already be.
+
+        Raises :class:`SshUnavailableError` once the channel has given up or been
+        closed, so whoever waits on a link that is never coming back is told so.
+        """
+        await self._ready()
+
     async def run(self, command: str, *, timeout: float | None = None) -> Result:
         async def execute(conn: asyncssh.SSHClientConnection) -> Result:
             result = await conn.run(command, timeout=timeout, check=False)
@@ -212,13 +220,33 @@ class SshChannel:
                 await self._replaced(conn)
 
     async def _replaced(self, stale: asyncssh.SSHClientConnection) -> None:
-        while self._conn is stale:
-            if self._closed or self._failure:
-                raise SshUnavailableError(f"{self._host}: {self._failure or 'channel closed'}")
-            await asyncio.sleep(0.05)
+        """Until the connection an operation died on has been replaced.
 
-    async def stream(self, command: str) -> AsyncIterator[str]:
-        """Run a command and yield its output a line at a time.
+        Replacing it is its watcher's whole job, so this waits for that watcher to
+        finish rather than looking again every few milliseconds — and it cannot take
+        the moment between the connection dying and the watcher noticing for a link
+        that is up.
+        """
+        if self._conn is stale and self._watcher is not None:
+            await asyncio.wait((self._watcher,))
+        if self._closed or self._failure:
+            raise SshUnavailableError(f"{self._host}: {self._failure or 'channel closed'}")
+
+    async def stream(self, command: str) -> AsyncIterator[bytes]:
+        """Run a command and yield its output a line at a time, as the bytes it wrote.
+
+        A line keeps its newline, and only the last one can lack it: the command
+        stopped, or the link dropped, halfway through writing it. A caller resuming
+        from where it got to needs that difference and the length of what it read,
+        and a decoded string gives back neither. Decoding here would also let one
+        byte of somebody's output that is not UTF-8 end the whole connection, which
+        is what asyncssh does with a channel it cannot decode.
+
+        asyncssh's ``readline`` also returns part of a line while the link is up,
+        once the line outgrows the channel's receive window (2 MiB), so the parts
+        are joined here and a line is yielded whole. A part yielded on its own would
+        read, to a caller resuming after its last whole line, as a line the link
+        cut, and that caller would read it again on every resume and never get past it.
 
         Ends when the command ends, or when the link drops. Resuming across a
         reconnect is the caller's business, because only the caller knows where
@@ -229,12 +257,16 @@ class SshChannel:
         to stop, not a stack trace from inside a library it never called.
         """
         conn = await self._ready()
-        try:
-            async with conn.create_process(command) as process:
-                while line := await process.stdout.readline():
-                    yield line.rstrip("\n")
-        except (asyncssh.ChannelOpenError, asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
-            return
+        line = bytearray()
+        with contextlib.suppress(asyncssh.ChannelOpenError, asyncssh.ConnectionLost, ConnectionResetError, BrokenPipeError):
+            async with conn.create_process(command, encoding=None) as process:
+                while part := await process.stdout.readline():
+                    line += part
+                    if part.endswith(b"\n"):
+                        yield bytes(line)
+                        line.clear()
+        if line:
+            yield bytes(line)
 
     async def forward(self, remote_port: int, remote_host: str = "127.0.0.1") -> int:
         """Open a local port onto a port on the machine, and keep it open."""

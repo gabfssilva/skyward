@@ -6653,7 +6653,7 @@
     "/v1/tasks": {
       "get": {
         "deprecated": false,
-        "description": "Every call this daemon has been asked to make, newest last. `correlation_id` is how the tasks of one `&`, `gather` or `map` are found together \u2014 it is a field on each of them, not a resource of its own.",
+        "description": "Every call this daemon has been asked to make, newest first. `correlation_id` is how the tasks of one `&`, `gather` or `map` are found together \u2014 it is a field on each of them, not a resource of its own.",
         "operationId": "V1TasksList",
         "parameters": [
           {

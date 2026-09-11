@@ -35,6 +35,7 @@ there. The name carries the compute and the claim, and the listing is the record
 import asyncio
 import contextlib
 import re
+import ssl
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -143,8 +144,13 @@ class _Bridge:
             await self._server.wait_closed()
 
     async def _pump(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Carry one SSH connection over one WebSocket, until either end lets go.
+
+        How the socket closed is logged: the gateway ends every one of them after a
+        few minutes, and its close frame is the only place that says why.
+        """
         try:
-            async with connect(self._url, max_size=None, ping_interval=None) as socket:
+            async with connect(self._url, ssl=_TLS, max_size=None, ping_interval=None) as socket:
                 streams = (
                     asyncio.create_task(_upstream(reader, socket)),
                     asyncio.create_task(_downstream(socket, writer)),
@@ -154,6 +160,14 @@ class _Bridge:
                 finally:
                     for stream in streams:
                         stream.cancel()
+            closed = socket.protocol
+            logger.debug(
+                "salad bridge to {} closed: received {}, sent {}, received first: {}",
+                self._url,
+                closed.close_rcvd,
+                closed.close_sent,
+                closed.close_rcvd_then_sent,
+            )
         except (OSError, WebSocketException) as error:
             logger.debug("salad bridge to {} failed: {}", self._url, error)
         finally:
@@ -166,6 +180,13 @@ _BRIDGES: dict[str, _Bridge] = {}
 """One live listener per container group, keyed by the group it dials."""
 
 _BRIDGE_LOCK = asyncio.Lock()
+
+_TLS = ssl.create_default_context()
+"""The one TLS configuration every gateway connection is opened with.
+
+Left to itself, a ``wss://`` connect has asyncio build a default context per
+connection — the system's certificate store read again, milliseconds on the loop —
+and the gateway ends every link after a few minutes, for every node at once."""
 
 
 async def _upstream(reader: asyncio.StreamReader, socket: ClientConnection) -> None:
@@ -199,7 +220,7 @@ async def _answering(dns: str) -> bool:
     the bridge itself, so this is the only test that means "dial it".
     """
     try:
-        async with connect(f"wss://{dns}/", ping_interval=None, open_timeout=10):
+        async with connect(f"wss://{dns}/", ssl=_TLS, ping_interval=None, open_timeout=10):
             return True
     except (OSError, WebSocketException) as error:
         logger.debug("salad gateway {} is not answering: {}", dns, error)

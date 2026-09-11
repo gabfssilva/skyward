@@ -41,7 +41,7 @@ class TaskController(Controller):
     @get(
         summary="List tasks",
         description=(
-            "Every call this daemon has been asked to make, newest last. `correlation_id` is how the tasks of one "
+            "Every call this daemon has been asked to make, newest first. `correlation_id` is how the tasks of one "
             "`&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own."
         ),
     )

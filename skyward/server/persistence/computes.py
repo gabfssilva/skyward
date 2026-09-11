@@ -212,7 +212,7 @@ class ComputeStore:
         """
         query = ComputeRow.objects()
 
-        if pivot := await after(ComputeRow, cursor):
+        if pivot := await after(cursor, ComputeRow.id, ComputeRow.created_at):
             query = query.where(ComputeRow.created_at < pivot)
         if state:
             query = query.where(ComputeRow.status_state == state)

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from msgspec import Struct
-from piccolo.table import Table
+from piccolo.columns import Column
 
 from skyward.server.persistence.tables import IdempotencyRow
 from skyward.shared.codec import digest, json
@@ -76,14 +76,18 @@ async def once(scope: str, key: str, body: Struct | None, produce: Callable[[], 
     return resource_id, True
 
 
-async def after(table: type[Table], cursor: str | None, column: str = "id") -> datetime | None:
-    """Where a page picks up: the moment the last item of the previous one was created."""
+async def after(cursor: str | None, key: Column, moment: Column) -> datetime | None:
+    """Where a page picks up: the ``moment`` of the item the previous page ended on, found by its ``key``.
+
+    Both columns are the caller's to name because the tables do not spell them
+    alike — a task is ``submitted_at`` where a compute is ``created_at`` — and a
+    name assumed here is a cursor that fails on the one table that differs.
+    """
     if cursor is None:
         return None
 
-    created = table._meta.get_column_by_name("created_at")
-    rows = await table.select(created).where(table._meta.get_column_by_name(column) == cursor)
+    rows = await key._meta.table.select(moment).where(key == cursor)
     if not rows:
         raise NotFoundError(f"no such cursor: {cursor}")
 
-    return rows[0]["created_at"]
+    return rows[0][moment._meta.name]

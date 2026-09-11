@@ -26,12 +26,13 @@ type Report = tuple[NodeState, str | None]
 
 
 class _Link(Ssh):
-    """A channel scripted by its tails: each ``stream`` call plays the next one."""
+    """A channel scripted by its tails: each ``stream`` call plays the next one, as the lines it wrote."""
 
     def __init__(self, tails: list[list[str] | SshUnavailableError], worker_alive: bool = True) -> None:
         self._tails = tails
         self._worker_alive = worker_alive
         self.commands: list[str] = []
+        self.followed: list[str] = []
 
     async def run(self, command: str, *, timeout: float | None = None) -> Result:
         self.commands.append(command)
@@ -42,13 +43,14 @@ class _Link(Ssh):
     async def put(self, path: str, content: bytes) -> None:
         pass
 
-    async def stream(self, command: str) -> AsyncIterator[str]:
+    async def stream(self, command: str) -> AsyncIterator[bytes]:
+        self.followed.append(command)
         match self._tails.pop(0) if self._tails else SshUnavailableError("127.0.0.1: reconnection exhausted"):
             case SshUnavailableError() as gone:
                 raise gone
             case lines:
                 for line in lines:
-                    yield line
+                    yield line.encode()
 
     async def forward(self, remote_port: int, remote_host: str = "127.0.0.1") -> int:
         return 0
@@ -119,7 +121,7 @@ def describe_a_link_that_heals() -> None:
     async def onto_the_same_machine_it_keeps_following_the_log() -> None:
         reports: list[Report] = []
         phases: list[str] = []
-        link = _Link(tails=[[], ['{"type":"phase","event":"completed","phase":"later"}']], worker_alive=True)
+        link = _Link(tails=[[], ['{"type":"phase","event":"completed","phase":"later"}\n']], worker_alive=True)
         node = _node(link, reports)
 
         async def noted(event: str, phase: str, error: str | None) -> None:
@@ -144,6 +146,24 @@ def describe_a_link_that_heals() -> None:
         assert link.commands == []
         assert reports == [("lost", "127.0.0.1: reconnection exhausted")]
 
+    async def after_a_drop_cut_a_line_in_half_it_reads_that_line_again_whole() -> None:
+        apt = '{"type":"phase","event":"completed","phase":"apt"}\n'
+        uv = '{"type":"phase","event":"completed","phase":"uv"}\n'
+        phases: list[str] = []
+        link = _Link(tails=[[apt, uv[:20]], [uv]], worker_alive=True)
+        node = _node(link, [])
+
+        async def noted(event: str, phase: str, error: str | None) -> None:
+            phases.append(phase)
+
+        node._phase = noted
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert phases == ["apt", "uv"], "every phase once, the one the drop cut included"
+        assert f"-c +{len(apt.encode()) + 1} " in link.followed[1], "the second tail starts right after the last whole line the first one read"
+
 
 def describe_what_the_log_says() -> None:
     async def is_reported_in_the_order_it_was_read_however_long_each_report_takes() -> None:
@@ -158,7 +178,7 @@ def describe_what_the_log_says() -> None:
             '{"type":"phase","event":"completed","phase":"venv"}',
         ]
         said: list[str] = []
-        node = _node(_Link(tails=[lines]), [])
+        node = _node(_Link(tails=[[f"{line}\n" for line in lines]]), [])
 
         async def slowly(*words: object) -> None:
             await asyncio.sleep(random.uniform(0, 0.01))

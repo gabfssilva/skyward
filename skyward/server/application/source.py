@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import tempfile
+import threading
+from functools import cache
 from pathlib import Path
 from typing import Literal
 
@@ -62,7 +64,7 @@ class DirectUrl(Struct):
 
 async def resolve(mode: SkywardSource) -> Source:
     """Turn the requested mode into something a node can install."""
-    match detect() if mode == "auto" else mode:
+    match await detect() if mode == "auto" else mode:
         case "pypi":
             return Source(arguments=("skyward",))
         case "github":
@@ -72,13 +74,53 @@ async def resolve(mode: SkywardSource) -> Source:
             return Source(arguments=tuple(f"{SKYWARD_DIR}/{wheel.name}" for wheel in wheels), wheels=wheels)
 
 
-def detect() -> Literal["local", "pypi"]:
+async def detect() -> Literal["local", "pypi"]:
     """Where the daemon's own skyward came from.
 
     Reading it off the running installation rather than asking is deliberate: what
     the node runs should be what the daemon is, and a flag the user has to keep in
     step with their venv is a flag that will disagree with it.
+
+    Read once per process, and never on the event loop: ``packages_distributions``
+    reads the file list of every distribution installed, a tenth of a second or more
+    of blocking I/O, and the installation this process is running from does not
+    change while it runs.
     """
+
+    def once() -> Literal["local", "pypi"]:
+        with _lock:
+            return _installation()
+
+    return await asyncio.to_thread(once)
+
+
+def build() -> tuple[Wheel, ...]:
+    """Build a wheel from the checkout, into a directory nobody else is using.
+
+    The directory is gone by the time this returns: the wheels leave as bytes, and
+    nothing needs the files after they are read.
+    """
+    with tempfile.TemporaryDirectory(prefix="skyward-wheel-") as out:
+        result = subprocess.run(
+            ["uv", "build", "--wheel", "-o", out],
+            cwd=PROJECT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"could not build the skyward wheel: {result.stderr}")
+
+        return tuple(Wheel(name=path.name, data=path.read_bytes()) for path in Path(out).glob("*.whl"))
+
+
+_lock = threading.Lock()
+"""Held around the cached read: ``functools.cache`` alone lets two threads that miss at once both do the work."""
+
+
+@cache
+def _installation() -> Literal["local", "pypi"]:
     from importlib.metadata import distribution, packages_distributions
 
     installed = packages_distributions().get("skyward")
@@ -88,20 +130,3 @@ def detect() -> Literal["local", "pypi"]:
     url = distribution(installed[0]).read_text("direct_url.json")
     editable = url is not None and msgspec.json.decode(url.encode(), type=DirectUrl).dir_info.editable
     return "local" if editable else "pypi"
-
-
-def build() -> tuple[Wheel, ...]:
-    """Build a wheel from the checkout, into a directory nobody else is using."""
-    out = tempfile.mkdtemp(prefix="skyward-wheel-")
-    result = subprocess.run(
-        ["uv", "build", "--wheel", "-o", out],
-        cwd=PROJECT,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"could not build the skyward wheel: {result.stderr}")
-
-    return tuple(Wheel(name=path.name, data=path.read_bytes()) for path in Path(out).glob("*.whl"))
