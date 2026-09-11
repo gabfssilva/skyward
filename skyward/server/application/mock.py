@@ -264,10 +264,12 @@ class MockEvents:
         compute: str | None,
         task: str | None,
         types: tuple[str, ...] | None,
-    ) -> AsyncIterator[tuple[int, str, bytes]]:
-        yield 1, "compute.provisioning", b'{"compute":"cmp_7f3a1c"}'
-        yield 2, "node.ready", b'{"node":"nod_c19e40","rank":0}'
-        yield 3, "task.succeeded", b'{"task":"tsk_9d21f0"}'
+    ) -> AsyncIterator[tuple[tuple[int, str, bytes], ...]]:
+        yield (
+            (1, "compute.provisioning", b'{"compute":"cmp_7f3a1c"}'),
+            (2, "node.ready", b'{"node":"nod_c19e40","rank":0}'),
+            (3, "task.succeeded", b'{"task":"tsk_9d21f0"}'),
+        )
 
 
 class MockProviders:

@@ -144,8 +144,8 @@ class Events(Protocol):
         compute: str | None,
         task: str | None,
         types: tuple[str, ...] | None,
-    ) -> AsyncIterator[tuple[int, str, bytes]]:
-        """Yields (sequence, event_type, payload) starting after last_event_id."""
+    ) -> AsyncIterator[tuple[tuple[int, str, bytes], ...]]:
+        """Yields (sequence, event_type, payload) after last_event_id, in runs of what was ready together."""
         ...
 
 

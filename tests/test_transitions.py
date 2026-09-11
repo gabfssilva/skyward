@@ -220,9 +220,9 @@ def describe_applying_an_event_to_the_store() -> None:
         await computes.apply(ready(compute=compute))
 
         names = []
-        async for _, name, _ in events.stream(None, compute, None, None):
-            names.append(name)
-            if name == "compute.ready":
+        async for run in events.stream(None, compute, None, None):
+            names.extend(name for _, name, _ in run)
+            if "compute.ready" in names:
                 break
 
         assert names == ["compute.created", "compute.generation.created", "compute.ready"]

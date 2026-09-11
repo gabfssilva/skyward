@@ -5,10 +5,18 @@ from collections.abc import AsyncGenerator
 from litestar import Controller, get
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
-from litestar.response import ServerSentEvent, ServerSentEventMessage
+from litestar.response import Stream
 
 from skyward.server.application import ports
 from skyward.shared.events import Event
+
+MESSAGE = b"id: %d\r\nevent: %s\r\ndata: %s\r\n\r\n"
+"""One Server-Sent Event, byte for byte as litestar's ``ServerSentEvent`` frames it.
+
+A payload is compact JSON, so it is always one ``data:`` line. The frames are written
+here rather than by ``ServerSentEvent``, which sends every message on its own: the store
+hands over runs of events, and a run goes out as one write of one message per event.
+"""
 
 
 class EventController(Controller):
@@ -61,9 +69,13 @@ class EventController(Controller):
         task: str | None = None,
         types: list[str] | None = None,
         last_event_id: str | None = Parameter(header="Last-Event-ID", default=None),
-    ) -> ServerSentEvent:
-        async def messages() -> AsyncGenerator[ServerSentEventMessage, None]:
-            async for sequence, event_type, payload in events.stream(last_event_id, compute, task, tuple(types) if types else None):
-                yield ServerSentEventMessage(id=str(sequence), event=event_type, data=payload)
+    ) -> Stream:
+        async def messages() -> AsyncGenerator[bytes, None]:
+            async for run in events.stream(last_event_id, compute, task, tuple(types) if types else None):
+                yield b"".join(MESSAGE % (sequence, event_type.encode(), payload) for sequence, event_type, payload in run)
 
-        return ServerSentEvent(messages())
+        return Stream(
+            messages(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )

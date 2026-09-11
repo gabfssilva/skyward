@@ -44,6 +44,17 @@ class EventStore:
     in pages of :data:`PAGE` rows, and a feed is only handed the events its
     filter wants, so a subscriber is neither woken nor filled by the rest.
 
+    Records are handed over in runs, not one by one: a replay page as it came off
+    the table, or everything a feed held when its subscriber woke. Most of what a
+    record costs on its way out is the write that carries it, and a run goes out
+    in one.
+
+    Replay pages are read one at a time, whoever asks. Every row crosses into
+    Python with a hand-off of the interpreter lock, and connections reading side
+    by side spend more handing it over than reading: replays that take turns
+    finish sooner than replays that race, and the loop, which needs the same lock
+    for everything else the daemon does, stops waiting behind them.
+
     A slow consumer is disconnected, not waited for: its queue fills, its feed is
     closed, and it comes back with the sequence it got to. The alternative is a
     commit that blocks because somebody's browser tab is busy.
@@ -51,6 +62,7 @@ class EventStore:
 
     def __init__(self) -> None:
         self._feeds: dict[asyncio.Queue[Live | None], Filter] = {}
+        self._turn = asyncio.Lock()
 
     async def record(self, event: Event) -> None:
         """Write it down and hand it to whoever is listening, in that order."""
@@ -110,28 +122,34 @@ class EventStore:
         compute: str | None,
         task: str | None,
         types: tuple[str, ...] | None,
-    ) -> AsyncIterator[Record]:
+    ) -> AsyncIterator[tuple[Record, ...]]:
         feed: asyncio.Queue[Live | None] = asyncio.Queue(maxsize=BACKLOG + 1)
         self._feeds[feed] = (compute, task, types)
 
         try:
             cursor = int(last_event_id or 0)
             seen = 0
-            async for record in self._replay(cursor, compute, task, types):
-                seen = record[0]
+            async for page in self._replay(cursor, compute, task, types):
+                seen = page[-1][0]
                 cursor = max(cursor, seen)
-                yield record
+                yield page
 
-            while (live := await feed.get()) is not None:
-                if live.sequence is None:
-                    yield cursor, live.type, live.payload
-                elif live.sequence > seen:
-                    cursor = max(cursor, live.sequence)
-                    yield live.sequence, live.type, live.payload
+            closed = False
+            while not closed:
+                held, closed = await _held(feed)
+                run: list[Record] = []
+                for live in held:
+                    if live.sequence is None:
+                        run.append((cursor, live.type, live.payload))
+                    elif live.sequence > seen:
+                        cursor = max(cursor, live.sequence)
+                        run.append((live.sequence, live.type, live.payload))
+                if run:
+                    yield tuple(run)
         finally:
             self._feeds.pop(feed, None)
 
-    async def _replay(self, after: int, compute: str | None, task: str | None, types: tuple[str, ...] | None) -> AsyncIterator[Record]:
+    async def _replay(self, after: int, compute: str | None, task: str | None, types: tuple[str, ...] | None) -> AsyncIterator[tuple[Record, ...]]:
         while True:
             query = EventRow.select(EventRow.sequence, EventRow.type, EventRow.payload).where(EventRow.sequence > after)
 
@@ -142,9 +160,10 @@ class EventStore:
             if types:
                 query = query.where(EventRow.type.is_in(list(types)))
 
-            rows = await query.order_by(EventRow.sequence).limit(PAGE)
-            for row in rows:
-                yield row["sequence"], row["type"], row["payload"].encode()
+            async with self._turn:
+                rows = await query.order_by(EventRow.sequence).limit(PAGE)
+            if rows:
+                yield tuple((row["sequence"], row["type"], row["payload"].encode()) for row in rows)
 
             if len(rows) < PAGE:
                 return
@@ -164,6 +183,22 @@ class EventStore:
             return
 
         feed.put_nowait(live)
+
+
+async def _held(feed: asyncio.Queue[Live | None]) -> tuple[list[Live], bool]:
+    """Wait for the next event, then take every other one the feed already holds.
+
+    The flag says the feed was hung up on. The goodbye is queued behind the events
+    that came before it, and those are still handed over.
+    """
+    held: list[Live] = []
+    item = await feed.get()
+    while item is not None:
+        held.append(item)
+        if feed.empty():
+            return held, False
+        item = feed.get_nowait()
+    return held, True
 
 
 async def _row(event: Event) -> tuple[EventRow, str, bytes]:
