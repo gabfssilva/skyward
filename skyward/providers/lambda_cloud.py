@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import Lambda
@@ -45,7 +46,7 @@ class LambdaProvider:
         return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.get(
                 INSTANCE_TYPES_PATH,
                 auth=httpx.BasicAuth(self._api_key, ""),
@@ -219,7 +220,7 @@ class LambdaProvider:
         return str(regions[0]["name"])
 
     async def _request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.request(
                 method,
                 path,

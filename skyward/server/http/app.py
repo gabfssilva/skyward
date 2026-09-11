@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from skyward.shared.errors import SkywardError
 from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import PhaseMark
+from skyward.worker.journal import Console
 
 logger = logger.bind(component="daemon")
 
@@ -120,8 +122,8 @@ def services() -> Services:
     providers = ProviderStore()
     tasks = TaskStore(computes, nodes, blobs)
 
-    async def console(compute: str, node: str, content: str, task: str | None) -> None:
-        await events.record(ConsoleEvent(compute=compute, node=node, content=content, task=task))
+    async def console(compute: str, node: str, lines: tuple[Console, ...]) -> None:
+        await events.record_all(tuple(ConsoleEvent(compute=compute, node=node, content=line.content, task=line.task) for line in lines))
 
     async def phased(compute: str, node: str, event: PhaseMark, phase: str, error: str | None) -> None:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
@@ -227,11 +229,12 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         if database is not None:
             await connect(database)
         app.state.tick = asyncio.create_task(tick())
+        app.state.rechunk = asyncio.create_task(svc.blobs.rechunk())
         if svc.meter:
             app.state.meter = asyncio.create_task(metered(svc.meter))
 
     async def on_shutdown(app: Litestar) -> None:
-        for name in ("tick", "meter"):
+        for name in ("tick", "rechunk", "meter"):
             task: asyncio.Task[None] | None = getattr(app.state, name, None)
             if task:
                 task.cancel()
@@ -312,7 +315,11 @@ def daemon() -> Litestar:
     The one deployment that owns its process is also the only one allowed to say where
     logs go: ``create_app`` is imported into the user's process by the embedded client,
     and a guest does not get to install sinks on the host application's behalf.
+
+    The console sink is attached only on a terminal: a detached daemon's stdout is
+    ``server.log``, a file nothing rotates, and the rotating log file already has
+    every line the console would print.
     """
-    setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL"))))
+    setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL")), console=sys.stdout.isatty()))
     database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
     return create_app(services(), database=database)

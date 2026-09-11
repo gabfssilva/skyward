@@ -101,6 +101,10 @@ class Blobs(Protocol):
 
     async def get(self, sha256: str) -> bytes: ...
 
+    async def rechunk(self) -> None:
+        """Convert content stored before chunking; returns when there is none left."""
+        ...
+
 
 @runtime_checkable
 class Tasks(Protocol):

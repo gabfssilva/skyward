@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import JarvisLabs
@@ -67,7 +68,7 @@ class JarvisLabsProvider:
         return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, verify=tls()) as client:
             response = await client.get(
                 SERVER_META_PATH,
                 headers={"Authorization": f"Bearer {self._api_key}"},
@@ -287,7 +288,7 @@ class JarvisLabsProvider:
         json: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> Any:
-        async with httpx.AsyncClient(base_url=base_url, timeout=60) as client:
+        async with httpx.AsyncClient(base_url=base_url, timeout=60, verify=tls()) as client:
             response = await client.request(
                 method,
                 path,

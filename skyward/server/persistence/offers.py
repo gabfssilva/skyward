@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import batched
 from typing import Any
 
 import msgspec
 
+from skyward.providers.registry import adapter_for
 from skyward.server.persistence.db import transaction
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import OfferRow, ProviderRow
@@ -20,6 +21,11 @@ logger = logger.bind(component="offers")
 BATCH_SIZE = 500
 """Rows per INSERT. SQLite caps a statement at 32766 bound variables, and an
 offer binds ~20 of them: Vultr's 3000-row catalog overflows a single insert."""
+
+RETRY_SECONDS = 60.0
+"""A catalog that failed is asked for again after this, or its TTL if shorter."""
+
+_specific = msgspec.json.Decoder(dict[str, Any])
 
 
 class OfferCache:
@@ -50,7 +56,7 @@ class OfferCache:
 
         await asyncio.gather(*(self._ensure_fresh(row, force=refresh) for row in targets))
 
-        query = OfferRow.objects().output(load_json=True).where(OfferRow.provider_id.is_in([row.id for row in targets]))
+        query = OfferRow.select(*OfferRow.all_columns()).where(OfferRow.provider_id.is_in([row.id for row in targets]))
         if accelerator:
             query = query.where(OfferRow.accelerator == resolve(accelerator)[0])
         if min_count:
@@ -73,19 +79,17 @@ class OfferCache:
 
     async def _ensure_fresh(self, row: ProviderRow, force: bool) -> None:
         async with self._locks[row.id]:
-            if not force and not await self._is_stale(row.id):
+            current = await ProviderRow.select(ProviderRow.offers_attempted_at, ProviderRow.last_error).where(ProviderRow.id == row.id).first()
+            failed = current is not None and current["last_error"] is not None
+            if not force and current is not None and not _due(current["offers_attempted_at"], failed, adapter_for(row.kind).offers_ttl):
                 return
             try:
                 await self._refresh(row)
             except Exception as exc:
                 logger.bind(provider=row.name).warning("offers refresh failed: {}", exc)
-                await ProviderRow.update({ProviderRow.last_error: str(exc)}).where(ProviderRow.id == row.id).run()
-
-    async def _is_stale(self, provider_id: str) -> bool:
-        fresh = await OfferRow.count().where(
-            (OfferRow.provider_id == provider_id) & (OfferRow.expires_at > datetime.now(UTC)),
-        )
-        return fresh == 0
+                await ProviderRow.update(
+                    {ProviderRow.last_error: str(exc), ProviderRow.offers_attempted_at: datetime.now(UTC)},
+                ).where(ProviderRow.id == row.id).run()
 
     async def _refresh(self, row: ProviderRow) -> None:
         log = logger.bind(provider=row.name)
@@ -93,14 +97,23 @@ class OfferCache:
         adapter = await self._providers.adapter(row.id)
         offers = [offer async for offer in adapter.offers()]
         log.info("{} offers", len(offers))
+        rows = [_to_row(offer) for offer in offers]
 
         async with transaction():
             await OfferRow.delete().where(OfferRow.provider_id == row.id).run()
-            for batch in batched(offers, BATCH_SIZE):
-                await OfferRow.insert(*(_to_row(offer) for offer in batch)).run()
+            for batch in batched(rows, BATCH_SIZE):
+                await OfferRow.insert(*batch).run()
+            now = datetime.now(UTC)
             await ProviderRow.update(
-                {ProviderRow.offers_fetched_at: datetime.now(UTC), ProviderRow.last_error: None},
+                {ProviderRow.offers_fetched_at: now, ProviderRow.offers_attempted_at: now, ProviderRow.last_error: None},
             ).where(ProviderRow.id == row.id).run()
+
+
+def _due(attempted: datetime | None, failed: bool, ttl: timedelta) -> bool:
+    if attempted is None:
+        return True
+    wait = min(ttl, timedelta(seconds=RETRY_SECONDS)) if failed else ttl
+    return datetime.now(UTC) - attempted >= wait
 
 
 def _to_row(offer: Offer) -> OfferRow:
@@ -130,26 +143,26 @@ def _to_row(offer: Offer) -> OfferRow:
     )
 
 
-def _to_offer(row: OfferRow) -> Offer:
+def _to_offer(row: dict[str, Any]) -> Offer:
     return Offer(
-        id=row.offer_id,
-        provider_id=row.provider_id,
-        provider_name=row.provider_name,
-        kind=row.kind,
-        instance_type=row.instance_type,
-        accelerator=row.accelerator,
-        accelerator_count=row.accelerator_count,
-        vram=row.vram,
-        cpus=row.cpus,
-        memory_gb=row.memory_gb,
-        disk_gb=row.disk_gb,
-        architecture=row.architecture,
-        region=row.region,
-        spot_price=row.spot_price,
-        on_demand_price=row.on_demand_price,
-        billing_unit=msgspec.convert(row.billing_unit, BillingUnit),
-        available=row.available,
-        specific=msgspec.convert(row.specific, dict[str, Any]),
-        fetched_at=row.fetched_at,
-        expires_at=row.expires_at,
+        id=row["offer_id"],
+        provider_id=row["provider_id"],
+        provider_name=row["provider_name"],
+        kind=row["kind"],
+        instance_type=row["instance_type"],
+        accelerator=row["accelerator"],
+        accelerator_count=row["accelerator_count"],
+        vram=row["vram"],
+        cpus=row["cpus"],
+        memory_gb=row["memory_gb"],
+        disk_gb=row["disk_gb"],
+        architecture=row["architecture"],
+        region=row["region"],
+        spot_price=row["spot_price"],
+        on_demand_price=row["on_demand_price"],
+        billing_unit=msgspec.convert(row["billing_unit"], BillingUnit),
+        available=row["available"],
+        specific=_specific.decode(row["specific"]),
+        fetched_at=row["fetched_at"],
+        expires_at=row["expires_at"],
     )

@@ -58,6 +58,7 @@ from salad_cloud_sdk.net.transport.api_error import ApiError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Binding, Machine, MachineState, claimed
@@ -523,7 +524,7 @@ class SaladProvider:
             "page_size": 1,
             "sort_order": "desc",
         }
-        async with httpx.AsyncClient(timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.post(
                 f"{Environment.DEFAULT.url}/organizations/{self._organization}/log-entries",
                 headers={"Salad-Api-Key": self._api_key},

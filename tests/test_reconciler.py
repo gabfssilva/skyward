@@ -43,15 +43,15 @@ class CountingNodes(NodeStore):
 
 
 def describe_one_pass() -> None:
-    async def it_reads_the_nodes_twice_at_most(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Once after the provider is asked what became of them, once after the pass changed them."""
+    async def it_reads_the_nodes_once_when_the_pass_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Once after the provider is asked what became of them; a pass that buys and drains nothing has no reason to read them again."""
         computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)
         await reconciler.compute(compute)
         nodes.listed = 0
 
         await reconciler.compute(compute)
 
-        assert nodes.listed == 2
+        assert nodes.listed == 1
 
     async def it_forgets_a_compute_once_it_is_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)

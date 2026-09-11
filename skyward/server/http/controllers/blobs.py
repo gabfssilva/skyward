@@ -5,6 +5,7 @@ from litestar.openapi.datastructures import ResponseSpec
 
 from skyward.server.application import ports
 from skyward.server.http.exceptions import failures
+from skyward.shared.errors import NotFoundError
 
 BLOB = "application/vnd.skyward.blob"
 
@@ -20,7 +21,8 @@ class BlobController(Controller):
         responses=failures(404),
     )
     async def exists(self, sha256: str, blobs: ports.Blobs) -> None:
-        await blobs.get(sha256)
+        if not await blobs.exists(sha256):
+            raise NotFoundError(f"no such blob: {sha256}")
 
     @put(
         "/{sha256:str}",

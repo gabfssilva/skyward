@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from time import monotonic
 
 import msgspec
 
@@ -71,6 +72,12 @@ because the tick that asks is the one that was queued behind the launch. Younger
 than this, absence is the index lagging; older, the machine is gone.
 """
 
+REFUSED_FIRST = 10.0
+"""How long a compute waits before buying again, after every market and region refused a machine."""
+
+REFUSED_MAX = 300.0
+"""The longest that wait grows to: it doubles with each further refusal and stops here."""
+
 
 class Machines:
     def __init__(
@@ -93,6 +100,8 @@ class Machines:
         """Which compute has already had which environment offered to the provider, once."""
         self._progress: dict[str, tuple[str | None, datetime]] = {}
         """What each machine still short of an address was last seen doing, and when that changed."""
+        self._refused: dict[str, tuple[float, float]] = {}
+        """When each refused compute may try to buy again, on the monotonic clock, and the delay that set it."""
 
     async def create(self, compute_id: str, node_id: str) -> None:
         """Buy the machine one row is asking for, and write down what we got.
@@ -109,6 +118,9 @@ class Machines:
         already have bought on it.
         """
         log = logger.bind(compute_id=compute_id, node_id=node_id)
+        if (left := self._refusal(compute_id)) is not None:
+            log.debug("not buying for another {:.0f}s: every market and region refused the last machine", left)
+            return
         compute = await self._computes.get(compute_id)
         node = await self._nodes.get(compute_id, node_id)
         if node.state != "requested":
@@ -124,7 +136,12 @@ class Machines:
             return
 
         log.debug("buying one machine on {}", adapter.kind)
-        placed, machine, sold = await self._place(adapter, compute, infrastructure, claim(node_id))
+        try:
+            placed, machine, sold = await self._place(adapter, compute, infrastructure, claim(node_id))
+        except Exception:
+            self._refuse(compute_id)
+            raise
+        self._refused.pop(compute_id, None)
 
         await self._nodes.launched(node_id, machine, offer=placed.offer, market=sold)
         log.bind(instance_id=machine.id).info(
@@ -133,6 +150,26 @@ class Machines:
             sold,
             placed.offer.region if placed.offer and placed.offer.region else "the bound region",
         )
+
+    def _refusal(self, compute_id: str) -> float | None:
+        """Seconds left before the compute may buy again, or ``None`` when it may buy now."""
+        match self._refused.get(compute_id):
+            case (until, _) if (left := until - monotonic()) > 0:
+                return left
+            case _:
+                return None
+
+    def _refuse(self, compute_id: str) -> None:
+        """Open the window a refused compute waits out, doubling the last one up to :data:`REFUSED_MAX`."""
+        now = monotonic()
+        match self._refused.get(compute_id):
+            case (until, _) if now < until:
+                return
+            case (_, delay):
+                delay = min(delay * 2, REFUSED_MAX)
+            case None:
+                delay = REFUSED_FIRST
+        self._refused[compute_id] = (now + delay, delay)
 
     async def _place(
         self, adapter: Provider, compute: Compute, infrastructure: Infrastructure, node: str
@@ -541,6 +578,7 @@ class Machines:
 
     async def release(self, compute_id: str) -> None:
         """Give back everything that was the compute's and not a machine's."""
+        self._refused.pop(compute_id, None)
         infrastructure = await self._computes.infrastructure(compute_id)
         if not infrastructure.provider_id:
             return

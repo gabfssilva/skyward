@@ -14,14 +14,21 @@ cannot disturb whatever logging the host application has already set up, and
 nothing the daemon logs leaks into it. Bound fields ride on the record
 as ``extras``, out of reach of the reserved
 ``LogRecord`` attributes, and a patcher may fold them into the formatted line.
+
+A record is not written on the thread that logs it: the logger holds a queue, and
+one background thread hands what arrives to the sinks, so a slow disk or a
+rollover never stalls the event loop that logged. With no sink attached the queue
+is detached too, and a record falls through to ``logging.lastResort``.
 """
 
 from __future__ import annotations
 
+import atexit
 import gzip
 import logging
 import logging.handlers
 import os
+import queue
 import shutil
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -157,20 +164,18 @@ class Logger:
         if filter:
             handler.addFilter(logging.Filter(filter))
 
-        _root.addHandler(handler)
         _counter += 1
         _handlers[_counter] = handler
+        _rewire()
         return _counter
 
     def remove(self, handler_id: int | None = None) -> None:
         """Detach the sink with this id, or every sink when given none."""
         if handler_id is None:
-            for handler in _handlers.values():
-                _root.removeHandler(handler)
             _handlers.clear()
-            return
-        if handler := _handlers.pop(handler_id, None):
-            _root.removeHandler(handler)
+        else:
+            _handlers.pop(handler_id, None)
+        _rewire()
 
     def enable(self, name: str = NAME) -> None:
         """Re-enable a logger silenced by ``disable``."""
@@ -191,6 +196,27 @@ class Logger:
 _counter = 0
 _handlers: dict[int, logging.Handler] = {}
 _patcher: Patcher | None = None
+_queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+_front = logging.handlers.QueueHandler(_queue)
+_listener: logging.handlers.QueueListener | None = None
+
+
+def _rewire() -> None:
+    global _listener
+    _stop()
+    if not _handlers:
+        _root.removeHandler(_front)
+        return
+    _listener = logging.handlers.QueueListener(_queue, *_handlers.values(), respect_handler_level=True)
+    _listener.start()
+    _root.addHandler(_front)
+
+
+def _stop() -> None:
+    global _listener
+    if _listener is not None:
+        _listener.stop()
+        _listener = None
 
 
 class _PatcherFilter(logging.Filter):
@@ -206,7 +232,7 @@ def _namer(name: str) -> str:
 
 
 def _rotator(source: str, dest: str) -> None:
-    with open(source, "rb") as raw, gzip.open(dest, "wb") as compressed:
+    with open(source, "rb") as raw, gzip.open(dest, "wb", compresslevel=6) as compressed:
         shutil.copyfileobj(raw, compressed)
     os.remove(source)
 
@@ -257,3 +283,4 @@ logger = Logger()
 _root.addFilter(_PatcherFilter())
 _root.setLevel(TRACE)
 _root.propagate = False
+atexit.register(_stop)

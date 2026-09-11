@@ -38,6 +38,9 @@ type Slots = Queue[int]
 SLOT_TIMEOUT = 2.0
 """Seconds a child waits for its index before starting without a distinct one."""
 
+LOKY_IDLE_SECONDS = 24 * 60 * 60
+"""How long an idle loky worker waits for work before it exits; loky's own default is ten seconds."""
+
 
 @dataclass(frozen=True, slots=True)
 class Call:
@@ -162,6 +165,9 @@ class Pool:
     the pool is disposable and the worker is not: the broken one is dropped, the
     next task gets a fresh one, and only the tasks that were in the dead child
     are lost.
+
+    Loky's workers are kept while idle: its default retires them after ten seconds,
+    and the next task would pay for a new process and every import again.
     """
 
     def __init__(self, kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations) -> None:
@@ -205,6 +211,7 @@ class Pool:
                     initializer=_install,
                     initargs=(self._registrations, self._slots),
                     reuse="auto",
+                    timeout=LOKY_IDLE_SECONDS,
                 )
             case "process" if self._reuse:
                 return ProcessPoolExecutor(

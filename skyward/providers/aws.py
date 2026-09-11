@@ -70,9 +70,18 @@ class AWSProvider:
     ) -> None:
         self._id = provider_id
         self._name = name
-        self._access_key_id = access_key_id
-        self._secret_access_key = secret_access_key
         self._config = config
+        self._session = aioboto3.Session(
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            aws_session_token=config.session_token,
+        )
+        """Always the explicit credentials — never boto3's default chain.
+
+        The default chain would fall back to the caller's environment and
+        ``~/.aws``, which is exactly what makes two AWS accounts in one process
+        impossible.
+        """
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
@@ -85,26 +94,13 @@ class AWSProvider:
     def _regions(self) -> tuple[str, ...]:
         return self._config.regions
 
-    def _session(self) -> aioboto3.Session:
-        """Always the explicit credentials — never boto3's default chain.
-
-        The default chain would fall back to the caller's environment and
-        ``~/.aws``, which is exactly what makes two AWS accounts in one process
-        impossible.
-        """
-        return aioboto3.Session(
-            aws_access_key_id=self._access_key_id,
-            aws_secret_access_key=self._secret_access_key,
-            aws_session_token=self._config.session_token,
-        )
-
     def _client_config(self) -> AioConfig:
         timeout = self._config.request_timeout
         return AioConfig(connect_timeout=timeout, read_timeout=timeout)
 
     @asynccontextmanager
     async def _ec2(self, region: str) -> AsyncIterator[EC2Client]:
-        async with self._session().client(
+        async with self._session.client(
             "ec2",
             region_name=region,
             config=self._client_config(),
@@ -168,11 +164,10 @@ class AWSProvider:
                 )
 
     async def _fetch_region(self, region: str) -> tuple[list[Mapping[str, Any]], dict[str, float], dict[str, float]]:
-        session = self._session()
         instance_types, spot, on_demand = await asyncio.gather(
-            self._instance_types(session, region),
-            self._spot_prices(session, region),
-            self._on_demand_prices(session, region),
+            self._instance_types(self._session, region),
+            self._spot_prices(self._session, region),
+            self._on_demand_prices(self._session, region),
         )
         return instance_types, spot, on_demand
 
@@ -238,8 +233,7 @@ class AWSProvider:
             raise CapabilityMismatchError("an aws offer without a region cannot be launched", provider=self._name)
 
         name = f"skyward-{compute_id}"
-        session = self._session()
-        async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
+        async with self._session.client("ec2", region_name=region, config=self._client_config()) as ec2:
             if configured_subnet := self._config.subnet_id:
                 described = await ec2.describe_subnets(SubnetIds=[configured_subnet])
                 subnet = described["Subnets"][0]
@@ -253,7 +247,7 @@ class AWSProvider:
 
             async with asyncio.TaskGroup() as group:
                 key = group.create_task(self._key_pair(ec2, name, public_key))
-                image = group.create_task(self._image(session, region, offer))
+                image = group.create_task(self._image(self._session, region, offer))
                 security_group = (
                     None
                     if self._config.security_group_id
@@ -298,8 +292,7 @@ class AWSProvider:
         subnets: Mapping[str, str] = binding["subnets"]
         zone: str = binding["az"]
 
-        session = self._session()
-        async with session.client("ec2", region_name=binding["region"], config=self._client_config()) as ec2:
+        async with self._session.client("ec2", region_name=binding["region"], config=self._client_config()) as ec2:
             template = await ec2.create_launch_template(
                 LaunchTemplateName=f"skyward-{node}-{uuid.uuid4().hex[:6]}",
                 LaunchTemplateData=_template(binding, node),
@@ -326,7 +319,7 @@ class AWSProvider:
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         found: dict[str, Machine] = {}
-        async with self._session().client(
+        async with self._session.client(
             "ec2",
             region_name=binding["region"],
             config=self._client_config(),
@@ -446,7 +439,7 @@ class AWSProvider:
         if not machine_ids:
             return
 
-        async with self._session().client(
+        async with self._session.client(
             "ec2",
             region_name=binding["region"],
             config=self._client_config(),

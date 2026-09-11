@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import TensorDock
@@ -56,7 +57,7 @@ class TensorDockProvider:
         return cls(provider_id, name, settings.api_token, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.get(
                 LOCATIONS_PATH,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},
@@ -213,7 +214,7 @@ class TensorDockProvider:
     async def _request(
         self, method: str, path: str, json: Mapping[str, Any] | None = None, allow: tuple[int, ...] = (),
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.request(
                 method, path, json=json,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},

@@ -10,15 +10,18 @@ else was watching.
 
 import asyncio
 import random
+import re
 from collections.abc import AsyncIterator
 
 import pytest
 
+import skyward.server.application.node as node_module
 from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.source import Source
 from skyward.server.application.ssh import Result, Ssh, SshUnavailableError
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Image, NodeState, Options
+from skyward.worker.journal import LOCK, Console
 
 pytestmark = pytest.mark.local
 
@@ -184,7 +187,11 @@ def describe_what_the_log_says() -> None:
             await asyncio.sleep(random.uniform(0, 0.01))
             said.append(" ".join(str(word) for word in words if word is not None))
 
-        node._output = slowly
+        async def printed(lines: tuple[Console, ...]) -> None:
+            await asyncio.sleep(random.uniform(0, 0.01))
+            said.extend(line.content for line in lines)
+
+        node._output = printed
         node._sample = slowly
         node._phase = slowly
 
@@ -201,3 +208,151 @@ def describe_what_the_log_says() -> None:
             "started venv",
             "completed venv",
         ]
+
+
+class _File(_Link):
+    """A machine whose log is a real byte string: tails read it from their offset, and the lock-held check empties it."""
+
+    def __init__(self, lines: list[str], refills: list[list[str]] | None = None, grows: bool = False, clock: list[float] | None = None) -> None:
+        super().__init__(tails=[[]])
+        self.content = "".join(lines).encode()
+        self._refills = refills or []
+        self._grows = grows
+        self._clock = clock
+        self.truncations: list[tuple[int, bool]] = []
+        self.tails: list[tuple[int, list[str]]] = []
+
+    async def run(self, command: str, *, timeout: float | None = None) -> Result:
+        self.commands.append(command)
+        if f"flock {LOCK} " not in command:
+            return Result(exit_code=0, stdout="", stderr="")
+        match re.search(r"= (\d+) ", command):
+            case None:
+                raise AssertionError(f"no size in {command}")
+            case found:
+                offset = int(found.group(1))
+        size = len(self.content) + (1 if self._grows else 0)
+        emptied = size == offset
+        self.truncations.append((offset, emptied))
+        if emptied:
+            self.content = "".join(self._refills.pop(0) if self._refills else []).encode()
+        return Result(exit_code=0 if emptied else 1, stdout="", stderr="")
+
+    async def stream(self, command: str) -> AsyncIterator[bytes]:
+        self.followed.append(command)
+        match re.search(r"-c \+(\d+) ", command):
+            case None:
+                raise AssertionError(f"no offset in {command}")
+            case found:
+                offset = int(found.group(1)) - 1
+        unread = self.content[offset:]
+        if not unread:
+            raise SshUnavailableError("127.0.0.1: reconnection exhausted")
+        read: list[str] = []
+        self.tails.append((offset, read))
+        for line in unread.decode().splitlines(keepends=True):
+            if self._clock is not None:
+                self._clock[0] += 4.0
+            read.append(line)
+            yield line.encode()
+
+
+def _phase(name: str) -> str:
+    return f'{{"type":"phase","event":"completed","phase":"{name}"}}\n'
+
+
+def _console(content: str) -> str:
+    return f'{{"type":"console","content":"{content}"}}\n'
+
+
+def _heard(node: Node) -> list[str]:
+    phases: list[str] = []
+
+    async def noted(event: str, phase: str, error: str | None) -> None:
+        phases.append(phase)
+
+    node._phase = noted
+    return phases
+
+
+def describe_a_log_the_daemon_has_read_to_its_end() -> None:
+    async def is_emptied_under_the_lock_and_followed_again_from_byte_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(node_module, "ROTATE_BYTES", len(_phase("a")) + len(_phase("b")))
+        monkeypatch.setattr(node_module, "ROTATE_SECONDS", 0.0)
+        link = _File([_phase("a"), _phase("b")], refills=[[_phase("c"), _phase("d")]])
+        node = _node(link, [])
+        phases = _heard(node)
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        whole = len(_phase("a")) + len(_phase("b"))
+        assert link.truncations[0] == (whole, True)
+        assert [offset for offset, _ in link.tails[:2]] == [0, 0]
+        assert phases == ["a", "b", "c", "d"], "every line once, across the truncation"
+
+    async def is_left_alone_while_it_holds_lines_not_yet_read(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(node_module, "ROTATE_BYTES", 1)
+        monkeypatch.setattr(node_module, "ROTATE_SECONDS", 0.0)
+        link = _File([_phase("a"), _phase("b")], grows=True)
+        node = _node(link, [])
+        phases = _heard(node)
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert link.truncations == [(len(_phase("a")), False), (len(_phase("a")) + len(_phase("b")), False)]
+        assert link.content == (_phase("a") + _phase("b")).encode()
+        assert link.tails[0] == (0, [_phase("a"), _phase("b")]), "the tail went on past a refused truncation"
+        assert phases == ["a", "b"]
+
+    async def is_tried_at_most_once_per_rotate_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = [0.0]
+        monkeypatch.setattr(node_module, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(node_module, "ROTATE_BYTES", 1)
+        monkeypatch.setattr(node_module, "ROTATE_SECONDS", 10.0)
+        link = _File([_phase(str(index)) for index in range(6)], grows=True, clock=clock)
+        node = _node(link, [])
+        _heard(node)
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        attempts = [offset for offset, _ in link.truncations]
+        assert attempts == [len(_phase("0")) * 3, len(_phase("0")) * 6], "lines read at t=4..24 try at t=12 and t=24 only"
+
+
+def describe_console_lines() -> None:
+    async def reach_the_output_together_around_a_phase_that_keeps_its_place() -> None:
+        lines = [_console("one"), _console("two"), _console("three"), _phase("apt"), _console("four"), _console("five")]
+        said: list[tuple[str, ...] | str] = []
+        node = _node(_File(lines), [])
+
+        async def printed(batch: tuple[Console, ...]) -> None:
+            said.append(tuple(line.content for line in batch))
+
+        async def noted(event: str, phase: str, error: str | None) -> None:
+            said.append(phase)
+
+        node._output = printed
+        node._phase = noted
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert said == [("one", "two", "three"), "apt", ("four", "five")]
+
+    async def arrive_in_writes_of_at_most_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(node_module, "BATCH", 2)
+        batches: list[tuple[str, ...]] = []
+        node = _node(_File([_console(str(index)) for index in range(5)]), [])
+
+        async def printed(batch: tuple[Console, ...]) -> None:
+            batches.append(tuple(line.content for line in batch))
+
+        node._output = printed
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert batches == [("0", "1"), ("2", "3"), ("4",)]

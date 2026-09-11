@@ -102,6 +102,8 @@ def spawn(host: str, port: int, database: Path | None = None, log_level: str | N
     Detached deliberately: a control plane that dies with the terminal — or with
     the script — that launched it is not a control plane. Its output goes to
     :data:`LOG_FILE`, which is the only account of a daemon that never answers.
+    Uvicorn's access log is left out of it: a line per request is noise in a file
+    nothing rotates, and the daemon's own rotating log already records what matters.
     """
     if not installed():
         raise ImportError(MISSING)
@@ -120,6 +122,7 @@ def spawn(host: str, port: int, database: Path | None = None, log_level: str | N
         str(port),
         "--timeout-graceful-shutdown",
         str(GRACEFUL_SECONDS),
+        "--no-access-log",
     ]
     process = subprocess.Popen(
         command,

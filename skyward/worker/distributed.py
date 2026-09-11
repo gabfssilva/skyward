@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
 from collections.abc import Callable, Hashable, Mapping, MutableMapping
 from dataclasses import dataclass
 from types import TracebackType
@@ -31,6 +32,7 @@ from typing import Literal, TypedDict
 import casty
 
 from skyward.shared.codec import dumps, loads
+from skyward.shared.observability import logger
 from skyward.worker.api import NotOnANodeError, instance_info
 
 type Consistency = Literal["strong", "eventual"]
@@ -137,12 +139,12 @@ async def _apply(
             assert timeout is None or isinstance(timeout, int | float)
             return await current.system.barrier(name, parties=parties, replicas=current.replicas).wait(timeout)
         case "lock":
-            return await _acquire_or_release(current, name, method, args, params)
+            return await _lease(current, name, method, args, params)
         case _:
             raise ValueError(f"unknown collection {kind!r}")
 
 
-async def _acquire_or_release(
+async def _lease(
     current: Cluster,
     name: str,
     method: str,
@@ -158,6 +160,13 @@ async def _acquire_or_release(
             token = str(next(_tokens))
             _leases[token] = await lock.acquire()
             return token
+        case "renew":
+            (token,) = args
+            ttl = params["ttl"]
+            assert isinstance(token, str)
+            assert isinstance(ttl, int | float)
+            lease = _leases.get(token)
+            return lease is not None and await lease.renew(ttl)
         case "release":
             (token,) = args
             assert isinstance(token, str)
@@ -332,8 +341,10 @@ class Lock:
         with sky.lock("checkpoint"):
             save(model)
 
-    The lease has a time to live, so a node that dies holding the lock hands it
-    back — there is no other way to get it back from a machine that is gone.
+    The lease has a time to live, and it is renewed every ``ttl / 3`` for as long
+    as the block runs, so a critical section may outlast the ttl. The renewals stop
+    with the holder, so a node or process that dies holding the lock hands it back
+    within ttl — there is no other way to get it back from a machine that is gone.
     """
 
     def __init__(self, name: str, ttl: float = 30.0, timeout: float | None = None) -> None:
@@ -341,12 +352,32 @@ class Lock:
         self._ttl = ttl
         self._timeout = timeout
         self._token: str | None = None
+        self._renewing: threading.Thread | None = None
+        self._released = threading.Event()
 
     def __enter__(self) -> Lock:
         held = invoke("lock", self._name, "acquire", (), {"ttl": self._ttl, "timeout": self._timeout})
         assert isinstance(held, str)
         self._token = held
+        self._released = threading.Event()
+        self._renewing = threading.Thread(
+            target=self._renew,
+            args=(held, self._released),
+            name=f"skyward-lock-{self._name}",
+            daemon=True,
+        )
+        self._renewing.start()
         return self
+
+    def _renew(self, token: str, released: threading.Event) -> None:
+        while not released.wait(self._ttl / 3):
+            try:
+                renewed = _flag(invoke("lock", self._name, "renew", (token,), {"ttl": self._ttl}))
+            except Exception:
+                logger.warning("could not renew lock {}; it lapses at its ttl", self._name, exc_info=True)
+                return
+            if not renewed:
+                return
 
     def __exit__(
         self,
@@ -355,8 +386,12 @@ class Lock:
         trace: TracebackType | None,
     ) -> None:
         if self._token is not None:
+            self._released.set()
+            if self._renewing is not None:
+                self._renewing.join()
             invoke("lock", self._name, "release", (self._token,))
             self._token = None
+            self._renewing = None
 
 
 class DistributedRegistry[K: Hashable, V]:

@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import timedelta
 from itertools import batched
-from typing import Any
+from typing import Any, NamedTuple
 
 import msgspec
 from msgspec import UNSET
@@ -41,6 +41,14 @@ PENDING: tuple[ExecutionState, ...] = ("created", "assigned", "dispatching", "ac
 
 BATCH = 500
 """How many tasks' attempts one query reads."""
+
+
+class Pressure(NamedTuple):
+    """What a compute's queue asks of its nodes, read once."""
+
+    load: int
+    holding: Counter[str]
+    owed: frozenset[int]
 
 
 class TaskStore:
@@ -317,14 +325,20 @@ class TaskStore:
 
         return expired
 
-    async def load(self, compute: str) -> int:
-        """How many attempts this compute still owes an answer for.
+    async def pressure(self, compute: str) -> Pressure:
+        """What this compute's queue asks of its nodes, from one read.
 
-        Queued and running together, because they are the same demand seen a moment
-        apart: sizing the pool to what is running would size it to what the pool can
+        The load is how many attempts the compute still owes an answer for: queued
+        and running together, because they are the same demand seen a moment apart.
+        Sizing the pool to what is running would size it to what the pool can
         already do, and a queue would never be a reason to grow.
         """
-        return len(await self._pending(compute))
+        pending = await self._pending(compute)
+        return Pressure(
+            load=len(pending),
+            holding=Counter(row["node_id"] for row in pending if row["node_id"]),
+            owed=frozenset(row["rank"] for row in pending),
+        )
 
     async def busy(self, compute: str) -> tuple[Counter[str], frozenset[int]]:
         """How much each node is holding, and which ranks are spoken for.
@@ -339,11 +353,8 @@ class TaskStore:
         is owed an execution even if nothing has been placed on it yet. Kill the node
         that is rank 3 and the broadcast waits for a machine that is never coming back.
         """
-        pending = await self._pending(compute)
-        return (
-            Counter(row["node_id"] for row in pending if row["node_id"]),
-            frozenset(row["rank"] for row in pending),
-        )
+        pressure = await self.pressure(compute)
+        return pressure.holding, pressure.owed
 
     async def waiting(self, compute: str) -> tuple[str, ...]:
         """Tasks of this compute with an attempt still to be placed, oldest first.

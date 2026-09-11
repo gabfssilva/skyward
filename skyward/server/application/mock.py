@@ -220,6 +220,9 @@ class MockBlobs:
     async def get(self, sha256: str) -> bytes:
         return b"\x00mock-blob"
 
+    async def rechunk(self) -> None:
+        return None
+
 
 class MockTasks:
     async def submit(self, body: TaskCreate, idempotency_key: str) -> tuple[Task, bool]:

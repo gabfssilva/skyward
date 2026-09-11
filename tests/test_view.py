@@ -224,7 +224,8 @@ class _Stream(Client):
     """
 
     def __init__(self, events: tuple[Event, ...]) -> None:
-        super().__init__(httpx.AsyncClient(), AsyncExitStack())
+        http = httpx.AsyncClient()
+        super().__init__(http, http, AsyncExitStack())
         self._script = events
 
     async def events(self, compute: str) -> AsyncGenerator[tuple[str, bytes]]:

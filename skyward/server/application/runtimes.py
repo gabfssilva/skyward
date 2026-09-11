@@ -33,14 +33,15 @@ from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef, SkywardSource
 from skyward.shared.tls import Authority, identity
 from skyward.worker import worker
+from skyward.worker.journal import Console
 
 logger = logger.bind(component="runtimes")
 
 type Listener = Callable[[str, str, NodeState, str | None], None]
 """(compute, node, state, error)"""
 
-type Output = Callable[[str, str, str, str | None], Awaitable[None]]
-"""(compute, node, content, task)"""
+type Output = Callable[[str, str, tuple[Console, ...]], Awaitable[None]]
+"""(compute, node, lines)"""
 
 type Sample = Callable[[str, str, str, float], Awaitable[None]]
 """(compute, node, name, value)"""
@@ -101,6 +102,13 @@ class Runtime:
         self.nodes: dict[str, Node] = {}
         self.dispatched: set[str] = set()
         """Executions already in flight. Two coalesced reconciles must not both send one."""
+        self.recorded: dict[str, set[str]] = {}
+        """Executions whose outcome the store holds, by node id, that the node's worker has not been told of.
+
+        A worker keeps every outcome until somebody says it is safe to drop, since a
+        daemon that lost the call carrying one asks for it again. The telling rides on
+        the next attempt sent to that node.
+        """
 
         self._claims: set[str] = set()
         """Machines a connect is mid-flight for, before there is a node to hold."""
@@ -249,7 +257,7 @@ class Runtime:
                 self._systems[key] = await casty.connect(
                     seeds,
                     tls=self._material(),
-                    config=casty.Config(call_timeout=CALL_TIMEOUT),
+                    config=casty.Config(call_timeout=CALL_TIMEOUT, transport=worker.TRANSPORT),
                     address_map=self.address_map(key),
                     cluster_name=self.compute,
                 )
@@ -536,7 +544,7 @@ class Runtimes:
             instance_timeout=instance_timeout,
             tls=identity(runtime.authority, node_id) if runtime.authority else None,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
-            output=lambda content, task: self._output(runtime.compute, node_id, content, task),
+            output=lambda lines: self._output(runtime.compute, node_id, lines),
             sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),
             phase=lambda event, name, error: self._phase(runtime.compute, node_id, event, name, error),
         )

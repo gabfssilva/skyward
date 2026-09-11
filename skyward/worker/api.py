@@ -19,7 +19,8 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from contextvars import ContextVar
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
+from types import GeneratorType
 from typing import Any, Literal, Protocol, cast, overload, runtime_checkable
 
 from skyward.worker import slot
@@ -424,9 +425,51 @@ class _Under:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         token = policy.set(self._wanted)
         try:
-            return self._fn(*args, **kwargs)
+            result = self._fn(*args, **kwargs)
         finally:
             policy.reset(token)
+        match result:
+            case GeneratorType():
+                return _within(self._wanted, result)
+            case _:
+                return result
+
+
+def _within[Y, S, R](wanted: Policy, generator: Generator[Y, S, R]) -> Generator[Y, S, R]:
+    """Drive a generator with a policy in force while its body runs.
+
+    The policy is set around every resumption and never held across a yield: the
+    next resumption may run in another thread, under another context, and a token
+    set in one context cannot be reset in the next.
+    """
+
+    def resumed[T](step: Callable[[], T]) -> T:
+        token = policy.set(wanted)
+        try:
+            return step()
+        finally:
+            policy.reset(token)
+
+    try:
+        item = resumed(partial(next, generator))
+    except StopIteration as done:
+        return done.value
+    while True:
+        try:
+            sent = yield item
+        except GeneratorExit:
+            resumed(generator.close)
+            raise
+        except BaseException as thrown:
+            try:
+                item = resumed(partial(generator.throw, thrown))
+            except StopIteration as done:
+                return done.value
+        else:
+            try:
+                item = resumed(partial(generator.send, sent))
+            except StopIteration as done:
+                return done.value
 
 
 def _under[**P, T](fn: Callable[P, T], wanted: Policy) -> Callable[P, T]:

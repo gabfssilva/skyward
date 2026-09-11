@@ -150,6 +150,9 @@ class ComputeStore:
             repeat = not moved and (state is not None or (bool(projection) and not columns))
             live = None
 
+            if repeat and not columns:
+                return False
+
             async with transaction():
                 if moved or columns:
                     landed = await ComputeRow.update({

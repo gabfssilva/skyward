@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,24 @@ from piccolo.engine.sqlite import SQLiteEngine, SQLiteTransaction, TransactionTy
 from piccolo.table import Table
 
 from skyward.server.persistence.tables import TABLES
+
+
+def _integer(value: bytes) -> int:
+    """Read an INTEGER cell as an ``int``, without a ``Decimal`` on the way.
+
+    Piccolo registers ``int(Decimal(value))`` for every INTEGER column, so that a
+    cell SQLite stored as ``1.0`` still reads as ``1`` — and pays for a ``Decimal``
+    on every integer of every row. Registered under the same name after piccolo's
+    import, this one parses the common case directly and falls back to the
+    ``Decimal`` only for a cell that is not a plain integer.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return int(Decimal(value.decode()))
+
+
+sqlite3.register_converter("INTEGER", _integer)
 
 DEFAULT_PATH = Path.home() / ".skyward" / "skyward.sqlite"
 
@@ -52,6 +71,7 @@ list on every start is a no-op after the first.
 INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS computes_name_live ON computes (name) WHERE status_state != 'deleted'",
     "CREATE INDEX IF NOT EXISTS tasks_compute_submitted ON tasks (compute_id, submitted_at)",
+    "CREATE INDEX IF NOT EXISTS tasks_compute_state ON tasks (compute_id, state)",
 )
 """What the models cannot say.
 
@@ -63,7 +83,21 @@ held, so the index is written here in SQL.
 A compute's tasks are paged newest first, and piccolo indexes one column at a
 time. On ``compute_id`` alone a page reads every task the compute ever ran and
 sorts them to keep the newest; on the pair it is read off the end of the index.
+
+The queue queries filter a compute's tasks by state — the pending, the waiting —
+and on ``compute_id`` alone each of them reads the compute's whole history to
+find the handful still in flight; on ``(compute_id, state)`` it reads only those.
 """
+
+
+def _statement(connection: sqlite3.Connection, query: str, args: list[Any]) -> list[Any]:
+    cursor = connection.execute(query, args)
+    try:
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+    connection.commit()
+    return rows
 
 
 class PooledSQLiteEngine(SQLiteEngine):
@@ -74,9 +108,13 @@ class PooledSQLiteEngine(SQLiteEngine):
     that walks straight through macOS's default limit of 256 descriptors, and
     SQLite reports the wall as ``unable to open database file``.
 
-    Transactions are untouched: they check a dedicated connection out of
-    :meth:`get_connection` and close it, exactly as piccolo wrote it, because a
-    transaction's connection carries state the pool must never see.
+    A pooled statement is one hop onto its connection's thread: execute, fetch,
+    close and commit run there together, where piccolo's engine awaits each.
+
+    Transactions still check a dedicated connection out of :meth:`get_connection`
+    and close it, because a transaction's connection carries state the pool must
+    never see; it is opened with the pool's pragmas, and the statements inside
+    run without piccolo's ``PRAGMA foreign_keys`` in front of each.
     """
 
     def __init__(self, path: str, **connection_kwargs: Any) -> None:
@@ -124,9 +162,7 @@ class PooledSQLiteEngine(SQLiteEngine):
     ) -> Any:
         connection = await self._acquire()
         try:
-            async with connection.execute(query, args or []) as cursor:
-                await connection.commit()
-                result = await cursor.fetchall()
+            result = await connection._execute(_statement, connection._conn, query, args or [])
         except sqlite3.Error:
             self._pool.put_nowait(connection)  # the statement failed; the connection did not
             raise
@@ -136,6 +172,28 @@ class PooledSQLiteEngine(SQLiteEngine):
             raise
         self._pool.put_nowait(connection)
         return result
+
+    async def get_connection(self) -> aiosqlite.Connection:
+        """A transaction's connection, set up like a pooled one."""
+        connection = await super().get_connection()
+        await connection.execute("PRAGMA synchronous = NORMAL")
+        return connection
+
+    async def _run_in_existing_connection(
+        self,
+        connection: aiosqlite.Connection,
+        query: str,
+        args: list[Any] | None = None,
+        query_type: str = "generic",
+        table: type[Table] | None = None,
+    ) -> Any:
+        """Run one statement inside the open transaction.
+
+        The ``PRAGMA foreign_keys`` and the row factory were set when the connection
+        opened, so nothing is sent ahead of the statement.
+        """
+        async with connection.execute(query, args or []) as cursor:
+            return await cursor.fetchall()
 
 
 _current: PooledSQLiteEngine | None = None
@@ -174,6 +232,8 @@ async def connect(path: Path | None = None) -> None:
         table._meta.db = engine
 
     await TABLES[0].raw(JOURNAL).run()
+
+    await _retire_blobs()
 
     for table in TABLES:
         await table.create_table(if_not_exists=True).run()
@@ -223,3 +283,14 @@ async def _relax(table: type[Table]) -> None:
         await table.create_table().run()
         await table.raw(f"INSERT INTO {name} ({columns}) SELECT {columns} FROM {name}_old").run()
         await table.raw(f"DROP TABLE {name}_old").run()
+
+
+async def _retire_blobs() -> None:
+    """Set aside the whole blobs of a file from before chunking.
+
+    Such a file keeps them in ``blobs_legacy``, which the store drains in the
+    background (``BlobStore.rechunk``), so opening the database stays instant.
+    """
+    columns = await TABLES[0].raw("PRAGMA table_info(blobs)").run()
+    if any(column["name"] == "data" for column in columns):
+        await TABLES[0].raw("ALTER TABLE blobs RENAME TO blobs_legacy").run()

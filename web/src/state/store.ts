@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
-import type { Compute, Execution, FunctionRef, Node, Offer, Provider, ProviderKind, Task } from '../api/client'
+import type { Compute, FunctionRef, Node, Offer, Provider, ProviderKind, Task } from '../api/client'
 import { CONSOLE_FRAMES, HEAD, STATE_FRAMES, subscribe } from '../api/events'
 import type { SkyEvent, Subscription } from '../api/events'
 import { useEffect } from 'react'
@@ -8,7 +8,7 @@ import { clamp, median, ms, PHASES } from './model'
 import type { MetricKey, NodeMetrics } from './model'
 import type { NodeProgress } from './nodes'
 
-export type LogLine = { at: number; rank: number; level: 'info' | 'warn' | 'err'; text: string }
+export type LogLine = { seq: number; at: number; rank: number; level: 'info' | 'warn' | 'err'; text: string }
 
 export type Sel = { computeId: string; rank: number } | null
 
@@ -46,7 +46,6 @@ export type Entities = {
   history: Compute[]
   nodes: Record<string, Node[]>
   tasks: Record<string, Task[]>
-  executions: Record<string, Execution[]>
   providers: Provider[]
   providerKinds: ProviderKind[]
   offers: Offer[]
@@ -103,7 +102,6 @@ export const useStore = create<Store>((set) => ({
   history: [],
   nodes: {},
   tasks: {},
-  executions: {},
   providers: [],
   providerKinds: [],
   offers: [],
@@ -172,7 +170,7 @@ export const useStore = create<Store>((set) => ({
       set((s) => ({
         computes: s.computes.some((c) => c.id === computeId) ? s.computes.map((c) => (c.id === computeId ? compute : c)) : [...s.computes, compute],
         nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) },
-        tasks: { ...s.tasks, [computeId]: ts },
+        tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts) },
       }))
       void named(ts)
     } catch {
@@ -183,7 +181,7 @@ export const useStore = create<Store>((set) => ({
   reloadHistory: async (computeId) => {
     try {
       const [ns, ts] = await Promise.all([api.nodes(computeId, { include_terminal: true }).then(page), api.tasks({ compute: computeId }).then(page)])
-      set((s) => ({ nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) }, tasks: { ...s.tasks, [computeId]: ts } }))
+      set((s) => ({ nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) }, tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts) } }))
       void named(ts)
     } catch {
       /* what the daemon no longer keeps is simply not shown */
@@ -208,10 +206,15 @@ type Patch = Partial<Store>
 
 const RELOAD_EVERY = 2000
 const HIDDEN_EVERY = 100
+const GAUGES_EVERY = 1000
+const TASKS_MAX = 500
 
 const queue: SkyEvent[] = []
 let frame: number | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
+const gauges: SkyEvent[] = []
+let gaugeTimer: ReturnType<typeof setTimeout> | null = null
+let seq = 0
 
 /**
  * Take one event now, fold it later.
@@ -222,6 +225,11 @@ let timer: ReturnType<typeof setTimeout> | null = null
  * `set` and one render.
  */
 function enqueue(event: SkyEvent): void {
+  if (event.data.type === 'node.metrics') {
+    gauges.push(event)
+    gaugeTimer ??= setTimeout(flushGauges, GAUGES_EVERY)
+    return
+  }
   queue.push(event)
   if (frame !== null || timer !== null) return
   if (typeof document !== 'undefined' && document.hidden) {
@@ -260,7 +268,7 @@ function flush(): void {
   const draft: Store = { ...state }
   const patch: Patch = {}
   const stale = new Set<string>()
-  const touched = new Map<string, string>()
+  const printedLines = new Map<string, LogLine[]>()
 
   for (const event of batch) {
     const compute = event.compute
@@ -268,28 +276,51 @@ function flush(): void {
       if (event.type.startsWith('compute.')) stale.add(compute)
       continue
     }
+    const payload = event.data
+    if (payload.type === 'node.console') {
+      const lines = printed(draft, event, payload.compute, payload.node, payload.content)
+      if (lines.length) printedLines.set(payload.compute, [...(printedLines.get(payload.compute) ?? []), ...lines])
+      continue
+    }
     const folded = fold(draft, event)
     if (folded) {
       Object.assign(draft, folded)
       Object.assign(patch, folded)
     }
-    if (compute && live.has(compute) && (event.type === 'node.state' || event.type.startsWith('compute.'))) stale.add(compute)
-    if (event.data.type === 'task.state') touched.set(event.data.task, event.data.compute)
+    if (compute && live.has(compute) && (event.type === 'node.state' || event.type === 'task.state' || event.type.startsWith('compute.'))) stale.add(compute)
+  }
+
+  if (printedLines.size) {
+    const logs = { ...draft.logs }
+    for (const [cid, lines] of printedLines) logs[cid] = [...(logs[cid] ?? []), ...lines].slice(-LOGS_MAX)
+    draft.logs = logs
+    patch.logs = logs
   }
 
   if (Object.keys(patch).length) useStore.setState(patch)
-  for (const id of stale) void resync(id)
-  for (const [task, compute] of touched) void refreshTask(compute, task)
+  for (const id of stale) resync(id)
+}
+
+/** Fold the node gauges gathered since the last second, in the order they arrived, in one `set`. */
+function flushGauges(): void {
+  gaugeTimer = null
+  const batch = gauges.splice(0)
+  const draft: Store = { ...useStore.getState() }
+  const patch: Patch = {}
+  for (const event of batch) {
+    if (event.data.type !== 'node.metrics') continue
+    const folded = gauge(draft, event.data.compute, event.data.node, event.data.name, event.data.value, event.at)
+    if (!folded) continue
+    Object.assign(draft, folded)
+    Object.assign(patch, folded)
+  }
+  if (Object.keys(patch).length) useStore.setState(patch)
 }
 
 /** One event, folded into the slices it touches. Nothing here reads or writes the store. */
 function fold(s: Store, event: SkyEvent): Patch | null {
   const payload = event.data
   switch (payload.type) {
-    case 'node.metrics':
-      return gauge(s, payload.compute, payload.node, payload.name, payload.value)
-    case 'node.console':
-      return { logs: printed(s, event, payload.compute, payload.node, payload.content) }
     case 'node.state':
       return {
         ...logged(s, event),
@@ -333,14 +364,12 @@ function fold(s: Store, event: SkyEvent): Patch | null {
 /** The dock's event log, newest first, capped — never re-sorted. */
 const logged = (s: Store, event: SkyEvent): Patch => ({ events: [event, ...s.events].slice(0, EVENTS_MAX) })
 
-const printed = (s: Store, event: SkyEvent, computeId: string, nodeId: string, content: string): Record<string, LogLine[]> => {
+const printed = (s: Store, event: SkyEvent, computeId: string, nodeId: string, content: string): LogLine[] => {
   const rank = rankOf(s, computeId, nodeId) ?? 0
-  const lines = content
+  return content
     .split('\n')
     .filter(Boolean)
-    .map<LogLine>((text) => ({ at: event.at, rank, level: levelOf(text), text }))
-  if (!lines.length) return s.logs
-  return { ...s.logs, [computeId]: [...(s.logs[computeId] ?? []), ...lines].slice(-LOGS_MAX) }
+    .map<LogLine>((text) => ({ seq: ++seq, at: event.at, rank, level: levelOf(text), text }))
 }
 
 const levelOf = (text: string): LogLine['level'] =>
@@ -352,27 +381,42 @@ const rankOf = (state: Store, computeId: string, nodeId: string): number | null 
 }
 
 const reloaded = new Map<string, number>()
+const pending = new Map<string, ReturnType<typeof setTimeout>>()
 
-/** Ask the daemon what a compute looks like now, at most once every couple of seconds. */
-async function resync(computeId: string): Promise<void> {
-  const at = reloaded.get(computeId) ?? 0
-  if (Date.now() - at < RELOAD_EVERY) return
+/**
+ * Ask the daemon what a compute looks like now, at most once every couple of seconds.
+ *
+ * A call inside the window is not dropped: one trailing reload is scheduled for when
+ * the window ends, so the last change always reaches the store.
+ */
+function resync(computeId: string): void {
+  if (pending.has(computeId)) return
+  const wait = RELOAD_EVERY - (Date.now() - (reloaded.get(computeId) ?? 0))
+  if (wait > 0) {
+    pending.set(
+      computeId,
+      setTimeout(() => {
+        pending.delete(computeId)
+        resync(computeId)
+      }, wait),
+    )
+    return
+  }
   reloaded.set(computeId, Date.now())
-  await useStore.getState().reloadCompute(computeId)
+  void useStore.getState().reloadCompute(computeId)
 }
 
-async function refreshTask(computeId: string, taskId: string): Promise<void> {
-  try {
-    const task = await api.task(taskId)
-    useStore.setState((s) => {
-      const list = s.tasks[computeId] ?? []
-      const next = list.some((t) => t.id === taskId) ? list.map((t) => (t.id === taskId ? task : t)) : [task, ...list]
-      return { tasks: { ...s.tasks, [computeId]: next }, executions: { ...s.executions, [taskId]: task.executions } }
-    })
-    void named([task])
-  } catch {
-    /* a task that vanished is not worth a console line */
-  }
+/**
+ * A page of tasks laid over the ones already known.
+ *
+ * The daemon answers with its latest page, so a task that fell off it is kept as it
+ * was last seen, and a task on it replaces the known one with the same id. The list
+ * is newest first by submission and holds at most ``TASKS_MAX``.
+ */
+function merged(known: readonly Task[], latest: readonly Task[]): Task[] {
+  const byId = new Map(known.map((t) => [t.id, t] as const))
+  for (const t of latest) byId.set(t.id, t)
+  return [...byId.values()].sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at)).slice(0, TASKS_MAX)
 }
 
 /* ---------- function names ---------- */
@@ -407,9 +451,13 @@ async function named(tasks: readonly Task[]): Promise<void> {
 /* ---------- what the dock listens to ---------- */
 
 const consoles = new Map<string, Subscription>()
+const cursors = new Map<string, string>()
 
 /**
  * Keep one console feed open per compute in view, and none for the rest.
+ *
+ * A feed remembers the last event it handed over, after it is closed, so reopening
+ * resumes past the lines already folded; the first open still replays the history.
  *
  * Console output is the bulk of the log — a hundred thousand lines of it — so it is
  * never taken globally. What the dock is showing is what the client asks for.
@@ -423,7 +471,12 @@ function watchConsoles(ids: readonly string[]): void {
   }
   for (const id of wanted) {
     if (consoles.has(id)) continue
-    consoles.set(id, subscribe(enqueue, { compute: id, types: CONSOLE_FRAMES }))
+    const onEvent = (event: SkyEvent): void => {
+      const cursor = cursors.get(id)
+      if (/^[1-9][0-9]*$/.test(event.id) && (cursor === undefined || Number(event.id) > Number(cursor))) cursors.set(id, event.id)
+      enqueue(event)
+    }
+    consoles.set(id, subscribe(onEvent, { compute: id, types: CONSOLE_FRAMES, lastEventId: cursors.get(id) }))
   }
 }
 
@@ -447,15 +500,15 @@ export function useConsoles(computeId: string | null): void {
  * wants percentages and a rate, so VRAM is a ratio of two gauges and the network
  * is the delta of a cumulative counter.
  */
-function gauge(s: Store, computeId: string, nodeId: string, name: string, value: number): Patch | null {
+function gauge(s: Store, computeId: string, nodeId: string, name: string, value: number, at: number): Patch | null {
   const rank = rankOf(s, computeId, nodeId)
   if (rank === null) return null
   const key = `${computeId}/${rank}`
   const previous = s.raw[key] ?? {}
-  const raw = { ...previous, [name]: value, [`${name}@`]: Date.now() }
+  const raw = { ...previous, [name]: value, [`${name}@`]: at }
   const sampled: Patch = { raw: { ...s.raw, [key]: raw } }
 
-  const patch = derive(name, value, raw, previous)
+  const patch = derive(name, value, raw, previous, at)
   if (!patch) return sampled
 
   const next = { ...(s.metrics[key] ?? EMPTY), ...patch }
@@ -469,7 +522,7 @@ function gauge(s: Store, computeId: string, nodeId: string, name: string, value:
   return patch.gpu === undefined ? folded : { ...folded, hist: band({ ...s, metrics }, computeId) }
 }
 
-function derive(name: string, value: number, raw: Record<string, number>, previous: Record<string, number>): Partial<NodeMetrics> | null {
+function derive(name: string, value: number, raw: Record<string, number>, previous: Record<string, number>, at: number): Partial<NodeMetrics> | null {
   if (name === 'cpu') return { cpu: clamp(value, 0, 100) }
   if (name === 'gpu_util') return { gpu: clamp(value, 0, 100) }
   if (name === 'gpu_temp') return { temp: value }
@@ -479,9 +532,9 @@ function derive(name: string, value: number, raw: Record<string, number>, previo
   }
   if (name.startsWith('net_rx_') || name.startsWith('net_tx_')) {
     const before = previous[name]
-    const at = previous[`${name}@`]
-    if (before === undefined || at === undefined) return null
-    const seconds = Math.max(0.001, (Date.now() - at) / 1000)
+    const then = previous[`${name}@`]
+    if (before === undefined || then === undefined) return null
+    const seconds = Math.max(0.001, (at - then) / 1000)
     return { net: clamp(Math.max(0, value - before) / seconds / 1e6, 0, 1e4) }
   }
   return null

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import fcntl
 import io
+import os
 import re
+import threading
 from contextvars import ContextVar
 from typing import Literal
 
@@ -27,6 +29,9 @@ from skyward.worker.api import Stream, instance_info, policy
 SKYWARD_DIR = "/opt/skyward"
 EVENTS = f"{SKYWARD_DIR}/events.jsonl"
 LOCK = f"{SKYWARD_DIR}/events.lock"
+
+LINE_LIMIT = 64 * 1024
+"""A line without a newline is written as it is once it reaches this many characters."""
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -88,10 +93,47 @@ def emit(event: NodeEvent) -> None:
     a lock interleave into a line that parses as neither.
     """
     line = msgspec.json.encode(event) + b"\n"
-    with open(LOCK, "w") as lock:
+    with _writing:
+        lock, journal = _opened()
         fcntl.flock(lock, fcntl.LOCK_EX)
-        with open(EVENTS, "ab") as journal:
-            journal.write(line)
+        try:
+            view = memoryview(line)
+            while view:
+                view = view[os.write(journal, view) :]
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+_writing = threading.Lock()
+_descriptors: tuple[str, str, int, int] | None = None
+
+
+def _opened() -> tuple[int, int]:
+    """The lock and the journal, opened once and reopened only when their paths change.
+
+    ``O_APPEND`` keeps every write at the end even after the daemon truncates the file.
+    """
+    global _descriptors
+    match _descriptors:
+        case (lock_path, events_path, lock, journal) if (lock_path, events_path) == (LOCK, EVENTS):
+            return lock, journal
+        case (_, _, lock, journal):
+            os.close(lock)
+            os.close(journal)
+        case None:
+            pass
+    lock = os.open(LOCK, os.O_WRONLY | os.O_CREAT, 0o644)
+    journal = os.open(EVENTS, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    _descriptors = (LOCK, EVENTS, lock, journal)
+    return lock, journal
+
+
+class _Partial(threading.local):
+    """The line one thread has started and not yet ended."""
+
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+        self.size = 0
 
 
 class Journal(io.TextIOBase):
@@ -107,18 +149,31 @@ class Journal(io.TextIOBase):
 
     def __init__(self, stream: Stream) -> None:
         self._stream: Stream = stream
-        self._partial = ""
+        self._partial = _Partial()
 
     def write(self, s: str, /) -> int:
-        *lines, self._partial = (self._partial + s).split("\n")
+        partial = self._partial
+        if "\n" not in s:
+            partial.chunks.append(s)
+            partial.size += len(s)
+            if partial.size >= LINE_LIMIT:
+                self.flush()
+            return len(s)
+        first, *rest = s.split("\n")
+        *lines, last = rest
+        self._emit("".join((*partial.chunks, first)))
         for line in lines:
             self._emit(line)
+        partial.chunks = [last] if last else []
+        partial.size = len(last)
         return len(s)
 
     def flush(self) -> None:
-        if self._partial:
-            self._emit(self._partial)
-            self._partial = ""
+        partial = self._partial
+        if partial.size:
+            self._emit("".join(partial.chunks))
+            partial.chunks = []
+            partial.size = 0
 
     def _emit(self, content: str) -> None:
         if policy.get().allows(self._stream, instance_info()):

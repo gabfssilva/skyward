@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.accelerators import CATALOG, resolve
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, Mount, claimed
@@ -209,7 +210,7 @@ class RunPodProvider:
         wanted = self._config.cloud_type.upper()
         clouds = tuple(cloud for cloud in CLOUDS if cloud == wanted) or CLOUDS
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             catalogs = await asyncio.gather(*(self._gpu_types(client, cloud) for cloud in clouds))
 
         now = datetime.now(UTC)
@@ -295,7 +296,7 @@ class RunPodProvider:
         countries = self._countries()
         multiplier = self._config.bid_multiplier
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             registry_auth_id = await self._registry_auth_id(client)
             country_centers = await self._data_centers(client)
         candidates = await self._image_candidates(spec, offer)
@@ -329,7 +330,7 @@ class RunPodProvider:
         }
 
     async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             return await self._deploy(client, binding, market, node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
@@ -339,7 +340,7 @@ class RunPodProvider:
         adapter controls and can filter an account-wide listing on, so the
         compute id and the node's claim are carried in it.
         """
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             response = await client.get(f"{API_URL}/pods", headers=self._headers)
             response.raise_for_status()
             pods = (response.json() or {}).get("pods") or []
@@ -355,7 +356,7 @@ class RunPodProvider:
         if not machine_ids:
             return
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client, asyncio.TaskGroup() as group:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client, asyncio.TaskGroup() as group:
             for machine_id in machine_ids:
                 group.create_task(self._destroy(client, machine_id))
 
@@ -394,7 +395,7 @@ class RunPodProvider:
         reads as a volume that does not exist rather than as one that is in the wrong
         place.
         """
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             response = await client.get(f"{API_URL}/network-volumes", headers=self._headers)
             response.raise_for_status()
             volumes = (response.json() or {}).get("networkVolumes") or []
@@ -424,7 +425,7 @@ class RunPodProvider:
         it exists. The name is the compute id, so the pod is found here and stopped when
         the compute is released. Idempotent: a second release finds nothing left.
         """
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, verify=tls()) as client:
             response = await client.get(f"{API_URL}/pods", headers=self._headers)
             response.raise_for_status()
             orphans = tuple(
@@ -585,7 +586,7 @@ async def _fetch_docker_tags(repo: str, timeout: int) -> list[str]:
     params: dict[str, str] | None = {"page_size": "100", "ordering": "-last_updated"}
 
     try:
-        async with httpx.AsyncClient(base_url=DOCKER_HUB_URL, timeout=timeout) as client:
+        async with httpx.AsyncClient(base_url=DOCKER_HUB_URL, timeout=timeout, verify=tls()) as client:
             for _ in range(50):
                 response = await client.get(path or "", params=params)
                 if response.status_code >= 400:

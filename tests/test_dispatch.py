@@ -5,8 +5,12 @@ written here is what a user writes, which is the only reason a green run means
 anything: the failure these catch is the failure a user would have hit.
 """
 
+import os
 import sys
+import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import Future
 from contextvars import Context
 
 import cloudpickle
@@ -34,6 +38,16 @@ def slow(seconds: float) -> float:
 @sky.function
 def blow_up() -> int:
     raise ValueError("the function said no")
+
+
+@sky.function
+def echo_reversed(payload: bytes) -> bytes:
+    return payload[::-1]
+
+
+@sky.function
+def counted(x: int) -> int:
+    return x + 1
 
 
 @sky.function
@@ -99,3 +113,65 @@ def describe_the_implicit_pool() -> None:
                 _ = double(4) >> sky.sky
 
         Context().run(outside)
+
+
+MEBIBYTE = 1024 * 1024
+
+
+def describe_payloads_over_four_mebibytes() -> None:
+    def it_carries_eight_mebibytes_to_the_worker_and_eight_back(pool: sky.Compute) -> None:
+        payload = os.urandom(8 * MEBIBYTE)
+
+        returned = echo_reversed(payload) >> pool
+
+        assert len(returned) == 8 * MEBIBYTE
+        assert returned == payload[::-1]
+
+
+def describe_function_uploads() -> None:
+    def it_uploads_a_function_once_and_sends_only_its_digest_after(pool: sky.Compute, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = pool.client
+        original = client.upload
+        uploads: list[str] = []
+
+        async def counting(path: str, body: bytes, headers: dict[str, str] | None = None) -> None:
+            uploads.append(path)
+            await original(path, body, headers)
+
+        monkeypatch.setattr(client, "upload", counting)
+
+        assert [counted(n) >> pool for n in range(3)] == [1, 2, 3]
+        assert len([path for path in uploads if path.startswith("/v1/functions/")]) == 1
+
+
+def describe_callbacks_on_an_async_future() -> None:
+    def _settled[T](future: Future[T], callback: Callable[[Future[T]], None]) -> threading.Event:
+        done = threading.Event()
+
+        def wrapped(settled: Future[T]) -> None:
+            try:
+                callback(settled)
+            finally:
+                done.set()
+
+        future.add_done_callback(wrapped)
+        return done
+
+    def it_runs_them_on_the_callbacks_thread_not_the_loop(pool: sky.Compute) -> None:
+        names: list[str] = []
+        future = double(5) > pool
+
+        done = _settled(future, lambda _: names.append(threading.current_thread().name))
+
+        assert future.result() == 10
+        assert done.wait(30), "the callback never ran"
+        assert names == ["skyward-callbacks"]
+
+    def it_lets_a_callback_dispatch_synchronously_without_deadlocking(pool: sky.Compute) -> None:
+        results: list[int] = []
+        future = double(1) > pool
+
+        done = _settled(future, lambda settled: results.append(double(settled.result()) >> pool))
+
+        assert done.wait(60), "a callback dispatching with >> deadlocked"
+        assert results == [4]

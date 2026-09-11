@@ -343,8 +343,10 @@ class Dispatcher:
             await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="started", attempt=execution.ordinal))
             started = True
 
-            outcome = await _OUTCOMES.decode(await node.run(execution.id, code, args, decision, execution.ordinal))
+            recorded = tuple(runtime.recorded.pop(node_id, ()))
+            outcome = await _OUTCOMES.decode(await node.run(execution.id, code, args, decision, execution.ordinal, recorded))
             await self._settle(task, execution, outcome, node_id)
+            runtime.recorded.setdefault(node_id, set()).add(execution.id)
         except LINK_ERRORS as exc:
             logger.bind(compute_id=task.compute_id, node_id=node_id).warning(
                 "the link dropped with execution {} in flight ({}); the worker will be asked for it when the link is back",
@@ -441,6 +443,7 @@ class Dispatcher:
                     await self._lost(task, execution, RuntimeError("the worker no longer has it"), retry.Lost("worker_restarted", node_id))
                 case Done() | Failed() | Lost() as outcome:
                     await self._settle(task, execution, outcome, node_id)
+                    runtime.recorded.setdefault(node_id, set()).add(execution.id)
         except SshUnavailableError as exc:
             log.debug("stopped waiting for execution {}: {}", execution.id, exc)
             return False

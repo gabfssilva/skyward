@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, claimed
 from skyward.shared.providers import MassedCompute
@@ -55,7 +56,7 @@ class MassedComputeProvider:
         return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.get(
                 INVENTORY_PATH,
                 headers={
@@ -190,6 +191,7 @@ class MassedComputeProvider:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={

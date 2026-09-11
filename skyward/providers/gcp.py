@@ -37,6 +37,7 @@ import msgspec
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, Mount
 from skyward.shared.providers import GCP
@@ -219,7 +220,7 @@ class GCPProvider:
         return machines, accelerators
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+        async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}, verify=tls()) as client:
             token = await self._token(client)
             zones = self._zones
             catalog, per_zone = await asyncio.gather(
@@ -351,7 +352,7 @@ class GCPProvider:
 
     @asynccontextmanager
     async def _api(self) -> AsyncIterator[httpx.AsyncClient]:
-        async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+        async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}, verify=tls()) as client:
             token = await self._token(client)
             client.headers["Authorization"] = f"Bearer {token}"
             yield client
@@ -456,7 +457,7 @@ class GCPProvider:
         that :meth:`release` can take it back.
         """
         email = self._service_account["client_email"]
-        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}, verify=tls()) as client:
             token = await self._token(client)
             response = await client.post(
                 f"/storage/v1/projects/{binding['project']}/hmacKeys",
@@ -494,7 +495,7 @@ class GCPProvider:
             return
 
         path = f"/storage/v1/projects/{binding['project']}/hmacKeys/{access_id}"
-        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}, verify=tls()) as client:
             token = await self._token(client)
             client.headers["Authorization"] = f"Bearer {token}"
             _accept(await client.put(path, json={"state": "INACTIVE"}), 404)

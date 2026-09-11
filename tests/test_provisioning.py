@@ -9,7 +9,7 @@ from typing import Any, ClassVar, Self
 import msgspec
 import pytest
 
-from skyward.server.application.machines import Machines
+from skyward.server.application.machines import REFUSED_FIRST, REFUSED_MAX, Machines
 from skyward.server.application.reconciler import Reconciler, Wakeup
 from skyward.server.application.runtimes import keypair
 from skyward.server.persistence.computes import ComputeStore, GenerationStore, Infrastructure
@@ -250,3 +250,172 @@ def describe_two_nodes_refused_by_the_same_region() -> None:
         assert isinstance(placed, tuple) and placed[1].id == "m-west"
         assert isinstance(refused, ExceptionGroup)
         assert {str(failure) for failure in refused.exceptions} == {"east has no capacity", "west has no capacity"}
+
+
+class Refusing:
+    """One region whose launches are refused until the test lets it sell, counting every launch it was asked for."""
+
+    kind: ClassVar[str] = "refusing"
+    credential_fields: ClassVar[tuple[str, ...]] = ()
+    offers_ttl: ClassVar[timedelta] = timedelta(minutes=5)
+
+    def __init__(self) -> None:
+        self.selling = False
+        self.launches = 0
+
+    @classmethod
+    def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
+        return cls()
+
+    async def offers(self) -> AsyncIterator[Offer]:
+        yield REFUSING
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return False
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        return {"region": offer.region}
+
+    async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
+        self.launches += 1
+        if not self.selling:
+            raise RuntimeError("no capacity")
+        return Machine(id=f"m-{self.launches}", state="pending", user="root", node=node)
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        return {}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        return None
+
+    async def release(self, binding: Binding) -> None:
+        return None
+
+
+REFUSING = msgspec.structs.replace(EAST, id="refusing-a100", provider_id="prv_refusing", provider_name="refusing", kind="refusing")
+
+
+class OneOffer:
+    async def list(self, **_: object) -> Page[Offer]:
+        return Page(items=(REFUSING,))
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class Refused:
+    """A bound compute with requested rows, bought from a provider that refuses until told otherwise."""
+
+    def __init__(self, machines: Machines, provider: Refusing, compute_id: str, rows: list[str], clock: Clock) -> None:
+        self.machines = machines
+        self.provider = provider
+        self.compute_id = compute_id
+        self.rows = rows
+        self.clock = clock
+
+    async def attempt(self) -> bool:
+        """Ask for the next requested row; whether the provider was called."""
+        before = self.provider.launches
+        try:
+            await self.machines.create(self.compute_id, self.rows[0])
+        except ExceptionGroup:
+            pass
+        else:
+            if self.provider.launches > before:
+                self.rows.pop(0)
+        return self.provider.launches > before
+
+    async def refused(self) -> None:
+        assert await self.attempt()
+
+    async def window(self) -> float:
+        """How long, from now, the compute waits before the provider is called again."""
+        start = self.clock.now
+        waited = 0.0
+        while not await self.attempt():
+            waited += 1.0
+            self.clock.now = start + waited
+        return waited
+
+
+@pytest.fixture
+async def refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Refused:
+    await connect(tmp_path / "skyward.sqlite")
+    clock = Clock()
+    monkeypatch.setattr("skyward.server.application.machines.monotonic", clock)
+    provider = Refusing()
+    events = EventStore()
+    computes, nodes, blobs = ComputeStore(events), NodeStore(), BlobStore()
+    machines = Machines(computes, nodes, Providers(provider), OneOffer(), blobs, events)  # type: ignore[arg-type]
+    requested: list[str] = []
+    wake = Wakeup()
+    wake.bind(lambda event, **payload: requested.append(payload["node_id"]) if event == "node.requested" else None)
+    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, wake)
+
+    spec = ComputeSpec(
+        specs=(Spec(provider=ProviderRef(kind="refusing"), accelerator="a100", accelerator_count=1),),
+        nodes=NodeBounds(initial=4),
+        image=Image(python="3.13"),
+        worker=Worker(concurrency=1, executor="thread"),
+    )
+    compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="given")
+    await reconciler.compute(compute.id)
+    infrastructure = Infrastructure(
+        provider_id="prv_refusing", offer_id=REFUSING.id, offer=REFUSING, binding={"region": "east"}, private_key=KEY, markets=("spot",)
+    )
+    await computes.bind(compute.id, infrastructure)
+    return Refused(machines, provider, compute.id, list(dict.fromkeys(requested)), clock)
+
+
+def describe_a_compute_refused_by_every_market_and_region() -> None:
+    async def it_does_not_call_the_provider_until_the_first_wait_has_passed(refused: Refused) -> None:
+        await refused.refused()
+
+        refused.clock.now += REFUSED_FIRST - 0.5
+        assert not await refused.attempt()
+        assert refused.provider.launches == 1
+
+        refused.clock.now += 0.5
+        assert await refused.attempt()
+
+    async def it_doubles_the_wait_after_each_further_refusal(refused: Refused) -> None:
+        await refused.refused()
+
+        assert await refused.window() == REFUSED_FIRST
+        assert await refused.window() == REFUSED_FIRST * 2
+        assert await refused.window() == REFUSED_FIRST * 4
+
+    async def it_stops_doubling_at_the_longest_wait(refused: Refused) -> None:
+        await refused.refused()
+
+        windows = [await refused.window() for _ in range(8)]
+
+        assert windows[-2:] == [REFUSED_MAX, REFUSED_MAX]
+        assert max(windows) == REFUSED_MAX
+
+    async def it_starts_over_after_a_successful_purchase(refused: Refused) -> None:
+        await refused.refused()
+        assert await refused.window() == REFUSED_FIRST
+        assert await refused.window() == REFUSED_FIRST * 2
+
+        refused.provider.selling = True
+        refused.clock.now += REFUSED_FIRST * 4
+        assert await refused.attempt()
+        refused.provider.selling = False
+
+        assert await refused.attempt()
+        assert await refused.window() == REFUSED_FIRST
+
+    async def it_starts_over_after_release(refused: Refused) -> None:
+        await refused.refused()
+        assert await refused.window() == REFUSED_FIRST
+
+        await refused.machines.release(refused.compute_id)
+
+        assert await refused.attempt()
+        assert await refused.window() == REFUSED_FIRST

@@ -12,6 +12,9 @@ from skyward.shared.schemas import Error, Page, Provider, ProviderCreate
 
 
 class ProviderStore:
+    def __init__(self) -> None:
+        self._adapters: dict[str, tuple[bytes, Catalog]] = {}
+
     async def create(self, body: ProviderCreate) -> Provider:
         adapter = adapter_for(body.kind)
 
@@ -64,6 +67,7 @@ class ProviderStore:
                 ProviderRow.credentials: dict(body.credentials),
                 ProviderRow.config: dict(body.config),
                 ProviderRow.offers_fetched_at: None,
+                ProviderRow.offers_attempted_at: None,
                 ProviderRow.last_error: None,
             },
         ).where(ProviderRow.id == provider.id).run()
@@ -74,19 +78,29 @@ class ProviderStore:
         provider = await self.get(ref)
         await OfferRow.delete().where(OfferRow.provider_id == provider.id).run()
         await ProviderRow.delete().where(ProviderRow.id == provider.id).run()
+        self._adapters.pop(provider.id, None)
 
     async def adapter(self, ref: str) -> Catalog:
-        """Build the live adapter for a stored provider.
+        """The live adapter for a stored provider.
 
         Credentials are read here and nowhere else. The adapter receives them;
-        it never goes looking for an env var of its own.
+        it never goes looking for an env var of its own. It is built once per
+        kind, name, credentials and config, and reused until one of them changes:
+        an adapter holds no machines, only what its SDK is expensive to rebuild —
+        a boto session, an OAuth token.
         """
         row = await ProviderRow.objects().output(load_json=True).where((ProviderRow.id == ref) | (ProviderRow.name == ref)).first()
         if row is None:
             raise NotFoundError(f"no such provider: {ref}")
         credentials = msgspec.convert(row.credentials, dict[str, str])
         config = msgspec.convert(row.config, dict[str, Any])
-        return adapter_for(row.kind).create(row.id, row.name, credentials, config)
+        fingerprint = msgspec.json.encode((row.kind, row.name, credentials, config))
+        match self._adapters.get(row.id):
+            case (seen, adapter) if seen == fingerprint:
+                return adapter
+        adapter = adapter_for(row.kind).create(row.id, row.name, credentials, config)
+        self._adapters[row.id] = (fingerprint, adapter)
+        return adapter
 
 
 async def _to_provider(row: ProviderRow) -> Provider:

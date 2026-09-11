@@ -5,6 +5,7 @@ whole claim, and a single node would prove none of it.
 """
 
 import sys
+import time
 
 import cloudpickle
 import pytest
@@ -81,3 +82,44 @@ def describe_a_queue_shared_by_the_nodes() -> None:
         fill(6) >> pool
 
         assert sorted(item for shard in drain() @ pool for item in shard) == [0, 1, 2, 3, 4, 5]
+
+
+@sky.function
+def contend(board: str, ttl: float, hold: float) -> dict[str, float | bool]:
+    """Rank 0 holds the lock for ``hold`` seconds; rank 1 asks for it meanwhile."""
+    info = sky.instance_info()
+    flags = sky.dict(board)
+
+    if info.rank == 0:
+        with sky.lock(board, ttl=ttl):
+            entered = time.monotonic()
+            flags["held"] = True
+            time.sleep(hold)
+            flags["leaving"] = True
+            held = time.monotonic() - entered
+        return {"held": held}
+
+    while not flags.get("held", False):
+        time.sleep(0.05)
+    asked = time.monotonic()
+    with sky.lock(board, ttl=ttl):
+        waited = time.monotonic() - asked
+        after_leaving = bool(flags.get("leaving", False))
+    return {"waited": waited, "after_leaving": after_leaving}
+
+
+def describe_a_lock_held_longer_than_its_ttl() -> None:
+    def it_stays_exclusive_until_the_holder_leaves(pool: sky.Compute) -> None:
+        holder, waiter = sorted(contend("outlived-ttl", 1.0, 3.0) @ pool, key=lambda result: "waited" in result)
+
+        assert waiter["after_leaving"] is True, "the waiter entered only after the holder was leaving"
+        assert waiter["waited"] >= 2.0, f"the lease was renewed past its 1 s ttl, yet the waiter got it after {waiter['waited']:.2f}s"
+        assert holder["held"] >= 3.0
+
+    def it_is_handed_over_as_soon_as_the_holder_leaves(pool: sky.Compute) -> None:
+        holder, waiter = sorted(contend("handed-over", 6.0, 3.0) @ pool, key=lambda result: "waited" in result)
+
+        assert waiter["after_leaving"] is True
+        assert waiter["waited"] < holder["held"] + 1.5, (
+            f"held {holder['held']:.2f}s, waited {waiter['waited']:.2f}s: the release did not free it before the ttl lapsed"
+        )

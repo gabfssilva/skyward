@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, Mount, claimed
 from skyward.shared.providers import Hyperstack
@@ -59,6 +60,7 @@ class HyperstackProvider:
 
     async def offers(self) -> AsyncIterator[Offer]:
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={"api_key": self._api_key, "Accept": "application/json"},
@@ -346,6 +348,7 @@ class HyperstackProvider:
         params: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={"api_key": self._api_key, "Accept": "application/json"},

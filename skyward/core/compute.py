@@ -9,12 +9,14 @@ real overlap rather than two round trips in a row.
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Future, as_completed
 from contextlib import ExitStack, aclosing, suppress
 from contextvars import Token
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -32,7 +34,7 @@ from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
 from skyward.core.view import EventCallback, decoded
-from skyward.shared import codec, retry
+from skyward.shared import codec, lifecycle, retry
 from skyward.shared.accelerators import resolve
 from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
@@ -89,6 +91,48 @@ lapses, and once it dies the reconciler is free to call the compute abandoned. S
 enough that a killed script is noticed in a minute; long enough that no renewal ever
 races its own expiry.
 """
+MOVES: tuple[str, ...] = tuple(str(kind.__struct_config__.tag) for kind in lifecycle.COMPUTE)
+"""The frames of the events that move a compute's state.
+
+``lifecycle.COMPUTE`` is the only way a compute's state moves, so a stream narrowed
+to these frames misses no change of state and carries nothing else.
+"""
+
+
+class Handoff[T](Future[T]):
+    """A future whose done-callbacks run on the callbacks thread, never the loop's.
+
+    ``run_coroutine_threadsafe`` settles its future on the loop thread, and a
+    callback runs where the future is settled. A callback that dispatches again
+    synchronously — joblib pulling the next batch, ``task() >> pool`` — would then
+    block the loop on a result only the loop can produce. The handoff settles
+    where the loop is, and queues each callback for a thread of its own, which
+    runs them one at a time.
+    """
+
+    def __init__(self, inner: Future[T], handoffs: queue.SimpleQueue[Callable[[], object] | None]) -> None:
+        super().__init__()
+        self._inner = inner
+        self._handoffs = handoffs
+
+    def add_done_callback(self, fn: Callable[[Future[T]], object]) -> None:
+        super().add_done_callback(lambda done: self._handoffs.put(partial(fn, done)))
+
+    def cancel(self) -> bool:
+        if not super().cancel():
+            return False
+        self._inner.cancel()
+        return True
+
+
+def _relay[T](outer: Future[T], done: Future[T]) -> None:
+    if done.cancelled():
+        outer.cancel()
+    elif outer.set_running_or_notify_cancel():
+        if (error := done.exception()) is not None:
+            outer.set_exception(error)
+        else:
+            outer.set_result(done.result())
 
 
 class Loop:
@@ -98,9 +142,21 @@ class Loop:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True, name="skyward")
         self._thread.start()
+        self._handoffs: queue.SimpleQueue[Callable[[], object] | None] = queue.SimpleQueue()
+        threading.Thread(target=self._deliver, daemon=True, name="skyward-callbacks").start()
+
+    def _deliver(self) -> None:
+        while (handoff := self._handoffs.get()) is not None:
+            handoff()
 
     def start[T](self, coro: Coroutine[None, None, T]) -> Future[T]:
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def future[T](self, coro: Coroutine[None, None, T]) -> Future[T]:
+        inner = self.start(coro)
+        outer = Handoff(inner, self._handoffs)
+        inner.add_done_callback(partial(_relay, outer))
+        return outer
 
     def run[T](self, coro: Coroutine[None, None, T]) -> T:
         return self.start(coro).result()
@@ -109,6 +165,7 @@ class Loop:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join()
         self._loop.close()
+        self._handoffs.put(None)
 
 
 class Compute:
@@ -209,6 +266,8 @@ class Compute:
         self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
         self._active_token: Token[context.Pool | None] | None = None
+        self._functions: set[str] = set()
+        """Digests of the code this pool already uploaded: the daemon keeps a function once."""
 
     @classmethod
     def attached(
@@ -287,16 +346,16 @@ class Compute:
         return self._client
 
     def run[T](self, pending: Pending[T]) -> T:
-        return self.start(pending).result()
+        return self.loop.run(self._one(pending))
 
     def start[T](self, pending: Pending[T]) -> Future[T]:
-        return self.loop.start(self._one(pending))
+        return self.loop.future(self._one(pending))
 
     def broadcast[T](self, pending: Pending[T]) -> list[T]:
         return self.loop.run(self._all(pending))
 
     def gather[T](self, group: Group[T]) -> list[T]:
-        futures = [self.start(pending) for pending in group.pendings]
+        futures = [self.loop.start(self._one(pending)) for pending in group.pendings]
         return [future.result() for future in futures]
 
     def gather_stream[T](self, group: Group[T]) -> Iterator[T]:
@@ -307,7 +366,7 @@ class Compute:
         one due — a slow first call holds back the rest; the unordered path hands
         over whichever finishes first and never waits on a straggler out of turn.
         """
-        futures = [self.start(pending) for pending in group.pendings]
+        futures = [self.loop.start(self._one(pending)) for pending in group.pendings]
         source = futures if group.ordered else as_completed(futures)
         for future in source:
             yield future.result()
@@ -535,6 +594,7 @@ class Compute:
             f"/v1/computes/{self._id}/lease",
             Lease,
             body=msgspec.json.encode(LeaseClaim(owner=self._owner, ttl_seconds=LEASE_SECONDS)),
+            urgent=True,
         )
 
     async def _renew(self) -> None:
@@ -566,7 +626,7 @@ class Compute:
                 self._watching.cancel()
             try:
                 if self._id:
-                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease"))
+                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease", urgent=True))
             finally:
                 try:
                     self.loop.run(self.client.close())
@@ -615,15 +675,13 @@ class Compute:
         """Follow the compute's events; answer with the resource once it is in one of ``states``.
 
         The stream replays the log from the start before it follows, so a state reached
-        before this subscription still arrives. A compute event is the only kind that
-        can mean the state moved, so only those prompt a read — one read per change
+        before this subscription still arrives. The stream is narrowed to ``MOVES``, the
+        frames that move the state, so every frame prompts a read — one read per change
         instead of a poll every half second — and the resource, not the event, is what
         says where the compute is: by the time the read lands it may be further on.
         """
-        async with aclosing(self.client.events(self._id)) as events:
-            async for frame, _ in events:
-                if not frame.startswith("compute."):
-                    continue
+        async with aclosing(self.client.events(self._id, types=MOVES)) as events:
+            async for _ in events:
                 current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
                 if current.status.state in states:
                     return current
@@ -654,11 +712,13 @@ class Compute:
     async def _submit[T](self, pending: Pending[T] | Streaming[T], dispatch: Dispatch) -> Task:
         code = await codec.payload.encode(pending.fn)
         function = await codec.digest(code)
-        await self.client.upload(
-            f"/v1/functions/{function}",
-            code,
-            headers={"X-Skyward-Function-Name": pending.fn.__name__},
-        )
+        if function not in self._functions:
+            await self.client.upload(
+                f"/v1/functions/{function}",
+                code,
+                headers={"X-Skyward-Function-Name": pending.fn.__name__},
+            )
+            self._functions.add(function)
 
         args = await codec.payload.encode((pending.args, pending.kwargs))
         inline, stored = await self._args(args)

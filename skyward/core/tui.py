@@ -105,17 +105,26 @@ class FleetScreen(Screen[None]):
         self._url = url
         self._selected: str | None = None
         self._tick = 0
+        self._keys: tuple[str, ...] = ()
+        self._shown: tuple[Fleet, str | None] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="summary")
         table = DataTable[Text](id="computes", cursor_type="row", zebra_stripes=False)
-        table.add_columns(*COLUMNS)
+        self._columns = table.add_columns(*COLUMNS)
         yield table
         yield Detail()
         yield Footer()
 
     def on_mount(self) -> None:
-        self.set_interval(REFRESH, self._repaint)
+        self._timer = self.set_interval(REFRESH, self._repaint)
+        self._repaint()
+
+    def on_screen_suspend(self) -> None:
+        self._timer.pause()
+
+    def on_screen_resume(self) -> None:
+        self._timer.resume()
         self._repaint()
 
     def on_data_table_row_highlighted(self, message: DataTable.RowHighlighted) -> None:
@@ -136,14 +145,26 @@ class FleetScreen(Screen[None]):
         hovered = table.hover_coordinate.row
         errors = ordered[hovered].errors if 0 <= hovered < len(ordered) else ()
         table.tooltip = Text("\n".join(errors), style=WARNING_STYLE) if errors else None
-        table.clear()
-        for view in ordered:
-            table.add_row(*row(view, now, frame), key=view.id)
-        if self._selected not in fleet:
-            self._selected = ordered[0].id if ordered else None
-        if self._selected is not None:
-            table.move_cursor(row=[view.id for view in ordered].index(self._selected), animate=False)
-        self.query_one(Detail).show(fleet.get(self._selected or ""), now, frame)
+        moving = any(view.state in _MOVING or any(node.state in _NODE_MOVING for node in view.nodes) for view in ordered)
+        if self._shown is not None and self._shown[0] is fleet and self._shown[1] == self._selected and not moving and self._tick % 4:
+            return
+        keys = tuple(view.id for view in ordered)
+        rebuilt = keys != self._keys
+        if rebuilt:
+            table.clear()
+            for view in ordered:
+                table.add_row(*row(view, now, frame), key=view.id)
+            self._keys = keys
+        else:
+            for view in ordered:
+                for column, value in zip(self._columns, row(view, now, frame), strict=True):
+                    table.update_cell(view.id, column, value)
+        selected = self._selected if self._selected in fleet else (ordered[0].id if ordered else None)
+        if selected is not None and (rebuilt or selected != self._selected):
+            table.move_cursor(row=keys.index(selected), animate=False)
+        self._selected = selected
+        self._shown = (fleet, selected)
+        self.query_one(Detail).show(fleet.get(selected or ""), now, frame)
 
 
 class ComputeScreen(Screen[None]):
@@ -162,7 +183,14 @@ class ComputeScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.set_interval(REFRESH, self._repaint)
+        self._timer = self.set_interval(REFRESH, self._repaint)
+        self._repaint()
+
+    def on_screen_suspend(self) -> None:
+        self._timer.pause()
+
+    def on_screen_resume(self) -> None:
+        self._timer.resume()
         self._repaint()
 
     def _repaint(self) -> None:
@@ -178,26 +206,47 @@ class ComputeScreen(Screen[None]):
 class Detail(Vertical):
     """The compute under the cursor: its nodes, and what they last printed, down to the bottom of the screen."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._keys: tuple[str, ...] = ()
+        self._tail: tuple[tuple[tuple[str, str], ...], int] | None = None
+
     def compose(self) -> ComposeResult:
         table = DataTable[Text](id="nodes", cursor_type="none")
-        table.add_columns(*NODE_COLUMNS)
+        self._columns = table.add_columns(*NODE_COLUMNS)
         yield table
         yield Static(id="tail")
 
     def show(self, view: ComputeView | None, now: datetime, frame: str) -> None:
         table = self.query_one("#nodes", DataTable)
-        table.clear()
+        output = self.query_one("#tail", Static)
         if view is None:
-            self.query_one("#tail", Static).update("")
+            table.clear()
+            self._keys = ()
+            if self._tail != ((), 0):
+                output.update("")
+                self._tail = ((), 0)
             return
         running: dict[str, list[TaskView]] = {}
         for task in view.tasks:
             if task.state == "running" and task.node:
                 running.setdefault(task.node, []).append(task)
-        for node in sorted(view.nodes, key=lambda node: node.rank):
-            table.add_row(*node_row(node, tuple(running.get(node.id, ())), now, frame), key=node.id)
-        output = self.query_one("#tail", Static)
-        output.update(tail(view, max(1, output.content_size.height)))
+        ordered = sorted(view.nodes, key=lambda node: node.rank)
+        keys = tuple(node.id for node in ordered)
+        if keys != self._keys:
+            table.clear()
+            for node in ordered:
+                table.add_row(*node_row(node, tuple(running.get(node.id, ())), now, frame), key=node.id)
+            self._keys = keys
+        else:
+            for node in ordered:
+                for column, value in zip(self._columns, node_row(node, tuple(running.get(node.id, ())), now, frame), strict=True):
+                    table.update_cell(node.id, column, value)
+        height = max(1, output.content_size.height)
+        shown = (tuple(view.tail[-height:]), height)
+        if shown != self._tail:
+            output.update(tail(view, height))
+            self._tail = shown
 
 
 def summary(fleet: Fleet, url: str, frame: str) -> Text:

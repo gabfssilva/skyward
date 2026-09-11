@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { useStore } from '../state/store'
 import type { LogLine } from '../state/store'
 import type { Compute } from '../api/client'
@@ -25,7 +25,7 @@ export const scopedLogs = (logs: Logs, computes: readonly Compute[], logRank: 'a
         .map<DockLine>((l) => ({ ...l, cname: nameOf(computes, computeId), cid: computeId }))
     : allLogs(logs, computes)
 
-function Line({ l }: { l: DockLine }) {
+const Line = memo(function Line({ l }: { l: DockLine }) {
   return (
     <div className={`logline ${l.level === 'err' ? 'err' : l.level === 'warn' ? 'warn' : ''}`}>
       <span>{clock(l.at)}</span>
@@ -36,7 +36,7 @@ function Line({ l }: { l: DockLine }) {
       <div>{l.text}</div>
     </div>
   )
-}
+}, (a, b) => a.l.seq === b.l.seq && a.l.cname === b.l.cname)
 
 export function Logs({ computeId }: { computeId: string | null }) {
   const logs = useStore((s) => s.logs)
@@ -48,8 +48,8 @@ export function Logs({ computeId }: { computeId: string | null }) {
   if (!list.length) return <div className="sub">Nothing printed yet. Lines land here the moment a task writes to stdout.</div>
   return (
     <>
-      {list.map((l, i) => (
-        <Line key={`${l.at}-${i}`} l={l} />
+      {list.map((l) => (
+        <Line key={`${l.cid ?? ''}-${l.seq}`} l={l} />
       ))}
     </>
   )

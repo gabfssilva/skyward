@@ -39,10 +39,7 @@ export UV_NO_PROGRESS=1
 export PATH="/root/.local/bin:$PATH"
 
 emit() {
-    (
-        flock 9
-        printf '%s\\n' "$1" >> /opt/skyward/events.jsonl
-    ) 9>/opt/skyward/events.lock
+    { flock 9; printf '%s\\n' "$1" >> /opt/skyward/events.jsonl; } 9>/opt/skyward/events.lock
 }
 
 emit_phase() {
@@ -85,36 +82,114 @@ FOOTER = "emit_phase completed bootstrap\n"
 
 UV = "command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh"
 
-_COLLECTORS: tuple[tuple[str, str, float], ...] = (
-    ("cpu", "top -bn2 -d0.1 2>/dev/null | awk '/^%Cpu/{c=100-$8} END{printf \"%.1f\",c}'", 2),
-    ("mem_used_mb", "free 2>/dev/null | awk '/^Mem:/{printf \"%d\",$3/1024}'", 2),
-    ("mem_total_mb", "free 2>/dev/null | awk '/^Mem:/{printf \"%d\",$2/1024}'", 60),
-    ("gpu_util", "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1;n++} END{if(n)printf \"%.1f\",s/n}'", 3),
-    ("gpu_mem_mb", "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END{if(NR)printf \"%d\",s}'", 3),
-    ("gpu_mem_total_mb", "nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END{if(NR)printf \"%d\",s}'", 60),
-)
-"""What each node reports about itself, and how often. The ``gpu_*`` lines aggregate
-across every GPU — utilisation averaged, memory summed — into one reading per node;
-``nvidia-smi`` failing on a machine with no GPU leaves the reading empty and the
-collector emits nothing.
+_BUILTIN = r'''_collect_builtin() {
+    set +e
+    local tick=0 gpu=0 lines line pct busy total prev_busy=0 prev_total=0
+    local cpu user nice system idle iowait irq softirq steal rest
+    local key value unit mem_total mem_available
+    local util used capacity count util_sum used_sum capacity_sum
+    command -v nvidia-smi >/dev/null 2>&1 && gpu=1
+    while _current_metrics; do
+        lines=""
+        if [ $((tick % 2)) -eq 0 ]; then
+            read -r cpu user nice system idle iowait irq softirq steal rest < /proc/stat
+            busy=$((user + nice + system + irq + softirq + steal))
+            total=$((busy + idle + iowait))
+            if [ "$prev_total" -gt 0 ] && [ "$total" -gt "$prev_total" ]; then
+                pct=$((1000 * (busy - prev_busy) / (total - prev_total)))
+                printf -v line '{"type":"metric","name":"cpu","value":%d.%d}' $((pct / 10)) $((pct % 10))
+                lines+="$line"$'\n'
+            fi
+            prev_busy=$busy
+            prev_total=$total
+            mem_total=0
+            mem_available=0
+            while read -r key value unit; do
+                case "$key" in
+                    MemTotal:) mem_total=$value ;;
+                    MemAvailable:) mem_available=$value ;;
+                esac
+            done < /proc/meminfo
+            if [ "$mem_total" -gt 0 ]; then
+                printf -v line '{"type":"metric","name":"mem_used_mb","value":%d}' $(((mem_total - mem_available) / 1024))
+                lines+="$line"$'\n'
+                if [ $((tick % 60)) -eq 0 ]; then
+                    printf -v line '{"type":"metric","name":"mem_total_mb","value":%d}' $((mem_total / 1024))
+                    lines+="$line"$'\n'
+                fi
+            fi
+        fi
+        if [ "$gpu" -eq 1 ] && [ $((tick % 3)) -eq 0 ]; then
+            count=0
+            util_sum=0
+            used_sum=0
+            capacity_sum=0
+            while IFS=', ' read -r util used capacity; do
+                [[ "$util" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && "$capacity" =~ ^[0-9]+$ ]] || continue
+                count=$((count + 1))
+                util_sum=$((util_sum + util))
+                used_sum=$((used_sum + used))
+                capacity_sum=$((capacity_sum + capacity))
+            done < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
+            if [ "$count" -gt 0 ]; then
+                pct=$((10 * util_sum / count))
+                printf -v line '{"type":"metric","name":"gpu_util","value":%d.%d}' $((pct / 10)) $((pct % 10))
+                lines+="$line"$'\n'
+                printf -v line '{"type":"metric","name":"gpu_mem_mb","value":%d}' "$used_sum"
+                lines+="$line"$'\n'
+                if [ $((tick % 60)) -eq 0 ]; then
+                    printf -v line '{"type":"metric","name":"gpu_mem_total_mb","value":%d}' "$capacity_sum"
+                    lines+="$line"$'\n'
+                fi
+            fi
+        fi
+        [ -n "$lines" ] && emit "${lines%$'\n'}"
+        tick=$((tick + 1))
+        sleep 1
+    done
+}'''
+"""What each node reports about itself when the image names no metrics of its own.
+
+One background loop reads ``/proc/stat`` and ``/proc/meminfo`` with shell builtins
+and asks ``nvidia-smi`` about every GPU in a single query, so a sample forks nothing
+but its ``sleep`` and, every third second, that ``nvidia-smi``. What one tick read
+is appended as one locked write.
+
+- ``cpu`` (%, every 2s): busy over total jiffies since the previous reading, so the
+  first arrives one interval after the loop starts.
+- ``mem_used_mb`` (every 2s): ``MemTotal`` minus ``MemAvailable``; ``mem_total_mb``
+  every 60s.
+- ``gpu_util`` (%, every 3s) averaged across GPUs, ``gpu_mem_mb`` summed across them,
+  ``gpu_mem_total_mb`` summed every 60s. A machine without ``nvidia-smi``, or one
+  that answers with no numeric line, emits none of the three.
 
 The four the console shows — gpu, vram, cpu, mem — come out of these six: vram and
 mem as used/total pairs, gpu and cpu as their own percentages."""
 
+_GENERATION = """_metrics_generation="$$.$RANDOM"
+printf '%s\\n' "$_metrics_generation" > /opt/skyward/metrics.generation
+_current_metrics() { local current; { read -r current < /opt/skyward/metrics.generation; } 2>/dev/null; [ "$current" = "$_metrics_generation" ]; }"""
+"""Which bootstrap's collectors are the live ones.
+
+Each run writes a fresh token and every collector loop checks it before each sample,
+so a bootstrap re-run on the same machine makes the previous run's loops exit within
+one interval — nothing is killed, so no PID can be reused into the wrong process."""
+
 
 def _collector(name: str, command: str, interval: float) -> str:
-    """One metric as a background shell loop: read, emit if numeric, sleep, repeat.
+    """One custom metric as a background shell loop: read, emit if numeric, sleep, repeat.
 
     ``set +e`` because a sample is allowed to fail — a busy ``nvidia-smi``, a missing
     interface — without taking the loop down with it; the next tick tries again. The
     regex is the gate: only a bare number reaches ``emit_metric``, so a command that
     printed a warning where a value should have been is dropped, not written as one.
+    The loop ends once a newer bootstrap has taken over the generation.
     """
     return "\n".join(
         (
             f"_collect_{name}() {{",
             "    set +e",
-            "    while true; do",
+            "    while _current_metrics; do",
             f"        v=$({command})",
             f'        [[ "$v" =~ ^-?[0-9]*\\.?[0-9]+$ ]] && emit_metric {name} "$v"',
             f"        sleep {interval}",
@@ -131,15 +206,24 @@ def metrics(specs: Sequence[MetricSpec] | None = None) -> str:
     script is ``nohup``-ed and non-interactive, so the loops outlive it and keep
     reporting while the worker runs — and still report if the worker never does.
 
-    ``specs`` replaces the built-in six outright; ``None`` leaves them in place.
+    ``specs`` replaces the built-in loop outright; ``None`` leaves it in place. Either
+    way the output first claims the generation, so the collectors of an earlier run on
+    the same machine stop.
     """
-    collectors = _COLLECTORS if specs is None else tuple((spec.name, spec.command, spec.interval) for spec in specs)
+    emit_metric = 'emit_metric() { emit "{\\"type\\":\\"metric\\",\\"name\\":\\"$1\\",\\"value\\":$2}"; }'
+    if specs is None:
+        collectors: tuple[str, ...] = (_BUILTIN,)
+        starts: tuple[str, ...] = ("    _collect_builtin &",)
+    else:
+        collectors = tuple(_collector(spec.name, spec.command, spec.interval) for spec in specs)
+        starts = tuple(f"    _collect_{spec.name} &" for spec in specs)
     return "\n".join(
         (
-            'emit_metric() { emit "{\\"type\\":\\"metric\\",\\"name\\":\\"$1\\",\\"value\\":$2}"; }',
-            *(_collector(name, command, interval) for name, command, interval in collectors),
+            _GENERATION,
+            emit_metric,
+            *collectors,
             "start_metrics_daemon() {",
-            *(f"    _collect_{name} &" for name, _, _ in collectors),
+            *starts,
             "}",
             "start_metrics_daemon",
         ),

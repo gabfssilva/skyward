@@ -14,16 +14,20 @@ import socket
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import msgspec
 import pytest
 
+import skyward as sky
 from skyward.core.client import Client, connect
+from skyward.core.compute import MOVES
 from skyward.core.errors import DaemonError
 from skyward.server import daemon
-from skyward.shared.schemas import Page, Provider, ProviderCreate
+from skyward.shared.schemas import Compute as ComputeResource
+from skyward.shared.schemas import ComputeSpec, ComputeStatus, Lease, NodeBounds, Page, Provider, ProviderCreate
 
 pytestmark = pytest.mark.local
 
@@ -184,7 +188,7 @@ def describe_a_daemon_that_bounces_mid_request() -> None:
 
 def _mocked(handler: Callable[[httpx.Request], httpx.Response]) -> Client:
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://skyward")
-    return Client(http, AsyncExitStack())
+    return Client(http, http, AsyncExitStack())
 
 
 def describe_leaving_a_pool_that_borrowed_a_daemon() -> None:
@@ -196,3 +200,94 @@ def describe_leaving_a_pool_that_borrowed_a_daemon() -> None:
             return await _answers(alone)
 
         assert asyncio.run(borrow_and_return()), "closing a borrowed client must not end the daemon it borrowed"
+
+
+async def _hanging_server() -> tuple[asyncio.Server, str, list[asyncio.StreamWriter]]:
+    """A daemon that answers every route but ``/hang``, which it holds open forever."""
+    held: list[asyncio.StreamWriter] = []
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+        while request := await reader.readuntil(b"\r\n\r\n"):
+            if request.split(b" ", 2)[1].startswith(b"/hang"):
+                await asyncio.Event().wait()
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+            await writer.drain()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    return server, f"http://127.0.0.1:{port}", held
+
+
+def describe_an_urgent_call() -> None:
+    def it_completes_while_every_ordinary_connection_is_held() -> None:
+        async def through_a_full_pool() -> tuple[bool, dict[str, object]]:
+            server, url, held = await _hanging_server()
+            client = await Client.remote(url)
+            hangers = [asyncio.create_task(client.call("GET", f"/hang/{index}", dict)) for index in range(100)]
+            try:
+                await asyncio.sleep(0.3)
+                ordinary = asyncio.create_task(client.call("GET", "/v1/ordinary", dict))
+                done, _ = await asyncio.wait({ordinary}, timeout=0.5)
+                starved = not done
+                ordinary.cancel()
+                answer = await asyncio.wait_for(client.call("GET", "/v1/urgent", dict, urgent=True), timeout=2.0)
+                return starved, answer
+            finally:
+                for task in hangers:
+                    task.cancel()
+                await asyncio.gather(*hangers, return_exceptions=True)
+                await client.close()
+                for writer in held:
+                    writer.close()
+                server.close()
+
+        starved, answer = asyncio.run(through_a_full_pool())
+
+        assert starved, "the ordinary connections were not all held, so the urgent call proved nothing"
+        assert answer == {}, "an urgent call must not queue behind requests holding every ordinary connection"
+
+
+def describe_the_lease_of_a_pool() -> None:
+    def it_is_renewed_and_released_over_the_control_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+        ordinary: list[tuple[str, str]] = []
+        control: list[tuple[str, str]] = []
+        resource = ComputeResource(
+            id="c1",
+            name="attached",
+            revision=1,
+            generation=1,
+            spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
+            status=ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1),
+            lease=Lease(),
+            created_at=datetime.now(UTC),
+        )
+
+        def main(request: httpx.Request) -> httpx.Response:
+            ordinary.append((request.method, request.url.path))
+            match request.url.path:
+                case "/v1/events":
+                    return httpx.Response(200, text=f"id: 1\nevent: {MOVES[0]}\ndata: {{}}\n\n")
+                case "/v1/computes/c1":
+                    return httpx.Response(200, content=msgspec.json.encode(resource))
+                case _:
+                    return httpx.Response(200, content=b"{}")
+
+        def lease(request: httpx.Request) -> httpx.Response:
+            control.append((request.method, request.url.path))
+            return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(Lease()))
+
+        async def fake_connect(url: str | None, database: Path | None) -> Client:
+            http = httpx.AsyncClient(transport=httpx.MockTransport(main), base_url="http://skyward")
+            kept = httpx.AsyncClient(transport=httpx.MockTransport(lease), base_url="http://skyward")
+            return Client(http, kept, AsyncExitStack())
+
+        monkeypatch.setattr("skyward.core.compute.connect", fake_connect)
+        monkeypatch.setattr("skyward.core.compute.LEASE_SECONDS", 1)
+
+        with sky.Compute.attached("c1", console=False):
+            time.sleep(0.8)
+
+        assert not [call for call in ordinary if call[1].endswith("/lease")], "a lease request went over the ordinary connections"
+        assert control.count(("PUT", "/v1/computes/c1/lease")) >= 2, "the claim and at least one renewal must go over the control connections"
+        assert control[-1] == ("DELETE", "/v1/computes/c1/lease"), "the release must go over the control connections"

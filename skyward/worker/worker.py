@@ -17,7 +17,7 @@ import contextvars
 import os
 import sys
 import traceback
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
@@ -28,7 +28,7 @@ import casty
 import msgspec
 
 from skyward.shared import codec, retry
-from skyward.shared.frames import Chunk, Done, End, Failed, Lost, Outcome, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Step, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
@@ -39,6 +39,10 @@ from skyward.worker.plugins import Plugin
 
 PORT = 25520
 SEED_TIMEOUT = 180.0
+MAX_MESSAGE_BYTES = 1024 * 1024 * 1024
+"""The largest call or reply the compute's cluster carries; a task's arguments and its result each travel inside one."""
+TRANSPORT = casty.TransportConfig(max_message_bytes=MAX_MESSAGE_BYTES, compression=casty.CompressionConfig(codecs=[]))
+"""How the compute's cluster talks. Compression is off: every payload is already an lz4 frame."""
 CONCURRENCY = int(os.environ.get("SKYWARD_SLOTS", "1"))
 """How many tasks the executor runs at once — the width of the pool."""
 BUFFER = int(os.environ.get("SKYWARD_BUFFER", "0"))
@@ -87,9 +91,22 @@ function: codec.Codec[Callable[..., object]] = codec.Pickle()
 generator: codec.Codec[Callable[..., Iterator[object]]] = codec.Pickle()
 arguments: codec.Codec[Arguments] = codec.Pickle()
 outcomes: dict[str, asyncio.Future[Outcome]] = {}
-"""Every attempt this worker was handed, by execution: its outcome, or the promise of one."""
+"""Every attempt this worker was handed, by execution: its outcome, or the promise of one.
+
+Kept until the daemon says it has recorded the outcome, or for :data:`KEEP_SECONDS`
+after the attempt ended, whichever comes first."""
 generators: dict[str, Iterator[object]] = {}
 """Streams in flight, by execution. Alive only as long as somebody is pulling on them."""
+pulling: set[str] = set()
+"""Streams whose next item is being pulled in a thread right now.
+
+A close that lands mid-pull cannot close the generator — it is executing — so it
+only lets go of it, and the pull closes it once it comes back."""
+KEEP_SECONDS = 3600.0
+"""How long a settled outcome is kept for a daemon that has not said it recorded it.
+
+The acknowledgement rides on the next attempt sent to this node, and a node may never
+be sent another; without a bound, every payload it ever returned would stay here."""
 
 installed: tuple[Plugin, ...] = ()
 """The compute's plugins, rebuilt on this machine from what the spec said they were."""
@@ -110,23 +127,33 @@ async def health(
 ) -> AsyncIterator[tuple[bool, str | None]]:
     if initial_delay:
         await asyncio.sleep(initial_delay)
-    while True:
-        try:
-            async with asyncio.timeout(timeout):
-                result = await asyncio.to_thread(fn, instance_info())
-        except TimeoutError:
-            yield False, f"timeout after {timeout}s"
-        except Exception as exc:
-            yield False, repr(exc)
-        else:
-            match result:
-                case True:
-                    yield True, None
-                case str() as reason if reason:
-                    yield False, reason
-                case _:
-                    yield False, None
-        await asyncio.sleep(interval)
+    loop = asyncio.get_running_loop()
+    checks = ThreadPoolExecutor(max_workers=1, thread_name_prefix="skyward-health")
+    running: asyncio.Future[bool | str] | None = None
+    try:
+        while True:
+            if running is None:
+                running = loop.run_in_executor(checks, fn, instance_info())
+            try:
+                async with asyncio.timeout(timeout):
+                    result = await asyncio.shield(running)
+            except TimeoutError:
+                yield False, f"timeout after {timeout}s"
+            except Exception as exc:
+                running = None
+                yield False, repr(exc)
+            else:
+                running = None
+                match result:
+                    case True:
+                        yield True, None
+                    case str() as reason if reason:
+                        yield False, reason
+                    case _:
+                        yield False, None
+            await asyncio.sleep(interval)
+    finally:
+        checks.shutdown(wait=False, cancel_futures=True)
 
 
 async def warm(checks: AsyncIterator[tuple[bool, str | None]], consecutive_failures: int) -> None:
@@ -192,24 +219,38 @@ class Worker:
     the compute needs another node.
     """
 
-    async def run(self, id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> bytes:
+    async def run(
+        self,
+        id: str,
+        code: bytes,
+        args: bytes,
+        decision: bytes = b"",
+        attempt: int = 1,
+        settled: tuple[str, ...] = (),
+    ) -> bytes:
         """Run one attempt. ``decision`` is the task's retry decision, pickled, and
         ``attempt`` which attempt this is — asked together if the function raises.
+        ``settled`` are executions whose outcome the daemon has recorded, and which
+        this worker therefore no longer needs to keep.
 
         An attempt that ends without an outcome — the call cancelled under it, or
         ``execute`` itself broken — is settled as lost before the error goes on, so a
         daemon holding :meth:`Control.result` on it hears the loss instead of waiting
         out the call's timeout.
         """
-        settled: asyncio.Future[Outcome] = asyncio.get_running_loop().create_future()
-        outcomes[id] = settled
+        for recorded in settled:
+            outcomes.pop(recorded, None)
+        loop = asyncio.get_running_loop()
+        promise: asyncio.Future[Outcome] = loop.create_future()
+        outcomes[id] = promise
+        promise.add_done_callback(lambda _: loop.call_later(KEEP_SECONDS, _forget, id, promise))
         try:
             outcome = await execute(id, code, args, decision, attempt)
         except BaseException as exc:
-            settled.set_result(Lost(error=f"the attempt ended without an outcome: {exc!r}"))
+            promise.set_result(Lost(error=f"the attempt ended without an outcome: {exc!r}"))
             raise
-        settled.set_result(outcome)
-        return encode(outcome)
+        promise.set_result(outcome)
+        return await _encoded(outcome)
 
     async def open(self, id: str, code: bytes, args: bytes) -> None:
         """Build the generator. Nothing of the user's code has run yet.
@@ -220,7 +261,8 @@ class Worker:
         """
         fn = await generator.decode(code)
         positional, keyword = await arguments.decode(args)
-        generators[id] = plugins.chain(installed, partial(fn, *positional, **keyword), instance_info())()
+        wrapped = plugins.chain(installed, partial(fn, *positional, **keyword), instance_info())
+        generators[id] = await asyncio.get_running_loop().run_in_executor(thread_pool, contextvars.copy_context().run, partial(_flushing, wrapped))
 
     async def step(self, id: str) -> bytes:
         """One item, because somebody asked for one.
@@ -234,7 +276,7 @@ class Worker:
         ``open`` — a generator that yields a million items would otherwise ship the
         user's function a million times.
         """
-        return encode(await advance(id))
+        return await _encoded(await advance(id))
 
     async def close(self, id: str) -> None:
         """Let go of a generator whose caller went away.
@@ -242,8 +284,14 @@ class Worker:
         There is nothing to keep. A stream cannot be resumed — the items already sent
         are gone from here — so a caller that has stopped reading is a caller that
         will not be back for this one.
+
+        The generator is closed in the thread pool, because closing it runs its
+        ``finally`` — the user's code, which may reach for a collection that blocks on
+        this very loop. One being pulled right now is left to the pull to close.
         """
-        generators.pop(id, None)
+        iterator = generators.pop(id, None)
+        if iterator is not None and id not in pulling:
+            await _finish(iterator)
 
 
 @casty.service(name="skyward.Control")
@@ -292,7 +340,7 @@ class Control:
             case None:
                 return encode(Unknown())
             case settled:
-                return encode(await asyncio.shield(settled))
+                return await _encoded(await asyncio.shield(settled))
 
 
 async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Outcome:
@@ -352,7 +400,9 @@ async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", atte
         error, trace, again = payload
         return Failed(error=error, traceback=trace, retry=again)
     except Exception as exc:
-        return Failed(error=str(exc), traceback=traceback.format_exc(), retry=_again(decision, exc, attempt))
+        trace = traceback.format_exc()
+        error = str(exc)
+        return Failed(error=error, traceback=trace, retry=await asyncio.to_thread(_again, decision, exc, attempt))
     finally:
         task.reset(token)
 
@@ -398,7 +448,14 @@ async def advance(id: str) -> Step:
                 sys.stderr.flush()
 
         wrapped = partial(contextvars.copy_context().run, pull)
-        item = await loop.run_in_executor(thread_pool, wrapped)
+        pulling.add(id)
+        try:
+            item = await loop.run_in_executor(thread_pool, wrapped)
+        finally:
+            pulling.discard(id)
+        if id not in generators:
+            await _finish(iterator)
+            return End()
         if item is DONE:
             generators.pop(id, None)
             return End()
@@ -408,6 +465,50 @@ async def advance(id: str) -> Step:
         return Failed(error=str(exc), traceback=traceback.format_exc())
     finally:
         task.reset(token)
+
+
+async def _finish(iterator: Iterator[object]) -> None:
+    """Close a stream nobody will pull again, in the thread pool, and never raise.
+
+    Closing a generator runs its ``finally``, which is the user's code: on the loop,
+    a ``sky.lock`` there would wait for a loop that is busy waiting for it. What the
+    cleanup raises has no caller left to hear it, so it is said in the log.
+    """
+    def shut() -> None:
+        try:
+            match iterator:
+                case Generator() as running:
+                    running.close()
+        except Exception:
+            logger.warning("the stream's cleanup raised; its consumer had already left", exc_info=True)
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+    await asyncio.get_running_loop().run_in_executor(thread_pool, contextvars.copy_context().run, shut)
+
+
+def _flushing[T](call: Callable[[], T]) -> T:
+    try:
+        return call()
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+
+def _forget(id: str, promise: asyncio.Future[Outcome]) -> None:
+    """Drop an outcome kept past its time, unless a later attempt already took its place."""
+    if outcomes.get(id) is promise:
+        outcomes.pop(id)
+
+
+async def _encoded(frame: Lookup | Step) -> bytes:
+    """Encode a frame, in a thread when its payload is big enough to hold the loop."""
+    match frame:
+        case Done(value=value) | Chunk(value=value) if len(value) >= codec.THRESHOLD:
+            return await asyncio.to_thread(encode, frame)
+        case _:
+            return encode(frame)
 
 
 child_plugins: tuple[Plugin, ...] | None = None
@@ -517,6 +618,7 @@ async def main() -> None:
         seeds=seeds,
         cluster_name=os.environ["SKYWARD_COMPUTE"],
         tls=material(),
+        config=casty.Config(transport=TRANSPORT),
     )
     stack = ExitStack()
     try:

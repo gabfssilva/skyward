@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import aclosing
+from time import monotonic
 
 import msgspec
 
-from skyward.server.application.events import events
+from skyward.server.application.events import ROTATE_BYTES, ROTATE_SECONDS, events, truncate
 from skyward.server.application.source import Source
 from skyward.server.application.ssh import SshChannel, SshUnavailableError
 from skyward.shared.observability import logger
@@ -20,8 +22,11 @@ logger = logger.bind(component="node")
 
 DEFAULT_OPTIONS = Options()
 
+BATCH = 256
+"""Console lines handed to the store in one write, at most."""
+
 type Listener = Callable[[NodeState, str | None], None]
-type Output = Callable[[str, str | None], Awaitable[None]]
+type Output = Callable[[tuple[Console, ...]], Awaitable[None]]
 type Sample = Callable[[str, float], Awaitable[None]]
 type Phased = Callable[[PhaseMark, str, str | None], Awaitable[None]]
 
@@ -365,7 +370,9 @@ class Node:
         It survives the bootstrap ending and the worker starting, because it
         follows the file and not the process. A dropped link ends the tail; the
         loop resumes from the byte it had reached, and nothing said in between is
-        lost — it is on the machine's disk, not in flight.
+        lost — it is on the machine's disk, not in flight. Once the file holds
+        more than :data:`ROTATE_BYTES` and nothing unread, it is emptied and the
+        tail starts again from byte 0.
 
         It is also where the node learns that the machine is gone, because it is
         the one coroutine that lives as long as the node does: the lifecycle has
@@ -387,15 +394,23 @@ class Node:
 
     async def _follow(self) -> None:
         offset = 0
+        tried = monotonic()
         try:
             while True:
-                async for reached, event in events(self._ssh, offset):
-                    offset = reached
-                    self._observe(event)
-                await asyncio.sleep(1.0)
-                if self.tunnel is not None and not await self._serving():
-                    self._listener("lost", "the machine came back without its worker")
-                    return
+                async with aclosing(events(self._ssh, offset)) as lines:
+                    async for reached, event in lines:
+                        offset = reached
+                        self._observe(event)
+                        if offset >= ROTATE_BYTES and monotonic() - tried >= ROTATE_SECONDS:
+                            tried = monotonic()
+                            if await truncate(self._ssh, offset, self._sudo):
+                                offset = 0
+                                break
+                    else:
+                        await asyncio.sleep(1.0)
+                        if self.tunnel is not None and not await self._serving():
+                            self._listener("lost", "the machine came back without its worker")
+                            return
         except SshUnavailableError as exc:
             self._listener("lost", str(exc))
 
@@ -450,18 +465,25 @@ class Node:
                 self._said.put_nowait(event)
 
     async def _report(self) -> None:
-        """Hand the log over, one line at a time, until told there are no more."""
-        while (event := await self._said.get()) is not None:
-            try:
-                match event:
-                    case Console(content=content, task=task):
-                        await self._output(content, task)
-                    case Metric(name=name, value=value):
-                        await self._sample(name, value)
-                    case Phase(event=mark, phase=phase, error=error):
-                        await self._phase(mark, phase, error)
-            except Exception:
-                self._log.exception("could not report {}", event)
+        """Hand the log over, the lines already waiting in one write, until told there are no more."""
+        while True:
+            said = [await self._said.get()]
+            while len(said) < BATCH and not self._said.empty():
+                said.append(self._said.get_nowait())
+
+            for run in _runs(said):
+                if run is None:
+                    return
+                try:
+                    match run:
+                        case tuple():
+                            await self._output(run)
+                        case Metric(name=name, value=value):
+                            await self._sample(name, value)
+                        case Phase(event=mark, phase=phase, error=error):
+                            await self._phase(mark, phase, error)
+                except Exception:
+                    self._log.exception("could not report {}", run)
 
     def _settle(self, phase: str, error: str | None) -> None:
         waiter = self._waiter(phase)
@@ -479,3 +501,20 @@ class Node:
         self._failure = error
         for phase in self._reached:
             self._settle(phase, error)
+
+
+def _runs(said: list[Console | Metric | Phase | None]) -> Iterator[tuple[Console, ...] | Metric | Phase | None]:
+    lines: list[Console] = []
+    for event in said:
+        match event:
+            case Console():
+                lines.append(event)
+            case _:
+                if lines:
+                    yield tuple(lines)
+                    lines = []
+                yield event
+                if event is None:
+                    return
+    if lines:
+        yield tuple(lines)

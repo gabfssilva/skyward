@@ -11,6 +11,9 @@ class ProviderRow(Table, tablename="providers"):
 
     ``credentials`` holds the secret in the clear for now. It never leaves this
     table: no read path selects it, and the API never returns it.
+
+    ``offers_fetched_at`` is when the catalog was last fetched successfully;
+    ``offers_attempted_at`` is when it was last asked for, successfully or not.
     """
 
     id = Varchar(primary_key=True)
@@ -20,6 +23,7 @@ class ProviderRow(Table, tablename="providers"):
     config = JSONB(default={})
     created_at = Timestamptz()
     offers_fetched_at = Timestamptz(null=True, default=None)
+    offers_attempted_at = Timestamptz(null=True, default=None)
     last_error = Varchar(null=True, default=None)
 
 
@@ -167,11 +171,23 @@ class BlobRow(Table, tablename="blobs"):
     Functions, arguments and results all live here. The same argument sent to a
     hundred nodes is stored once, and a result read twice is not consumed the
     first time.
+
+    The content itself is kept as chunks, so what blobs share is stored once: a row
+    is the ordered 32-byte digests of its chunks. Its name is still the hash of the
+    whole, the bytes as they were uploaded.
     """
 
     sha256 = Varchar(primary_key=True)
-    data = Bytea()
+    size_bytes = Integer()
+    chunks = Bytea()
     created_at = Timestamptz()
+
+
+class ChunkRow(Table, tablename="chunks"):
+    """A piece of blob content, named by the sha256 of its bytes and stored zlib-compressed."""
+
+    sha256 = Varchar(primary_key=True)
+    data = Bytea()
 
 
 class FunctionRow(Table, tablename="functions"):
@@ -270,6 +286,7 @@ TABLES = (
     GenerationRow,
     NodeRow,
     BlobRow,
+    ChunkRow,
     FunctionRow,
     TaskRow,
     ExecutionRow,

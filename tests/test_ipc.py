@@ -58,3 +58,17 @@ def describe_a_task_whose_subprocess_dies() -> None:
         assert isinstance(first, Lost)
         assert isinstance(second, Done)
         assert codec.loads(second.value) == 42
+
+
+def describe_a_loky_pool_left_idle() -> None:
+    def it_keeps_its_worker_past_lokys_default_timeout() -> None:
+        async def scenario() -> tuple[int, int]:
+            with ipc.pool("loky", reuse=True, workers=1) as pool:
+                before = await pool.run(os.getpid)
+                await worker.asyncio.sleep(11)
+                after = await pool.run(os.getpid)
+                return before, after
+
+        before, after = worker.asyncio.run(scenario())
+
+        assert before == after

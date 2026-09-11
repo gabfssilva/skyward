@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Verda
@@ -73,7 +74,7 @@ class VerdaProvider:
         return response.json()["access_token"]
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             headers = {"Authorization": f"Bearer {await self._token(client)}"}
 
             types_response = await client.get(INSTANCE_TYPES_PATH, headers=headers)
@@ -211,7 +212,7 @@ class VerdaProvider:
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             yield client, {"Authorization": f"Bearer {await self._token(client)}"}
 
     async def _ssh_key(

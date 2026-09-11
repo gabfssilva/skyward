@@ -19,8 +19,11 @@ from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
 from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
 from skyward.providers.salad import SaladProvider
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.providers import ProviderStore
 from skyward.shared import providers
 from skyward.shared.providers import Provider
+from skyward.shared.schemas import ProviderCreate
 
 pytestmark = pytest.mark.local
 
@@ -89,6 +92,32 @@ def describe_the_adapters() -> None:
         kinds = {account.kind for account in ACCOUNTS}
 
         assert set(REGISTRY) <= kinds, "an adapter with no account is one nobody can configure"
+
+
+def describe_the_adapter_the_store_hands_out() -> None:
+    async def _stored(tmp_path: Path) -> tuple[ProviderStore, str]:
+        await connect(tmp_path / "skyward.sqlite")
+        store = ProviderStore()
+        provider = await store.create(ProviderCreate(name="fakey", kind="fake", credentials={}, config={"region": "here"}))
+        return store, provider.id
+
+    async def it_is_built_once_and_reused(tmp_path: Path) -> None:
+        store, provider = await _stored(tmp_path)
+
+        first = await store.adapter(provider)
+
+        assert await store.adapter(provider) is first, "an adapter holds a session worth keeping"
+        assert await store.adapter("fakey") is first, "by name or by id, it is the same account"
+
+    async def it_is_rebuilt_once_the_account_changes(tmp_path: Path) -> None:
+        store, provider = await _stored(tmp_path)
+        before = await store.adapter(provider)
+
+        await store.update(provider, ProviderCreate(name="fakey", kind="fake", credentials={}, config={"region": "elsewhere"}))
+        after = await store.adapter(provider)
+
+        assert after is not before, "an adapter built from the old config would keep answering for it"
+        assert await store.adapter(provider) is after
 
 
 def describe_a_salad_container_group_nobody_wrote_down() -> None:

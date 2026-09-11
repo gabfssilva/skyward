@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Vultr
@@ -69,6 +70,7 @@ class VultrProvider:
     async def offers(self) -> AsyncIterator[Offer]:
         headers = {"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"}
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             headers=headers,
             timeout=self._config.request_timeout,
@@ -257,6 +259,7 @@ class VultrProvider:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             headers={
                 "Authorization": f"Bearer {self._api_key}",

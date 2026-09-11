@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import VastAI
@@ -78,7 +79,7 @@ class VastAIProvider:
         return query
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.post(
                 SEARCH_PATH,
                 json=self._query(),
@@ -192,6 +193,7 @@ class VastAIProvider:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"},

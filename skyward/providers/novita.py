@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, claimed
 from skyward.shared.providers import Novita
@@ -57,7 +58,7 @@ class NovitaProvider:
         if cluster_id := self._config.cluster_id:
             params["clusterId"] = cluster_id
 
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout, verify=tls()) as client:
             response = await client.get(
                 PRODUCTS_PATH,
                 params=params,
@@ -137,6 +138,7 @@ class NovitaProvider:
 
     async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers=self._headers(),
@@ -154,6 +156,7 @@ class NovitaProvider:
         prefix = binding["prefix"]
 
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers=self._headers(),
@@ -177,6 +180,7 @@ class NovitaProvider:
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
         async with (
             httpx.AsyncClient(
+                verify=tls(),
                 base_url=BASE_URL,
                 timeout=self._config.request_timeout,
                 headers=self._headers(),

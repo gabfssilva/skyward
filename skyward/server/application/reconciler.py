@@ -187,8 +187,7 @@ class Reconciler:
 
         nodes = await self._nodes.of(compute.id)
         alive = [node for node in nodes if node.state in LIVE]
-        load = await self._tasks.load(compute.id)
-        holding, owed = await self._tasks.busy(compute.id)
+        load, holding, owed = await self._tasks.pressure(compute.id)
         buy, spare = demand(compute, nodes, load)
         lower, upper = bounds(compute.spec)
         surplus = self._surplus(compute, alive, spare, holding, owed)
@@ -215,7 +214,8 @@ class Reconciler:
             await self._nodes.observe(node.id, "draining")
             await self._announce("draining", compute.id, node.id)
 
-        nodes = await self._nodes.of(compute.id)
+        if buy or surplus:
+            nodes = await self._nodes.of(compute.id)
         await self._push(compute, nodes, holding)
         return await self._status(compute, nodes, lower)
 

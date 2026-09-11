@@ -554,17 +554,15 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
         foreign.add(execution)
         return False
 
-    async with aclosing(client.events(compute)) as stream:
+    async with aclosing(client.events(compute, types=("node.console",))) as stream:
         feed = stream.__aiter__()
         while True:
             try:
                 async with asyncio.timeout(IDLE if settled.is_set() else None):
-                    name, payload = await anext(feed)
+                    _, payload = await anext(feed)
             except (TimeoutError, StopAsyncIteration):
                 return
 
-            if name != "node.console":
-                continue
             line = json.loads(payload)
             if (execution := line.get("task")) and await belongs(execution):
                 sys.stdout.write(line.get("content", "") + "\n")

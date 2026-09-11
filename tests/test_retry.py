@@ -63,6 +63,20 @@ def unfinished() -> int:
     return 42
 
 
+def answer() -> int:
+    return 42
+
+
+worker_loops: list[asyncio.AbstractEventLoop] = []
+deciding_threads: list[int] = []
+
+
+def through_the_loop(reason: retry.Reason, attempt: int) -> bool:
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), worker_loops[0]).result(timeout=2)
+    deciding_threads.append(threading.get_ident())
+    return True
+
+
 def describe_the_decision() -> None:
     def by_default_it_tries_once_more_after_a_loss_and_never_after_an_exception() -> None:
         assert retry.decide(retry.default, retry.Lost("node_gone"), 1)
@@ -134,9 +148,6 @@ def describe_the_worker() -> None:
         def blow_up() -> None:
             raise ValueError("the function said no")
 
-        def answer() -> int:
-            return 42
-
         arguments = codec.dumps(((), {}))
 
         async def scenario() -> tuple[object, object]:
@@ -158,7 +169,7 @@ def describe_the_worker() -> None:
 
         system = casty.local()
         try:
-            running = asyncio.create_task(system.service(worker.Worker).run("exe_waited_on", codec.dumps(unfinished), codec.dumps(((), {})), b"", 1))
+            running = asyncio.create_task(system.service(worker.Worker).run("exe_waited_on", codec.dumps(unfinished), codec.dumps(((), {})), b"", 1, ()))
             async with asyncio.timeout(5):
                 while "exe_waited_on" not in worker.outcomes:
                     await asyncio.sleep(0.01)
@@ -193,7 +204,7 @@ def describe_the_worker() -> None:
 
         system = casty.local()
         try:
-            running = asyncio.create_task(system.service(worker.Worker).run("exe_broken", b"", b"", b"", 1))
+            running = asyncio.create_task(system.service(worker.Worker).run("exe_broken", b"", b"", b"", 1, ()))
             async with asyncio.timeout(5):
                 await entered.wait()
 
@@ -211,6 +222,66 @@ def describe_the_worker() -> None:
         finally:
             release.set()
             await system.close()
+
+    async def it_forgets_an_outcome_once_the_daemon_says_it_recorded_it(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        arguments = codec.dumps(((), {}))
+
+        system = casty.local()
+        try:
+            tasks = system.service(worker.Worker)
+            await tasks.run("exe_recorded", codec.dumps(answer), arguments, b"", 1, ())
+            await tasks.run("exe_kept", codec.dumps(answer), arguments, b"", 1, ())
+            assert {"exe_recorded", "exe_kept"} <= worker.outcomes.keys()
+
+            await tasks.run("exe_next", codec.dumps(answer), arguments, b"", 1, ("exe_recorded",))
+
+            assert "exe_recorded" not in worker.outcomes
+            assert {"exe_kept", "exe_next"} <= worker.outcomes.keys(), "only what the daemon named is dropped"
+            forgotten = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_recorded"), type=Lookup)
+            assert forgotten == Unknown()
+        finally:
+            await system.close()
+
+    async def it_drops_an_outcome_nobody_acknowledged_after_keep_seconds(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        monkeypatch.setattr(worker, "KEEP_SECONDS", 0.2)
+
+        system = casty.local()
+        try:
+            await system.service(worker.Worker).run("exe_unacknowledged", codec.dumps(answer), codec.dumps(((), {})), b"", 1, ())
+            kept = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_unacknowledged"), type=Lookup)
+            assert isinstance(kept, Done), "within its time it is still answered"
+
+            async with asyncio.timeout(5):
+                while "exe_unacknowledged" in worker.outcomes:
+                    await asyncio.sleep(0.02)
+
+            dropped = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_unacknowledged"), type=Lookup)
+            assert dropped == Unknown()
+        finally:
+            await system.close()
+
+    def it_asks_the_decision_off_the_event_loop_thread(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        deciding_threads.clear()
+
+        def blow_up() -> None:
+            raise ValueError("the function said no")
+
+        async def scenario() -> tuple[object, int]:
+            worker_loops[:] = [asyncio.get_running_loop()]
+            async with asyncio.timeout(10):
+                failed = await worker.execute("tsk_loop", codec.dumps(blow_up), codec.dumps(((), {})), codec.dumps(through_the_loop), 1)
+            return failed, threading.get_ident()
+
+        failed, loop_thread = worker.asyncio.run(scenario())
+
+        assert isinstance(failed, Failed) and failed.retry, "a decision that waits on the loop still answers"
+        assert deciding_threads and loop_thread not in deciding_threads
 
 
 class _Plane:
@@ -374,6 +445,49 @@ def describe_the_daemon() -> None:
 
             assert await plane.dispatcher._placement(task, second, plane.node_ids) == plane.node_ids[1]
             assert await plane.dispatcher._placement(task, second, (plane.node_ids[0],)) == plane.node_ids[0], "with nowhere else to go, it goes there"
+
+    def describe_acknowledging_what_it_recorded() -> None:
+        async def the_next_attempt_to_the_same_node_carries_the_recorded_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+            plane = await _plane(tmp_path / "skyward.sqlite")
+            runtime = plane.runtimes.open(plane.compute, "pypi", "a private key")
+            sent: list[tuple[str, str, tuple[str, ...]]] = []
+
+            class Node:
+                def __init__(self, node_id: str) -> None:
+                    self.node_id = node_id
+
+                async def run(self, id: str, code: bytes, args: bytes, decision: bytes, attempt: int, settled: tuple[str, ...]) -> bytes:
+                    sent.append((self.node_id, id, tuple(sorted(settled))))
+                    return worker.encode(Done(value=b"42"))
+
+            async def at(_: object, node_id: str) -> Node:
+                return Node(node_id)
+
+            monkeypatch.setattr(plane.dispatcher, "_worker", at)
+            code = await plane.blobs.store(codec.dumps(answer))
+
+            async def attempt(node_id: str) -> str:
+                task, _ = await plane.tasks.submit(
+                    TaskCreate(compute=plane.compute, function=code, dispatch="one", args_inline=b"args"),
+                    idempotency_key=os.urandom(4).hex(),
+                )
+                execution = task.executions[0]
+                await plane.dispatcher._run(task, execution, runtime, node_id)
+                assert (await plane.tasks.get(task.id)).state == "succeeded"
+                return execution.id
+
+            first_node, second_node = plane.node_ids
+            first = await attempt(first_node)
+            second = await attempt(first_node)
+            elsewhere = await attempt(second_node)
+            await attempt(first_node)
+
+            assert sent == [
+                (first_node, first, ()),
+                (first_node, second, (first,)),
+                (second_node, elsewhere, ()),
+                (first_node, sent[3][1], (second,)),
+            ], "each node hears only of its own recorded outcomes, and hears of each once"
 
 
 def describe_the_client_s_view() -> None:

@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Self
 import httpx
 import msgspec
 
+from skyward.providers.network import tls
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
 from skyward.shared.providers import Scaleway
@@ -67,6 +68,7 @@ class ScalewayProvider:
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={
@@ -88,6 +90,7 @@ class ScalewayProvider:
     async def offers(self) -> AsyncIterator[Offer]:
         zones = self._zones
         async with httpx.AsyncClient(
+            verify=tls(),
             base_url=BASE_URL,
             timeout=self._config.request_timeout,
             headers={"X-Auth-Token": self._secret_key, "Accept": "application/json"},

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
 from msgspec import Struct
 
@@ -11,8 +11,12 @@ from skyward.shared import codec
 from skyward.shared.events import ConsoleEvent, Event, TaskEvent, name
 
 type Record = tuple[int, str, bytes]
+type Filter = tuple[str | None, str | None, tuple[str, ...] | None]
 
 BACKLOG = 1024
+
+PAGE = 500
+"""Rows one replay query reads: a long backlog is paged, not loaded whole."""
 
 
 class Live(Struct, frozen=True):
@@ -36,7 +40,9 @@ class EventStore:
     A subscriber replays from the table and then hangs off a live feed; nothing
     here polls for new rows. The two are stitched by subscribing *before* the
     replay reads, so an event committed in between is buffered rather than lost,
-    and dropped on the way out if the replay already carried it.
+    and dropped on the way out if the replay already carried it. The replay reads
+    in pages of :data:`PAGE` rows, and a feed is only handed the events its
+    filter wants, so a subscriber is neither woken nor filled by the rest.
 
     A slow consumer is disconnected, not waited for: its queue fills, its feed is
     closed, and it comes back with the sequence it got to. The alternative is a
@@ -44,11 +50,27 @@ class EventStore:
     """
 
     def __init__(self) -> None:
-        self._feeds: set[asyncio.Queue[Live | None]] = set()
+        self._feeds: dict[asyncio.Queue[Live | None], Filter] = {}
 
     async def record(self, event: Event) -> None:
         """Write it down and hand it to whoever is listening, in that order."""
         self.deliver(await self.append(event))
+
+    async def record_all(self, events: Sequence[Event]) -> None:
+        """Write the lines a node printed together in one statement, then hand them over in order.
+
+        A single INSERT is atomic, and SQLite assigns the rowids of its rows in the
+        order they were given, so the sequences sorted line up with the events.
+        """
+        if not events:
+            return
+
+        rows = [await _row(event) for event in events]
+        inserted = await EventRow.insert(*(row for row, _, _ in rows)).returning(EventRow.sequence).run()
+        sequences = sorted(item["sequence"] for item in inserted)
+
+        for (_, frame, payload), sequence, event in zip(rows, sequences, events, strict=True):
+            self.deliver(Live(sequence=sequence, type=frame, payload=payload, compute=event.compute, task=_task(event)))
 
     async def append(self, event: Event) -> Live:
         """Write the row and say nothing yet.
@@ -61,22 +83,15 @@ class EventStore:
         The frame name and the filter columns are the event's own: every event names
         its compute, and the ones about a task's execution or a task name that too.
         """
-        frame = name(event)
-        payload = await codec.json(Event).encode(event)
-        row = EventRow(
-            type=frame,
-            compute_id=event.compute,
-            task_id=_task(event),
-            payload=payload.decode(),
-            created_at=now(),
-        )
+        row, frame, payload = await _row(event)
         await row.save().run()
         return Live(sequence=row.sequence, type=frame, payload=payload, compute=event.compute, task=_task(event))
 
     def deliver(self, live: Live) -> None:
         """Hand a committed event to whoever is listening."""
-        for feed in tuple(self._feeds):
-            self._offer(feed, live)
+        for feed, (compute, task, types) in tuple(self._feeds.items()):
+            if live.wanted(compute, task, types):
+                self._offer(feed, live)
 
     async def publish(self, event: Event) -> None:
         """Say it once, to whoever is listening, and keep no record.
@@ -97,36 +112,43 @@ class EventStore:
         types: tuple[str, ...] | None,
     ) -> AsyncIterator[Record]:
         feed: asyncio.Queue[Live | None] = asyncio.Queue(maxsize=BACKLOG + 1)
-        self._feeds.add(feed)
+        self._feeds[feed] = (compute, task, types)
 
         try:
+            cursor = int(last_event_id or 0)
             seen = 0
-            for record in await self._replay(int(last_event_id or 0), compute, task, types):
+            async for record in self._replay(cursor, compute, task, types):
                 seen = record[0]
+                cursor = max(cursor, seen)
                 yield record
 
             while (live := await feed.get()) is not None:
-                if not live.wanted(compute, task, types):
-                    continue
                 if live.sequence is None:
-                    yield seen, live.type, live.payload
+                    yield cursor, live.type, live.payload
                 elif live.sequence > seen:
+                    cursor = max(cursor, live.sequence)
                     yield live.sequence, live.type, live.payload
         finally:
-            self._feeds.discard(feed)
+            self._feeds.pop(feed, None)
 
-    async def _replay(self, after: int, compute: str | None, task: str | None, types: tuple[str, ...] | None) -> list[Record]:
-        query = EventRow.objects().where(EventRow.sequence > after)
+    async def _replay(self, after: int, compute: str | None, task: str | None, types: tuple[str, ...] | None) -> AsyncIterator[Record]:
+        while True:
+            query = EventRow.select(EventRow.sequence, EventRow.type, EventRow.payload).where(EventRow.sequence > after)
 
-        if compute:
-            query = query.where(EventRow.compute_id == compute)
-        if task:
-            query = query.where(EventRow.task_id == task)
-        if types:
-            query = query.where(EventRow.type.is_in(list(types)))
+            if compute:
+                query = query.where(EventRow.compute_id == compute)
+            if task:
+                query = query.where(EventRow.task_id == task)
+            if types:
+                query = query.where(EventRow.type.is_in(list(types)))
 
-        rows = await query.order_by(EventRow.sequence)
-        return [(row.sequence, row.type, row.payload.encode()) for row in rows]
+            rows = await query.order_by(EventRow.sequence).limit(PAGE)
+            for row in rows:
+                yield row["sequence"], row["type"], row["payload"].encode()
+
+            if len(rows) < PAGE:
+                return
+            after = rows[-1]["sequence"]
 
     def _offer(self, feed: asyncio.Queue[Live | None], live: Live) -> None:
         """Hand the event over, or hang up.
@@ -137,11 +159,24 @@ class EventStore:
         consumer waiting forever on a producer that has already given up on it.
         """
         if feed.qsize() >= BACKLOG:
-            self._feeds.discard(feed)
+            self._feeds.pop(feed, None)
             feed.put_nowait(None)
             return
 
         feed.put_nowait(live)
+
+
+async def _row(event: Event) -> tuple[EventRow, str, bytes]:
+    frame = name(event)
+    payload = await codec.json(Event).encode(event)
+    row = EventRow(
+        type=frame,
+        compute_id=event.compute,
+        task_id=_task(event),
+        payload=payload.decode(),
+        created_at=now(),
+    )
+    return row, frame, payload
 
 
 def _task(event: Event) -> str | None:

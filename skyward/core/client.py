@@ -65,6 +65,15 @@ listening and answering in a shape of its own — each one means the same thing,
 which is that there is no daemon of ours there to talk to.
 """
 
+CONTROL_CONNECTIONS = 2
+"""The connections a remote client keeps for its lease, apart from everything else.
+
+Every pending future holds a long poll and every port forward holds a
+connection for its lifetime, so a shared pool can be full for longer than a
+lease lives. A renewal that waits behind them is a compute the reconciler
+deletes as abandoned while its owner is busy using it.
+"""
+
 type Message = MutableMapping[str, Any]
 type Asgi = Callable[
     [Message, Callable[[], Awaitable[Message]], Callable[[Message], Awaitable[None]]],
@@ -73,8 +82,9 @@ type Asgi = Callable[
 
 
 class Client:
-    def __init__(self, http: httpx.AsyncClient, stack: AsyncExitStack) -> None:
+    def __init__(self, http: httpx.AsyncClient, control: httpx.AsyncClient, stack: AsyncExitStack) -> None:
         self._http = http
+        self._control = control
         self._stack = stack
 
     @classmethod
@@ -98,13 +108,17 @@ class Client:
             base_url="http://skyward",
             timeout=None,
         )
-        return cls(await stack.enter_async_context(http), stack)
+        await stack.enter_async_context(http)
+        return cls(http, http, stack)
 
     @classmethod
     async def remote(cls, url: str) -> Self:
         stack = AsyncExitStack()
-        http = httpx.AsyncClient(base_url=url, timeout=None)
-        return cls(await stack.enter_async_context(http), stack)
+        http = await stack.enter_async_context(httpx.AsyncClient(base_url=url, timeout=None))
+        control = await stack.enter_async_context(
+            httpx.AsyncClient(base_url=url, timeout=None, limits=httpx.Limits(max_connections=CONTROL_CONNECTIONS))
+        )
+        return cls(http, control, stack)
 
     async def liveness(self) -> Liveness | None:
         """What the daemon says about itself, or nothing when none answers.
@@ -130,10 +144,15 @@ class Client:
         /,
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
+        urgent: bool = False,
         **query: object,
     ) -> T:
-        """The route is positional, so a query of its own may be called ``path``."""
-        response = await self._send(method, path, body, JSON, headers, query)
+        """The route is positional, so a query of its own may be called ``path``.
+
+        ``urgent`` rides the connections kept for the requests that keep a compute
+        owned (:data:`CONTROL_CONNECTIONS`), which no long poll can occupy.
+        """
+        response = await self._send(method, path, body, JSON, headers, query, urgent=urgent)
         return msgspec.json.decode(response.content, type=kind)
 
     async def blob(self, path: str, **query: object) -> bytes | None:
@@ -144,9 +163,9 @@ class Client:
     async def upload(self, path: str, body: bytes, headers: dict[str, str] | None = None) -> None:
         await self._send("PUT", path, body, BLOB, headers, {})
 
-    async def delete(self, path: str) -> None:
+    async def delete(self, path: str, *, urgent: bool = False) -> None:
         """For the endpoints that answer 204 — nothing to decode, so not ``call``."""
-        await self._send("DELETE", path, None, JSON, None, {})
+        await self._send("DELETE", path, None, JSON, None, {}, urgent=urgent)
 
     async def download(self, path: str, /, **query: object) -> AsyncGenerator[bytes]:
         """A response body as raw bytes, as it arrives.
@@ -317,6 +336,7 @@ class Client:
         query: dict[str, object],
         *,
         patience: float = RETRY_SECONDS,
+        urgent: bool = False,
     ) -> httpx.Response:
         """One request, re-sent through a daemon bounce.
 
@@ -328,7 +348,7 @@ class Client:
         delay = POLL_SECONDS
         while True:
             try:
-                response = await self._http.request(
+                response = await (self._control if urgent else self._http).request(
                     method,
                     path,
                     content=body,
