@@ -28,9 +28,9 @@ export const PROVIDER_NAMES: Record<string, string> = {
 }
 
 export const VIEWS: readonly (readonly [string, string])[] = [
-  ['/', 'Fleet'],
-  ['/computes', 'Computes'],
+  ['/', 'Computes'],
   ['/tasks', 'Tasks'],
+  ['/activity', 'Activity'],
   ['/market', 'Market'],
   ['/providers', 'Providers'],
 ]

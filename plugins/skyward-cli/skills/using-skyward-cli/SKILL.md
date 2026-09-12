@@ -23,6 +23,7 @@ sky compute list          # no flag, no environment variable
 sky config show           # url, where it came from, and the daemon's default database
 sky config validate       # is it reachable and ready?
 sky server stop           # SIGTERM the pid this machine recorded
+sky server restart        # stop it, then start one in its place
 ```
 
 A command that reaches nothing says so and stops:

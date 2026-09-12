@@ -7,6 +7,9 @@ from itertools import batched
 from typing import Any
 
 import msgspec
+from piccolo.columns import Column
+from piccolo.custom_types import Combinable
+from piccolo.query.mixins import OrderByRaw
 
 from skyward.providers.registry import adapter_for
 from skyward.server.persistence.db import transaction
@@ -14,7 +17,7 @@ from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import OfferRow, ProviderRow
 from skyward.shared.accelerators import resolve
 from skyward.shared.observability import logger
-from skyward.shared.schemas import BillingUnit, Offer, Page
+from skyward.shared.schemas import BillingUnit, Offer, OfferSort, Page
 
 logger = logger.bind(component="offers")
 
@@ -24,6 +27,18 @@ offer binds ~20 of them: Vultr's 3000-row catalog overflows a single insert."""
 
 RETRY_SECONDS = 60.0
 """A catalog that failed is asked for again after this, or its TTL if shorter."""
+
+ORDERS: dict[OfferSort, tuple[Column | OrderByRaw, bool]] = {
+    "price": (OrderByRaw("(price IS NULL), price / max(accelerator_count, 1)"), True),
+    "vram": (OfferRow.vram, False),
+    "available": (OfferRow.available, False),
+}
+"""How each order is written, and which way it runs.
+
+Price is per accelerator — the only comparison that holds between offers selling
+different numbers of them — and an offer with no price at all is ordered last
+rather than first, where dividing nothing would put it.
+"""
 
 _specific = msgspec.json.Decoder(dict[str, Any])
 
@@ -49,25 +64,35 @@ class OfferCache:
         min_vram: float | None,
         max_price: float | None,
         refresh: bool,
+        *,
+        spot: bool | None = None,
+        sort: OfferSort = "price",
+        limit: int | None = None,
     ) -> Page[Offer]:
         targets = await self._targets(provider, kind)
         if not targets:
-            return Page(items=())
+            return Page(items=(), total=0)
 
         await asyncio.gather(*(self._ensure_fresh(row, force=refresh) for row in targets))
 
-        query = OfferRow.select(*OfferRow.all_columns()).where(OfferRow.provider_id.is_in([row.id for row in targets]))
+        narrowed: list[Combinable] = [OfferRow.provider_id.is_in([row.id for row in targets])]
         if accelerator:
-            query = query.where(OfferRow.accelerator == resolve(accelerator)[0])
+            narrowed.append(OfferRow.accelerator == resolve(accelerator)[0])
         if min_count:
-            query = query.where(OfferRow.accelerator_count >= min_count)
+            narrowed.append(OfferRow.accelerator_count >= min_count)
         if min_vram:
-            query = query.where(OfferRow.vram >= min_vram)
+            narrowed.append(OfferRow.vram >= min_vram)
         if max_price:
-            query = query.where(OfferRow.price <= max_price)
+            narrowed.append(OfferRow.price <= max_price)
+        if spot:
+            narrowed.append(OfferRow.spot_price.is_not_null())
+        elif spot is False:
+            narrowed.append(OfferRow.spot_price.is_null())
 
-        rows = await query.order_by(OfferRow.price)
-        return Page(items=tuple(_to_offer(row) for row in rows))
+        column, ascending = ORDERS[sort]
+        ordered = OfferRow.select(*OfferRow.all_columns()).where(*narrowed).order_by(column, ascending=ascending)
+        rows = await (ordered.limit(limit) if limit else ordered)
+        return Page(items=tuple(_to_offer(row) for row in rows), total=await OfferRow.count().where(*narrowed))
 
     async def _targets(self, provider: str | None, kind: str | None) -> list[ProviderRow]:
         query = ProviderRow.objects().output(load_json=True)

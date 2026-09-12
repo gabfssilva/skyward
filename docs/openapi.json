@@ -2,11 +2,21 @@
   "components": {
     "schemas": {
       "Compute": {
-        "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes.",
+        "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.",
         "properties": {
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "ended": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Ending"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "generation": {
             "type": "integer"
@@ -21,6 +31,16 @@
             "oneOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Offer"
               },
               {
                 "type": "null"
@@ -587,6 +607,40 @@
         "title": "CostEvent",
         "type": "object"
       },
+      "Ending": {
+        "description": "How a compute ended: when its last machine was gone, why, and what the run came to.\n\nOnly a deleted compute has one. ``cost`` and the counts are derived from the node\nand task rows each time the compute is read, the way the meter derives a live\ncompute's cost; ``failed`` counts the calls that ended in an error, failed or\ntimed out.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "calls": {
+            "type": "integer"
+          },
+          "cause": {
+            "enum": [
+              "requested",
+              "abandoned"
+            ],
+            "type": "string"
+          },
+          "cost": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "calls",
+          "cause",
+          "cost",
+          "failed"
+        ],
+        "title": "Ending",
+        "type": "object"
+      },
       "Error": {
         "description": "Every failure, in one shape, whatever produced it.\n\n``code`` is the closed set a client matches on, so nobody parses prose.\n``retryable`` is a property of the failure rather than a guess left to the\ncaller: a revision conflict is worth re-reading and re-sending, and a spec no\nprovider can satisfy is not.",
         "properties": {
@@ -1110,6 +1164,98 @@
           "live"
         ],
         "title": "Liveness",
+        "type": "object"
+      },
+      "LogEntry": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "data": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ComputeCreated"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeBound"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeAdopted"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeProvisioning"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeReady"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeDegraded"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationCreated"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationApplied"
+              },
+              {
+                "$ref": "#/components/schemas/LeaseClaimed"
+              },
+              {
+                "$ref": "#/components/schemas/LeaseReleased"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeAbandoned"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeDeleting"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeDeletionFailed"
+              },
+              {
+                "$ref": "#/components/schemas/StraysTerminated"
+              },
+              {
+                "$ref": "#/components/schemas/ComputeDeleted"
+              },
+              {
+                "$ref": "#/components/schemas/CostEvent"
+              },
+              {
+                "$ref": "#/components/schemas/NodeEvent"
+              },
+              {
+                "$ref": "#/components/schemas/ProgressEvent"
+              },
+              {
+                "$ref": "#/components/schemas/ConsoleEvent"
+              },
+              {
+                "$ref": "#/components/schemas/PhaseEvent"
+              },
+              {
+                "$ref": "#/components/schemas/MetricEvent"
+              },
+              {
+                "$ref": "#/components/schemas/TaskEvent"
+              }
+            ]
+          },
+          "sequence": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "data",
+          "sequence",
+          "type"
+        ],
+        "title": "LogEntry",
         "type": "object"
       },
       "MetricEvent": {
@@ -1663,8 +1809,44 @@
         "title": "Options",
         "type": "object"
       },
+      "Page_skyward.shared.events.LogEntry_": {
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[LogEntry]",
+        "type": "object"
+      },
       "Page_skyward.shared.schemas.Compute_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1681,6 +1863,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1690,7 +1882,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Execution_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1707,6 +1899,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1716,7 +1918,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Function_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1733,6 +1935,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1742,7 +1954,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Generation_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1759,6 +1971,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1768,7 +1990,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Node_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1785,6 +2007,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1794,7 +2026,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Offer_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1811,6 +2043,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1820,7 +2062,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Provider_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1837,6 +2079,16 @@
                 "type": "null"
               }
             ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1846,7 +2098,7 @@
         "type": "object"
       },
       "Page_skyward.shared.schemas.Task_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.",
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
@@ -1858,6 +2110,16 @@
             "oneOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -2909,6 +3171,30 @@
               "oneOf": [
                 {
                   "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Why the compute ended \u2014 `requested` or `abandoned`.",
+            "in": "query",
+            "name": "cause",
+            "required": false,
+            "schema": {
+              "description": "Why the compute ended \u2014 `requested` or `abandoned`.",
+              "oneOf": [
+                {
+                  "enum": [
+                    "requested",
+                    "abandoned"
+                  ],
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -5632,6 +5918,200 @@
         ]
       }
     },
+    "/v1/events/log": {
+      "get": {
+        "deprecated": false,
+        "description": "The recorded events, newest first, a page at a time: the last lines of every compute without replaying the log from its first. `types` filters on the frame name, as the stream does, and `cursor` is the `sequence` the previous page ended on.\n\nAn entry's `sequence` is the id the stream gives the same event, so a page can be followed with the stream from its newest entry and nothing falls between the two. `compute.cost`, `node.metrics` and `node.progress` are published rather than recorded, and are never in the log.\n\nEvery filter narrows the query rather than the page: `compute`, `node` and `task` scope it, and `contains` keeps the entries whose printed line holds any one of the strings, case-insensitively. A reader after one node's output, or after every line that said `Traceback`, asks for that.",
+        "operationId": "V1EventsLogLog",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the entries whose printed line holds any one of these.",
+            "in": "query",
+            "name": "contains",
+            "required": false,
+            "schema": {
+              "description": "Keeps the entries whose printed line holds any one of these.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.shared.events.LogEntry_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read the event log",
+        "tags": [
+          "events"
+        ]
+      }
+    },
     "/v1/functions": {
       "get": {
         "deprecated": false,
@@ -6048,7 +6528,7 @@
     "/v1/offers": {
       "get": {
         "deprecated": false,
-        "description": "Served from the cache. Any provider whose offers have expired is refreshed first \u2014 the TTL belongs to the provider, because a marketplace bundle is gone in minutes while a fixed instance type is not.\n\nA refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up as `last_error` on the provider. A provider being down degrades the answer; it does not erase it.",
+        "description": "Served from the cache. Any provider whose offers have expired is refreshed first \u2014 the TTL belongs to the provider, because a marketplace bundle is gone in minutes while a fixed instance type is not.\n\nA refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up as `last_error` on the provider. A provider being down degrades the answer; it does not erase it.\n\nThe catalog is ordered, and cut to `limit` when one is given \u2014 nobody reads the four thousandth cheapest machine \u2014 while `total` says how many matched. `sort=price` compares what one accelerator costs, not what the whole machine does.",
         "operationId": "V1OffersList",
         "parameters": [
           {
@@ -6171,6 +6651,67 @@
               "default": false,
               "description": "Force a refetch even if the cache is still within its TTL.",
               "type": "boolean"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "`true` lists only what can be had at a spot price.",
+            "in": "query",
+            "name": "spot",
+            "required": false,
+            "schema": {
+              "description": "`true` lists only what can be had at a spot price.",
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "`price` is per accelerator; `vram` and `available` run highest first.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "price",
+              "description": "`price` is per accelerator; `vram` and `available` run highest first.",
+              "enum": [
+                "price",
+                "vram",
+                "available"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "How much of the ordered catalog to answer with. Unset is all of it.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "description": "How much of the ordered catalog to answer with. Unset is all of it.",
+              "maximum": 2000,
+              "minimum": 1,
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           }
         ],

@@ -13,6 +13,7 @@ from skyward.shared.schemas import (
     ComputeCreate,
     ComputeSpecPatch,
     ComputeState,
+    DeletionCause,
     Generation,
     GenerationCreate,
     Lease,
@@ -44,8 +45,9 @@ class ComputeController(Controller):
         compute_state: ComputeState | None = Parameter(query="state", default=None),
         owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes with no live owner."),
         live: bool | None = Parameter(default=None, description="`true` lists what is still running, `false` what is finished."),
+        cause: DeletionCause | None = Parameter(default=None, description="Why the compute ended — `requested` or `abandoned`."),
     ) -> Page[Compute]:
-        return await computes.list(cursor, limit, compute_state, owned, live)
+        return await computes.list(cursor, limit, compute_state, owned, live, cause)
 
     @post(
         status_code=201,

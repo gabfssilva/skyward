@@ -26,6 +26,7 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 ```
 sky server start [--host 127.0.0.1] [--port 17590] [--foreground] [--timeout 30.0] [--database PATH]
 sky server stop  [--timeout 10.0]
+sky server restart [--host 127.0.0.1] [--port 17590] [--timeout 30.0] [--database PATH]
 sky server status [--url URL] [--host 127.0.0.1] [--port 17590] [-o table|json]
 ```
 

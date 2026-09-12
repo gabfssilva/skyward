@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ComputeCreate, Offer, PluginRef, Spec } from '../api/client'
@@ -9,6 +9,9 @@ import { Scrim, CloseBtn } from './Scrim'
 import { ACCELS, COLLECTIVE, PLUGINS, PROVIDER_NAMES } from './catalog'
 
 const WSTEPS = ['What you need', 'Where to buy it', 'What runs on it', 'Review']
+
+/** How much of the price-ordered catalog step 2 asks the daemon for. */
+const OFFERS = 200
 
 type Mode = 'fixed' | 'partial' | 'elastic'
 type Allocation = 'spot' | 'on_demand' | 'spot_if_available' | 'cheapest'
@@ -71,13 +74,31 @@ const priceOf = (o: Offer, allocation: Allocation): number => (allocation === 'o
 
 export function Wizard() {
   const navigate = useNavigate()
-  const offers = useStore((s) => s.offers)
   const closeSheet = useStore((s) => s.closeSheet)
   const load = useStore((s) => s.load)
   const [w, setW] = useState<Draft>(() => newWizard(seed))
+  const [opened] = useState(() => seed)
+  const [fetched, setFetched] = useState<Offer[]>(() => (seed ? [seed] : []))
   const [busy, setBusy] = useState(false)
   const patch = (p: Partial<Draft>) => setW((prev) => ({ ...prev, ...p }))
 
+  useEffect(() => {
+    let live = true
+    void api
+      .offers({ accelerator: w.accel, min_count: w.count, sort: 'price', limit: OFFERS })
+      .then((read) => {
+        if (live) setFetched(read.items)
+      })
+      .catch(() => {
+        if (live) setFetched([])
+      })
+    return () => {
+      live = false
+    }
+  }, [w.accel, w.count])
+
+  /* the offer the market opened on can sit outside the slice the daemon answered with, and a seeded pick still has to resolve */
+  const offers = useMemo(() => (opened && !fetched.some((o) => o.id === opened.id) ? [opened, ...fetched] : fetched), [opened, fetched])
   const picked = useMemo(() => w.picks.map((id) => offers.find((o) => o.id === id)).filter((o): o is Offer => !!o), [w.picks, offers])
   const price = useMemo(() => {
     if (!picked.length) return null

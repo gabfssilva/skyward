@@ -19,7 +19,7 @@ from skyward.server.persistence.db import connect
 from skyward.server.persistence.offers import RETRY_SECONDS, OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import ProviderRow
-from skyward.shared.schemas import Offer, Page, Provider, ProviderCreate
+from skyward.shared.schemas import Offer, OfferSort, Page, Provider, ProviderCreate
 
 pytestmark = pytest.mark.local
 
@@ -29,6 +29,7 @@ class Catalog:
     """What the stub provider answers, and how many times it was asked."""
 
     offers: tuple[str, ...] = ("stub-a",)
+    spot: frozenset[str] = frozenset()
     failure: str | None = None
     ttl: timedelta = timedelta(minutes=10)
     asked: int = 0
@@ -56,7 +57,7 @@ def catalog(monkeypatch: pytest.MonkeyPatch) -> Catalog:
             if state.failure is not None:
                 raise RuntimeError(state.failure)
             now = datetime.now(UTC)
-            for offer in state.offers:
+            for index, offer in enumerate(state.offers, start=1):
                 yield Offer(
                     id=offer,
                     provider_id=self._id,
@@ -65,13 +66,13 @@ def catalog(monkeypatch: pytest.MonkeyPatch) -> Catalog:
                     billing_unit="second",
                     instance_type=offer,
                     accelerator=None,
-                    accelerator_count=0,
+                    accelerator_count=index,
                     cpus=2,
                     memory_gb=4.0,
                     region="nowhere",
-                    spot_price=None,
+                    spot_price=0.05 if offer in state.spot else None,
                     on_demand_price=0.1,
-                    available=1,
+                    available=len(state.offers) - index + 1,
                     fetched_at=now,
                     expires_at=now + StubProvider.offers_ttl,
                     specific={},
@@ -88,8 +89,19 @@ async def registered(database: Path) -> tuple[ProviderStore, OfferCache, Provide
     return providers, OfferCache(providers), provider
 
 
-async def read(cache: OfferCache) -> Page[Offer]:
-    return await cache.list(provider="stubby", kind=None, accelerator=None, min_count=None, min_vram=None, max_price=None, refresh=False)
+async def read(cache: OfferCache, *, spot: bool | None = None, sort: OfferSort = "price", limit: int | None = None) -> Page[Offer]:
+    return await cache.list(
+        provider="stubby",
+        kind=None,
+        accelerator=None,
+        min_count=None,
+        min_vram=None,
+        max_price=None,
+        refresh=False,
+        spot=spot,
+        sort=sort,
+        limit=limit,
+    )
 
 
 async def attempted_ago(provider: Provider, elapsed: timedelta) -> None:
@@ -166,3 +178,38 @@ def describe_a_provider_updated() -> None:
 
         assert catalog.asked == 2, "the catalog cached was the old account's"
         assert [offer.id for offer in offers.items] == ["stub-b"]
+
+
+def describe_reading_the_catalog() -> None:
+    async def it_orders_by_what_one_accelerator_costs(tmp_path: Path, catalog: Catalog) -> None:
+        catalog.offers = ("one", "two", "three")
+        _, cache, _ = await registered(tmp_path / "skyward.sqlite")
+
+        page = await read(cache)
+
+        assert [offer.id for offer in page.items] == ["three", "two", "one"], "one price over three accelerators is a third of it each"
+
+    async def it_orders_by_what_is_available_when_asked_to(tmp_path: Path, catalog: Catalog) -> None:
+        catalog.offers = ("one", "two", "three")
+        _, cache, _ = await registered(tmp_path / "skyward.sqlite")
+
+        page = await read(cache, sort="available")
+
+        assert [offer.id for offer in page.items] == ["one", "two", "three"]
+
+    async def it_lists_only_what_can_be_had_at_a_spot_price_when_asked_to(tmp_path: Path, catalog: Catalog) -> None:
+        catalog.offers = ("fixed", "bidden")
+        catalog.spot = frozenset({"bidden"})
+        _, cache, _ = await registered(tmp_path / "skyward.sqlite")
+
+        page = await read(cache, spot=True)
+
+        assert [offer.id for offer in page.items] == ["bidden"]
+
+    async def a_page_says_how_many_matched_rather_than_how_many_it_carries(tmp_path: Path, catalog: Catalog) -> None:
+        catalog.offers = ("one", "two", "three")
+        _, cache, _ = await registered(tmp_path / "skyward.sqlite")
+
+        page = await read(cache, limit=2)
+
+        assert [offer.id for offer in page.items] == ["three", "two"] and page.total == 3

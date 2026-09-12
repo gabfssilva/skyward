@@ -8,7 +8,7 @@ import pytest
 
 from skyward.server.persistence import db
 from skyward.server.persistence.db import POOL_SIZE, connect
-from skyward.server.persistence.tables import ComputeRow
+from skyward.server.persistence.tables import ComputeRow, EventRow
 
 pytestmark = pytest.mark.local
 
@@ -83,3 +83,22 @@ def describe_indexes() -> None:
 
         assert "tasks_compute_state" in {index["name"] for index in indexes}
         assert [column["name"] for column in columns] == ["compute_id", "state"]
+
+
+def describe_a_log_written_before_the_node_column() -> None:
+    async def an_event_is_given_the_node_its_own_payload_names(tmp_path: Path) -> None:
+        """A file from before the column, opened by a daemon that has it: the rows keep their node."""
+        path = tmp_path / "skyward.sqlite"
+        await connect(path)
+        await EventRow.raw("DROP INDEX events_node_id").run()
+        await EventRow.raw("ALTER TABLE events DROP COLUMN node_id").run()
+        await EventRow.raw(
+            "INSERT INTO events (type, compute_id, payload, created_at) VALUES ('node.console', 'cmp_a', {}, '2026-01-01 00:00:00+00:00')",
+            '{"type":"node.console","compute":"cmp_a","node":"nod_7","content":"printed"}',
+        ).run()
+
+        await connect(path)
+
+        assert [row["node_id"] for row in await EventRow.select(EventRow.node_id)] == ["nod_7"]
+        assert await EventRow.count().where(EventRow.node_id == "nod_7") == 1, "asked for through the index the added column carries"
+        assert [row["integrity_check"] for row in await EventRow.raw("PRAGMA integrity_check").run()] == ["ok"]

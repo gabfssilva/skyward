@@ -83,6 +83,11 @@ class ComputeRow(Table, tablename="computes"):
 
     ``revision`` is the optimistic-concurrency token behind ``If-Match``. Every
     write bumps it; a write that expected an older one is refused.
+
+    ``deletion_cause`` and ``deleted_at`` are how the compute ended. The cause is
+    written with the intent to delete, by whoever had it — a client, or the
+    reconciler letting go of a lease nobody renews — and the moment by the move
+    into ``deleted``, once, the way a node's ``terminated_at`` is.
     """
 
     id = Varchar(primary_key=True)
@@ -105,6 +110,8 @@ class ComputeRow(Table, tablename="computes"):
     status_nodes_ready = Integer(default=0)
     status_nodes_total = Integer(default=0)
     status_error = JSONB(null=True, default=None)
+    deletion_cause = Varchar(null=True, default=None)
+    deleted_at = Timestamptz(null=True, default=None)
 
     lease_owner = Varchar(null=True, default=None)
     lease_expires_at = Timestamptz(null=True, default=None)
@@ -254,11 +261,16 @@ class EventRow(Table, tablename="events"):
     ``sequence`` is the cursor a client resumes on, and it is the primary key
     because it must be monotonic and gapless in the order things were committed.
     Nothing here is garbage-collected: a cursor that was valid stays valid.
+
+    ``compute_id``, ``node_id`` and ``task_id`` are what a reader narrows by. The
+    table holds every line every node ever printed, so one node's output has to be
+    a filter on an index rather than a walk through everybody else's.
     """
 
     sequence = Serial(primary_key=True)
     type = Varchar(index=True)
     compute_id = Varchar(null=True, default=None, index=True)
+    node_id = Varchar(null=True, default=None, index=True)
     task_id = Varchar(null=True, default=None, index=True)
     payload = Text()
     created_at = Timestamptz()

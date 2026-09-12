@@ -37,7 +37,8 @@ async def given(database: Path) -> tuple[NodeStore, EventStore, Node]:
     """One compute with one node asked for, in a database of this test's own."""
     await connect(database)
     events = EventStore()
-    computes, nodes = ComputeStore(events), NodeStore()
+    nodes = NodeStore()
+    computes = ComputeStore(events, nodes)
     compute, _ = await computes.create(ComputeCreate(spec=SPEC), idempotency_key="given")
     return nodes, events, await nodes.request(compute.id, compute.generation)
 
@@ -45,7 +46,7 @@ async def given(database: Path) -> tuple[NodeStore, EventStore, Node]:
 def machines_for(nodes: NodeStore, events: EventStore) -> Machines:
     providers = ProviderStore()
     return Machines(
-        computes=ComputeStore(events),
+        computes=ComputeStore(events, nodes),
         nodes=nodes,
         providers=providers,
         offers=OfferCache(providers),

@@ -1,7 +1,0 @@
-export { Dock, default } from './Dock'
-export { Logs } from './Logs'
-export { Events } from './Events'
-export { Tasks } from './Tasks'
-export { Shell } from './Shell'
-export { useDockScope } from './scope'
-export type { DockTab } from '../state/store'

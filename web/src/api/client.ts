@@ -1,4 +1,4 @@
-import type { components } from './schema'
+import type { components, paths } from './schema'
 
 export type Schemas = components['schemas']
 export type Compute = Schemas['Compute']
@@ -14,6 +14,7 @@ export type Options = Schemas['Options']
 export type Result = Schemas['Result']
 export type PluginRef = Schemas['PluginRef']
 export type Lease = Schemas['Lease']
+export type Ending = Schemas['Ending']
 export type Node = Schemas['Node']
 export type Task = Schemas['Task']
 export type TaskCreate = Schemas['TaskCreate']
@@ -26,15 +27,21 @@ export type Offer = Schemas['Offer']
 export type FunctionRef = Schemas['Function']
 export type Generation = Schemas['Generation']
 export type Liveness = Schemas['Liveness']
+export type LogEntry = Schemas['LogEntry']
 export type WireError = Schemas['Error']
 export type ErrorCode = WireError['code']
 
 /**
- * A slice of a listing, and the cursor that continues it.
+ * A slice of a listing, the cursor that continues it, and how many rows there are.
  *
  * ``next_cursor`` is null on the last page; cursors are opaque, never offsets.
+ * ``total`` is how many the filters match, which is not how many the page carries —
+ * it is what lets a list say fifty of nine thousand instead of fifty of fifty.
  */
-export type Page<T> = { items: T[]; next_cursor?: string | null }
+export type Page<T> = { items: T[]; next_cursor?: string | null; total?: number | null }
+
+/** How the daemon orders a page of the catalog. */
+export type OfferSort = NonNullable<NonNullable<paths['/v1/offers']['get']['parameters']['query']>['sort']>
 
 export class ApiError extends Error {
   constructor(
@@ -88,9 +95,10 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const body = (value: unknown): RequestInit => ({ body: JSON.stringify(value) })
 
-export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean }
+export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause'] }
 export type NodeQuery = { include_terminal?: boolean; generation?: number }
 export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string }
+export type LogQuery = { cursor?: string; limit?: number; compute?: string; task?: string; node?: string; types?: readonly string[]; contains?: readonly string[] }
 export type OfferQuery = {
   provider?: string
   kind?: string
@@ -99,6 +107,9 @@ export type OfferQuery = {
   min_vram?: number
   max_price?: number
   refresh?: boolean
+  spot?: boolean
+  sort?: OfferSort
+  limit?: number
 }
 
 export const api = {
@@ -127,6 +138,8 @@ export const api = {
     request<Execution>(`/tasks/${taskId}/executions`, { method: 'POST', ...body(payload) }),
 
   function: (sha256: string): Promise<FunctionRef> => request<FunctionRef>(`/functions/${sha256}`),
+
+  log: (query?: LogQuery): Promise<Page<LogEntry>> => request<Page<LogEntry>>(`/events/log${qs(query)}`),
 
   providers: (): Promise<Page<Provider>> => request<Page<Provider>>('/providers'),
   provider: (id: string): Promise<Provider> => request<Provider>(`/providers/${id}`),

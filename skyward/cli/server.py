@@ -8,7 +8,8 @@ keeps it attached, which is what a dev loop wants.
 
 ``stop`` signals the pid rather than asking the daemon to end itself: there is
 no shutdown endpoint, and a control plane should not offer one — anything that
-can reach the API could then take the whole plane down.
+can reach the API could then take the whole plane down. ``restart`` is the two of
+them in that order, and skips the stop when there is nothing running.
 
 A pool starts a daemon the same way when it finds none (:func:`skyward.core.client.connect`),
 so what ``stop`` stops is not only what ``start`` started.
@@ -135,6 +136,22 @@ def start(
     print(f"logs: {daemon.LOG_FILE}")
 
 
+def _halt(timeout: float) -> str | None:
+    """Stop the daemon this machine recorded and say what happened, or None when it had recorded none."""
+    match daemon.pid():
+        case None:
+            return None
+        case int(process) if not daemon.alive(process):
+            daemon.forget()
+            return f"not running (cleared stale pid {process})"
+        case int(process):
+            os.kill(process, signal.SIGTERM)
+            if not _wait_exit(process, timeout):
+                raise SystemExit(f"pid {process} still alive after {timeout:.0f}s")
+            daemon.forget()
+            return f"stopped (pid {process})"
+
+
 @server_app.command(name="stop")
 def stop(
     *,
@@ -147,18 +164,53 @@ def stop(
     timeout
         How long to wait for the process to leave before reporting it stayed.
     """
-    match daemon.pid():
+    match _halt(timeout):
         case None:
             raise SystemExit("no pidfile — nothing to stop")
-        case int(process) if not daemon.alive(process):
-            daemon.forget()
-            print(f"not running (cleared stale pid {process})")
-        case int(process):
-            os.kill(process, signal.SIGTERM)
-            if not _wait_exit(process, timeout):
-                raise SystemExit(f"pid {process} still alive after {timeout:.0f}s")
-            daemon.forget()
-            print(f"stopped (pid {process})")
+        case str(said):
+            print(said)
+
+
+@server_app.command(name="restart")
+def restart(
+    *,
+    host: Annotated[str, Parameter(help="Bind address")] = HOST,
+    port: Annotated[int, Parameter(help="Bind port")] = PORT,
+    timeout: Annotated[float, Parameter(help="Seconds to wait for the old one to leave, then for the new one to answer")] = 30.0,
+    database: Annotated[Path | None, Parameter(help="SQLite path (default: ~/.skyward/skyward.sqlite)")] = None,
+    log_level: Annotated[LogLevel | None, Parameter(help="Console verbosity (the log file always takes DEBUG)")] = None,
+) -> None:
+    """Stop the daemon this machine started and start one in its place.
+
+    The machines outlive it. A compute belongs to the daemon rather than to the
+    process, so what a restart costs is a gap in reconciliation and every stream
+    that was open — clients come back on their own cursor. A compute whose client
+    is renewing its lease is not at risk from a restart that takes a second; one
+    nobody has held for a minute was already on its way out.
+
+    Nothing to stop is not a failure here: a daemon that died on its own is
+    restarted by the same command that restarts a live one.
+
+    Parameters
+    ----------
+    host
+        Address to bind.
+    port
+        Port to bind.
+    timeout
+        How long to wait for the old process to leave, and then for the new one to answer.
+    database
+        The SQLite file the daemon keeps its state in.
+    log_level
+        How much the daemon says on its console. ``DEBUG`` is every decision the
+        control plane takes; the file under ``~/.skyward/logs`` gets that either way.
+    """
+    if said := _halt(timeout):
+        print(said)
+    elif live(f"http://{host}:{port}"):
+        raise SystemExit(f"something answers at http://{host}:{port} and this machine recorded no pid for it — stop it where it was started")
+
+    start(host=host, port=port, timeout=timeout, database=database, log_level=log_level)
 
 
 @server_app.command(name="status")
@@ -191,4 +243,4 @@ def status(
     )
 
 
-__all__ = ["endpoint", "live", "probe", "start", "status", "stop"]
+__all__ = ["endpoint", "live", "probe", "restart", "start", "status", "stop"]

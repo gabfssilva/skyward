@@ -118,7 +118,8 @@ def describe_a_compute_that_asks_for_many_machines() -> None:
         await connect(tmp_path / "skyward.sqlite")
         provider = Gated()
         events = EventStore()
-        computes, nodes, blobs = ComputeStore(events), NodeStore(), BlobStore()
+        nodes, blobs = NodeStore(), BlobStore()
+        computes = ComputeStore(events, nodes)
         machines = Machines(computes, nodes, Providers(provider), Offers(), blobs, events)  # type: ignore[arg-type]
         requested: list[str] = []
         wake = Wakeup()
@@ -224,7 +225,8 @@ def describe_two_nodes_refused_by_the_same_region() -> None:
         await connect(tmp_path / "skyward.sqlite")
         provider = Scarce()
         events = EventStore()
-        computes, nodes, blobs = ComputeStore(events), NodeStore(), BlobStore()
+        nodes, blobs = NodeStore(), BlobStore()
+        computes = ComputeStore(events, nodes)
         machines = Machines(computes, nodes, Providers(provider), TwoOffers(), blobs, events)  # type: ignore[arg-type]
 
         spec = ComputeSpec(
@@ -350,7 +352,8 @@ async def refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Refused:
     monkeypatch.setattr("skyward.server.application.machines.monotonic", clock)
     provider = Refusing()
     events = EventStore()
-    computes, nodes, blobs = ComputeStore(events), NodeStore(), BlobStore()
+    nodes, blobs = NodeStore(), BlobStore()
+    computes = ComputeStore(events, nodes)
     machines = Machines(computes, nodes, Providers(provider), OneOffer(), blobs, events)  # type: ignore[arg-type]
     requested: list[str] = []
     wake = Wakeup()

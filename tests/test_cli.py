@@ -15,7 +15,8 @@ from skyward.server.application.mock import SPEC
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
-from skyward.shared.events import ComputeDeleted, ComputeDeleting
+from skyward.server.persistence.nodes import NodeStore
+from skyward.shared.events import ComputeDeleted
 from skyward.shared.schemas import ComputeCreate
 from tests.conftest import cli, rows, serving
 
@@ -151,9 +152,9 @@ async def _history(database: Path, count: int) -> None:
     provider confirmed its machines are gone.
     """
     await connect(database)
-    store = ComputeStore(EventStore())
+    store = ComputeStore(EventStore(), NodeStore())
 
     for index in range(count):
         compute, _ = await store.create(ComputeCreate(spec=SPEC, name=f"c{index}"), idempotency_key=f"k{index}")
-        await store.apply(ComputeDeleting(compute=compute.id, nodes_ready=0, nodes_total=0))
+        await store.delete(compute.id, compute.revision, f"d{index}")
         await store.apply(ComputeDeleted(compute=compute.id))

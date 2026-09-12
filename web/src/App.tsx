@@ -1,27 +1,27 @@
 import { useEffect, useState } from 'react'
-import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import * as fleet from './views/fleet'
-import * as computes from './views/computes'
 import * as compute from './views/compute'
+import * as node from './views/node'
+import * as activity from './views/activity'
 import * as tasks from './views/tasks'
 import * as market from './views/market'
 import * as providers from './views/providers'
-import { Dock } from './dock'
 import { Sheets, openPalette } from './sheets'
 import { Icon, type IconName } from './ui/icons'
 import { Tip } from './ui/primitives'
 import { pulse } from './ui/charts'
-import { useStore, pushSpend } from './state/store'
-import { rateOf } from './state/model'
+import { useStore } from './state/store'
+import { money, rateOf } from './state/model'
 import { api } from './api/client'
 import { MOCK } from './api/mock'
 import { applyStoredTheme, setTheme, type Theme } from './theme'
 import './theme.css'
 
 const VIEWS: readonly (readonly [string, string, IconName])[] = [
-  ['/', 'Fleet', 'fleet'],
-  ['/computes', 'Computes', 'computes'],
+  ['/', 'Computes', 'fleet'],
   ['/tasks', 'Tasks', 'tasks'],
+  ['/activity', 'Activity', 'activity'],
   ['/market', 'Market', 'market'],
   ['/providers', 'Providers', 'providers'],
 ]
@@ -35,7 +35,27 @@ const THEMES: readonly (readonly [Theme, IconName])[] = [
 /** The view a path belongs to, so `/computes/:id` still lights `Computes`. */
 const viewOf = (pathname: string): string => {
   const head = pathname.split('/').filter(Boolean)[0]
-  return head ? `/${head}` : '/'
+  return head && head !== 'computes' ? `/${head}` : '/'
+}
+
+/** What the whole account is running, in the bar, on every page but the home. */
+function FleetTag() {
+  const navigate = useNavigate()
+  const computes = useStore((s) => s.computes)
+  const nodesByCompute = useStore((s) => s.nodes)
+  const rate = computes.reduce((sum, c) => sum + rateOf(nodesByCompute[c.id] ?? []), 0)
+  const ready = computes.flatMap((c) => (nodesByCompute[c.id] ?? []).filter((n) => n.state === 'ready'))
+  const gpus = computes.reduce((sum, c) => sum + (nodesByCompute[c.id] ?? []).filter((n) => n.state === 'ready').length * (c.spec.specs[0]?.accelerator_count ?? 1), 0)
+  return (
+    <button className="tag fleet" title="Computes" onClick={() => navigate('/')}>
+      {money(rate, 0)}
+      <small>/h</small>
+      <i />
+      {ready.length} nodes
+      <i />
+      {gpus} GPUs
+    </button>
+  )
 }
 
 function Bar() {
@@ -67,10 +87,11 @@ function Bar() {
           </button>
         ))}
       </nav>
-      <div className="row" style={{ marginLeft: 'auto', gap: 6 }}>
+      <div className="row" style={{ marginLeft: 'auto', gap: 6, minWidth: 0 }}>
         {MOCK ? <span className="tag proto">example data</span> : null}
-        <span className="tag" id="daemon-tag">
-          <i className="dot ready" /> 127.0.0.1:17590{version ? ` · v${version}` : ''}
+        {pathname === '/' ? null : <FleetTag />}
+        <span className="tag" id="daemon-tag" title={version ? `v${version}` : undefined}>
+          <i className="dot ready" /> <span className="tag-t">127.0.0.1:17590{version ? ` · v${version}` : ''}</span>
         </span>
         <div className="theme" id="theme">
           {THEMES.map(([key, icon]) => (
@@ -96,16 +117,15 @@ function Bar() {
   )
 }
 
+/** The rail: big meters on the home, a compact crumb on a compute, node or task, nothing anywhere else. */
 function RailRoutes() {
   return (
     <Routes>
       <Route path="/" element={<fleet.Rail />} />
-      <Route path="/computes" element={<fleet.Rail />} />
       <Route path="/computes/:id" element={<compute.Rail />} />
-      <Route path="/tasks" element={<fleet.Rail />} />
+      <Route path="/computes/:id/nodes/:rank" element={<node.Rail />} />
       <Route path="/tasks/:id" element={<tasks.TaskRail />} />
-      <Route path="/market" element={<fleet.Rail />} />
-      <Route path="/providers" element={<fleet.Rail />} />
+      <Route path="*" element={null} />
     </Routes>
   )
 }
@@ -114,8 +134,10 @@ function StageRoutes() {
   return (
     <Routes>
       <Route path="/" element={<fleet.Stage />} />
-      <Route path="/computes" element={<computes.Stage />} />
+      <Route path="/computes" element={<Navigate to="/" replace />} />
       <Route path="/computes/:id" element={<compute.Stage />} />
+      <Route path="/computes/:id/nodes/:rank" element={<node.Stage />} />
+      <Route path="/activity" element={<activity.Stage />} />
       <Route path="/tasks" element={<tasks.Stage />} />
       <Route path="/tasks/:id" element={<tasks.TaskStage />} />
       <Route path="/market" element={<market.Stage />} />
@@ -128,12 +150,13 @@ function InspectorRoutes() {
   return (
     <Routes>
       <Route path="/" element={<fleet.Inspector />} />
-      <Route path="/computes" element={<computes.Inspector />} />
       <Route path="/computes/:id" element={<compute.Inspector />} />
+      <Route path="/computes/:id/nodes/:rank" element={<node.Inspector />} />
       <Route path="/tasks" element={<tasks.Inspector />} />
       <Route path="/tasks/:id" element={<tasks.TaskInspector />} />
       <Route path="/market" element={<market.Inspector />} />
       <Route path="/providers" element={<providers.Inspector />} />
+      <Route path="*" element={null} />
     </Routes>
   )
 }
@@ -143,8 +166,8 @@ const REDUCED = typeof matchMedia === 'function' && matchMedia('(prefers-reduced
 /**
  * The prototype's `tick`, minus the parts the daemon now owns.
  *
- * Gauges and log lines arrive on the event stream, so all that is left here is
- * the fleet's spend series and the pulse that walks a busy compute's hexes.
+ * Gauges, costs and log lines arrive on the event stream, so all that is left
+ * here is the pulse that walks a busy compute's hexes.
  */
 function useHeartbeat(): void {
   useEffect(() => {
@@ -153,7 +176,6 @@ function useHeartbeat(): void {
     const id = setInterval(() => {
       beat++
       const state = useStore.getState()
-      pushSpend(state.computes.reduce((sum, c) => sum + rateOf(state.nodes[c.id] ?? []), 0))
       if (beat % 4 === 0) {
         const busy = state.computes.find((c) => (state.tasks[c.id] ?? []).some((t) => t.state === 'running') && (state.nodes[c.id] ?? []).length > 1)
         if (busy) pulse(busy.id)
@@ -165,13 +187,14 @@ function useHeartbeat(): void {
 
 export default function App() {
   useHeartbeat()
+  const { pathname } = useLocation()
   return (
     <>
       <Bar />
-      <div className="rail" id="rail">
+      <div className={pathname === '/' ? 'rail' : 'rail compact'} id="rail">
         <RailRoutes />
       </div>
-      <div className="app">
+      <div className={pathname === '/activity' ? 'app wide' : 'app'}>
         <div className="stage" id="stage">
           <StageRoutes />
         </div>
@@ -179,7 +202,6 @@ export default function App() {
           <InspectorRoutes />
         </aside>
       </div>
-      <Dock />
       <Sheets />
       <Tip />
     </>

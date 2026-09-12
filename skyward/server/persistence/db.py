@@ -56,6 +56,15 @@ MENDS = (
     "WHERE json_extract(spec, '$.nodes.desired') IS NOT NULL",
     "UPDATE computes SET spec = json_remove(spec, '$.retry') WHERE json_type(spec, '$.retry') = 'object'",
     "UPDATE generations SET spec = json_remove(spec, '$.retry') WHERE json_type(spec, '$.retry') = 'object'",
+    "UPDATE computes SET deleted_at = (SELECT MAX(created_at) FROM events "
+    "WHERE events.compute_id = computes.id AND events.type = 'compute.deleted') "
+    "WHERE status_state = 'deleted' AND deleted_at IS NULL",
+    "UPDATE computes SET deletion_cause = CASE WHEN EXISTS (SELECT 1 FROM events "
+    "WHERE events.compute_id = computes.id AND events.type = 'compute.abandoned') "
+    "THEN 'abandoned' ELSE 'requested' END "
+    "WHERE status_state IN ('deleting', 'deleted') AND deletion_cause IS NULL",
+    "UPDATE events SET node_id = json_extract(payload, '$.node') "
+    "WHERE node_id IS NULL AND json_extract(payload, '$.node') IS NOT NULL",
 )
 """Rewrites for rows written under an older vocabulary.
 
@@ -64,6 +73,11 @@ them. A spec written before ``NodeBounds.desired`` became ``initial`` fails to
 decode, and the reconciler decodes every compute on every tick — one old row and
 the whole plane stalls on it. A task's ``retry`` used to be a JSON object of
 counters nothing read; it is a blob digest now, and the old objects are cleared.
+A compute that was deleted before its row kept when and why is given both from
+the event log, which has said them all along: the moment ``compute.deleted`` was
+recorded, and ``abandoned`` where ``compute.abandoned`` was said first. An event
+recorded before the log kept the node it came off is given it from its own
+payload, which has named it all along.
 Each statement matches only rows still carrying the old shape, so running the
 list on every start is a no-op after the first.
 """
@@ -253,11 +267,21 @@ async def _widen(table: type[Table]) -> None:
     Adding the missing ones is the whole of what a migration would do here, because
     a column added to a table that already has rows can only ever be nullable — a
     row written before the column exists has nothing to say about it.
+
+    The table's indexes are rebuilt whenever a column was added. SQLite indexes a
+    column added to a table that already has rows *without* those rows: the entries
+    are missing, ``PRAGMA integrity_check`` says so row by row, and because every
+    query on that column goes through the index — the backfill that gives the column
+    its values included — they all answer as though the table were empty.
     """
     present = {column["name"] for column in await table.raw(f"PRAGMA table_info({table._meta.tablename})").run()}
-    for column in table._meta.columns:
-        if column._meta.db_column_name not in present:
-            await table.raw(f"ALTER TABLE {table._meta.tablename} ADD COLUMN {column.ddl}").run()
+    added = [column for column in table._meta.columns if column._meta.db_column_name not in present]
+
+    for column in added:
+        await table.raw(f"ALTER TABLE {table._meta.tablename} ADD COLUMN {column.ddl}").run()
+
+    if added:
+        await table.raw(f"REINDEX {table._meta.tablename}").run()
 
 
 async def _relax(table: type[Table]) -> None:

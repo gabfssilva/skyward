@@ -1,4 +1,4 @@
-import type { Schemas } from './client'
+import type { LogEntry, Schemas } from './client'
 
 /* ---------- the payloads, as the daemon tags them ---------- */
 
@@ -176,6 +176,18 @@ const atOf = (payload: EventPayload): number => {
   return Date.now()
 }
 
+const skyEvent = (id: string, frame: string, at: number, data: EventPayload): SkyEvent => ({
+  id,
+  type: data.type,
+  frame,
+  at,
+  compute: data.compute ?? null,
+  node: nodeOf(data),
+  task: taskOf(data),
+  data,
+  text: describe(data),
+})
+
 export function decode(frame: string, id: string, raw: string): SkyEvent | null {
   let data: EventPayload
   try {
@@ -184,18 +196,11 @@ export function decode(frame: string, id: string, raw: string): SkyEvent | null 
     return null
   }
   if (typeof data !== 'object' || data === null || !('type' in data)) return null
-  return {
-    id,
-    type: data.type,
-    frame,
-    at: atOf(data),
-    compute: data.compute ?? null,
-    node: nodeOf(data),
-    task: taskOf(data),
-    data,
-    text: describe(data),
-  }
+  return skyEvent(id, frame, atOf(data), data)
 }
+
+/** An entry of the log as the stream would have handed it over, stamped with when the daemon recorded it. */
+export const recorded = (entry: LogEntry): SkyEvent => skyEvent(String(entry.sequence), entry.type, Date.parse(entry.at), entry.data)
 
 export type SubscribeOptions = {
   compute?: string

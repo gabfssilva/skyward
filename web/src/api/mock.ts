@@ -2,6 +2,7 @@ import type {
   Compute,
   FunctionRef,
   ComputeSpec,
+  Ending,
   Execution,
   Image,
   Node,
@@ -50,7 +51,7 @@ const OPTIONS: Options = {
   worker_timeout: 180,
 }
 
-const image = (base: string, pip: string[]): Image => ({
+const image = (base: string | null, pip: string[]): Image => ({
   apt: [],
   base,
   bootstrap_timeout: 900,
@@ -87,6 +88,135 @@ const spec = (
   provider: { kind: provider, name: 'default' },
   region,
 })
+
+/* ---------- providers and offers ---------- */
+
+const provider = (
+  id: string,
+  kind: string,
+  name: string,
+  offers_count: number,
+  fetchedMinutes: number,
+  ttl: number,
+  config: Record<string, unknown>,
+  error: string | null,
+): Provider => ({
+  config,
+  created_at: iso(now() - 8.6e7),
+  id,
+  kind,
+  last_error: error ? err(error) : null,
+  name,
+  offers_count,
+  offers_fetched_at: iso(now() - fetchedMinutes * 60e3),
+  offers_ttl_seconds: ttl,
+})
+
+const providers: Provider[] = [
+  provider('pr_aa01', 'aws', 'default', 1284, 4, 3600, { region: 'us-east-1' }, null),
+  provider('pr_aa02', 'vastai', 'default', 3910, 2, 900, {}, null),
+  provider('pr_aa03', 'runpod', 'default', 212, 11, 1800, { cloud: 'SECURE' }, null),
+  provider('pr_aa04', 'novita', 'default', 168, 7, 1800, {}, null),
+  provider('pr_aa05', 'lambda', 'default', 46, 19, 3600, {}, null),
+  provider('pr_aa06', 'gcp', 'research', 0, 96, 3600, { project_id: 'skyward-research' }, 'the service account key was rejected: invalid_grant'),
+]
+
+const KIND_FIELDS: Record<string, string[]> = {
+  aws: ['access_key_id', 'secret_access_key'],
+  gcp: ['service_account_json'],
+  vastai: ['api_key'],
+  runpod: ['api_key'],
+  novita: ['api_key'],
+  lambda: ['api_key'],
+  hyperstack: ['api_key'],
+  verda: ['api_key'],
+  scaleway: ['access_key', 'secret_key'],
+  vultr: ['api_key'],
+  tensordock: ['api_key', 'api_token'],
+  jarvislabs: ['api_key'],
+  massedcompute: ['api_key'],
+  salad: ['api_key'],
+  container: [],
+}
+
+const providerKinds: ProviderKind[] = Object.entries(KIND_FIELDS).map(([kind, credential_fields]) => ({
+  credential_fields,
+  kind,
+  offers_ttl_seconds: 1800,
+}))
+
+const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
+const ARCH: Record<string, string> = {
+  b200: 'Blackwell',
+  h200: 'Hopper',
+  h100: 'Hopper',
+  a100: 'Ampere',
+  l40s: 'Ada Lovelace',
+  a10g: 'Ampere',
+  l4: 'Ada Lovelace',
+  mi300x: 'CDNA3',
+}
+
+const O = (
+  kind: string,
+  instance_type: string,
+  accelerator: string,
+  accelerator_count: number,
+  cpus: number,
+  memory_gb: number,
+  region: string,
+  spot_price: number | null,
+  on_demand_price: number,
+  available: number,
+  billing_unit: Offer['billing_unit'],
+  fetchedMinutes: number,
+): Offer => ({
+  accelerator,
+  accelerator_count,
+  architecture: ARCH[accelerator] ?? null,
+  available,
+  billing_unit,
+  cpus,
+  disk_gb: null,
+  expires_at: iso(now() + 1800e3),
+  fetched_at: iso(now() - fetchedMinutes * 60e3),
+  id: rid('of'),
+  instance_type,
+  kind,
+  memory_gb,
+  on_demand_price,
+  price: spot_price ?? on_demand_price,
+  provider_id: providers.find((p) => p.kind === kind)?.id ?? 'pr_unknown',
+  provider_name: 'default',
+  region,
+  specific: {},
+  spot_price,
+  vram: VRAM[accelerator] ?? null,
+})
+
+const offers: Offer[] = [
+  O('aws', 'p5.48xlarge', 'h100', 8, 192, 2048, 'us-east-1', 31.46, 98.32, 6, 'second', 4),
+  O('aws', 'p4d.24xlarge', 'a100', 8, 96, 1152, 'us-east-1', 12.42, 32.77, 14, 'second', 4),
+  O('aws', 'g6e.xlarge', 'l40s', 1, 4, 32, 'us-east-1', 0.74, 1.86, 40, 'second', 4),
+  O('aws', 'g5.xlarge', 'a10g', 1, 4, 16, 'us-west-2', 0.42, 1.01, 62, 'second', 4),
+  O('gcp', 'a3-highgpu-8g', 'h100', 8, 208, 1872, 'us-central1', 27.11, 88.24, 2, 'second', 96),
+  O('gcp', 'a2-ultragpu-8g', 'a100', 8, 96, 1360, 'us-central1', 11.04, 31.78, 5, 'second', 96),
+  O('vastai', 'host-42871', 'h100', 8, 128, 1024, 'eu-central', 11.68, 14.32, 3, 'minute', 2),
+  O('vastai', 'host-51903', 'l4', 1, 8, 32, 'eu-central', 0.31, 0.44, 410, 'minute', 2),
+  O('vastai', 'host-77120', 'l40s', 1, 16, 64, 'eu-central', 0.68, 0.84, 55, 'minute', 2),
+  O('vastai', 'host-38442', 'mi300x', 8, 192, 1536, 'us-west', 9.84, 12.6, 1, 'minute', 2),
+  O('runpod', 'H100 SXM5', 'h100', 8, 176, 1536, 'us-or-1', 15.84, 19.92, 8, 'minute', 11),
+  O('runpod', 'B200', 'b200', 8, 224, 2880, 'us-tx-3', null, 51.12, 2, 'minute', 11),
+  O('runpod', 'A10G', 'a10g', 1, 8, 32, 'us-or-1', null, 0.79, 90, 'minute', 11),
+  O('runpod', 'L40S', 'l40s', 1, 16, 62, 'eu-ro-1', null, 1.14, 47, 'minute', 11),
+  O('novita', 'H100-SXM-80GB', 'h100', 8, 128, 1024, 'eu-west', null, 18.32, 4, 'minute', 7),
+  O('novita', 'L4-24GB', 'l4', 1, 8, 32, 'eu-west', null, 0.42, 220, 'minute', 7),
+  O('lambda', 'gpu_8x_h100_sxm5', 'h100', 8, 208, 1800, 'us-east-3', null, 23.92, 0, 'minute', 19),
+  O('lambda', 'gpu_1x_h200', 'h200', 1, 26, 225, 'us-south-1', null, 3.79, 9, 'minute', 19),
+  O('hyperstack', 'n3-H100x8', 'h100', 8, 192, 1440, 'norway-1', null, 17.52, 5, 'minute', 26),
+  O('verda', 'vd-h100x8', 'h100', 8, 160, 1024, 'eu-north', null, 16.8, 3, 'hour', 33),
+  O('scaleway', 'H100-2-80G', 'h100', 2, 48, 480, 'fr-par-2', null, 5.42, 7, 'minute', 41),
+]
 
 /* ---------- the fleets ---------- */
 
@@ -156,12 +286,15 @@ const mkCompute = (
   nodesTotal: number,
   nodesReady: number,
   leaseIn: number,
+  ended: Ending | null = null,
 ): Compute => ({
   created_at: iso(now() - createdAgo),
+  ended,
   generation,
   id,
   lease: { owner: 'gabs@studio', expires_at: iso(now() + leaseIn * 1000) },
   name,
+  offer: offers.find((o) => o.kind === s.specs[0]?.provider.kind && o.accelerator === s.specs[0]?.accelerator) ?? null,
   revision: generation,
   spec: s,
   status: { last_error: null, nodes_ready: nodesReady, nodes_total: nodesTotal, observed_generation: generation, state },
@@ -295,7 +428,7 @@ const computes: Compute[] = [
       ttl: 600,
       nodes: { initial: 64, min: 56, max: null },
       specs: [spec('aws', 'h100', 8, 192, 2048, 'us-east-1')],
-      image: image('pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel', ['transformers==4.57.1', 'trl', 'datasets']),
+      image: image(null, ['transformers==4.57.1', 'trl', 'datasets', 'peft']),
       worker: worker('thread', 8),
       plugins: [
         { kind: 'torch', params: { backend: 'nccl' } },
@@ -317,7 +450,7 @@ const computes: Compute[] = [
       ttl: 900,
       nodes: { initial: 284, min: 240, max: 320 },
       specs: [spec('vastai', 'l4', 1, 8, 32, 'eu-central'), spec('novita', 'l4', 1, 8, 32, 'eu-west')],
-      image: image('skyward/base:3.12', ['sentence-transformers', 'pyarrow']),
+      image: image(null, ['sentence-transformers', 'pyarrow']),
       worker: worker('loky', 4),
       plugins: [{ kind: 'huggingface', params: {} }],
     }),
@@ -356,7 +489,7 @@ const computes: Compute[] = [
       ttl: 600,
       nodes: { initial: 1, min: 1, max: null },
       specs: [spec('runpod', 'a10g', 1, 8, 32, 'us-or-1')],
-      image: image('skyward/base:3.12', ['polars']),
+      image: image(null, ['polars']),
       worker: worker('thread', 4),
       plugins: [],
     }),
@@ -379,13 +512,14 @@ const retired: Compute[] = [
       ttl: 900,
       nodes: { initial: 16, min: 12, max: 16 },
       specs: [spec('aws', 'a100', 8, 96, 1024, 'us-west-2')],
-      image: image('pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel', ['transformers==4.57.1', 'peft']),
+      image: image(null, ['transformers==4.57.1', 'peft']),
       worker: worker('thread', 8),
       plugins: [{ kind: 'torch', params: { backend: 'nccl' } }],
     }),
     16,
     0,
     0,
+    { at: iso(now() - (9.2e6 - 7.56e6)), calls: 1421, cause: 'requested', cost: 16 * 12.24 * 2.1, failed: 3 },
   ),
   mkCompute(
     C6,
@@ -406,6 +540,7 @@ const retired: Compute[] = [
     2,
     0,
     0,
+    { at: iso(now() - (2.7e6 - 2.28e6)), calls: 12, cause: 'abandoned', cost: (2 * 0.79 * 2.28e6) / 3.6e6, failed: 0 },
   ),
 ]
 
@@ -442,135 +577,6 @@ const tasks: Record<string, Task[]> = {
   [C6]: [task('tk_2c9e11', C6, 'evaluate', 'all', 'succeeded', 2.6e6, 2.5e6, [])],
 }
 
-/* ---------- providers and offers ---------- */
-
-const provider = (
-  id: string,
-  kind: string,
-  name: string,
-  offers_count: number,
-  fetchedMinutes: number,
-  ttl: number,
-  config: Record<string, unknown>,
-  error: string | null,
-): Provider => ({
-  config,
-  created_at: iso(now() - 8.6e7),
-  id,
-  kind,
-  last_error: error ? err(error) : null,
-  name,
-  offers_count,
-  offers_fetched_at: iso(now() - fetchedMinutes * 60e3),
-  offers_ttl_seconds: ttl,
-})
-
-const providers: Provider[] = [
-  provider('pr_aa01', 'aws', 'default', 1284, 4, 3600, { region: 'us-east-1' }, null),
-  provider('pr_aa02', 'vastai', 'default', 3910, 2, 900, {}, null),
-  provider('pr_aa03', 'runpod', 'default', 212, 11, 1800, { cloud: 'SECURE' }, null),
-  provider('pr_aa04', 'novita', 'default', 168, 7, 1800, {}, null),
-  provider('pr_aa05', 'lambda', 'default', 46, 19, 3600, {}, null),
-  provider('pr_aa06', 'gcp', 'research', 0, 96, 3600, { project_id: 'skyward-research' }, 'the service account key was rejected: invalid_grant'),
-]
-
-const KIND_FIELDS: Record<string, string[]> = {
-  aws: ['access_key_id', 'secret_access_key'],
-  gcp: ['service_account_json'],
-  vastai: ['api_key'],
-  runpod: ['api_key'],
-  novita: ['api_key'],
-  lambda: ['api_key'],
-  hyperstack: ['api_key'],
-  verda: ['api_key'],
-  scaleway: ['access_key', 'secret_key'],
-  vultr: ['api_key'],
-  tensordock: ['api_key', 'api_token'],
-  jarvislabs: ['api_key'],
-  massedcompute: ['api_key'],
-  salad: ['api_key'],
-  container: [],
-}
-
-const providerKinds: ProviderKind[] = Object.entries(KIND_FIELDS).map(([kind, credential_fields]) => ({
-  credential_fields,
-  kind,
-  offers_ttl_seconds: 1800,
-}))
-
-const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
-const ARCH: Record<string, string> = {
-  b200: 'Blackwell',
-  h200: 'Hopper',
-  h100: 'Hopper',
-  a100: 'Ampere',
-  l40s: 'Ada Lovelace',
-  a10g: 'Ampere',
-  l4: 'Ada Lovelace',
-  mi300x: 'CDNA3',
-}
-
-const O = (
-  kind: string,
-  instance_type: string,
-  accelerator: string,
-  accelerator_count: number,
-  cpus: number,
-  memory_gb: number,
-  region: string,
-  spot_price: number | null,
-  on_demand_price: number,
-  available: number,
-  billing_unit: Offer['billing_unit'],
-  fetchedMinutes: number,
-): Offer => ({
-  accelerator,
-  accelerator_count,
-  architecture: ARCH[accelerator] ?? null,
-  available,
-  billing_unit,
-  cpus,
-  disk_gb: null,
-  expires_at: iso(now() + 1800e3),
-  fetched_at: iso(now() - fetchedMinutes * 60e3),
-  id: rid('of'),
-  instance_type,
-  kind,
-  memory_gb,
-  on_demand_price,
-  price: spot_price ?? on_demand_price,
-  provider_id: providers.find((p) => p.kind === kind)?.id ?? 'pr_unknown',
-  provider_name: 'default',
-  region,
-  specific: {},
-  spot_price,
-  vram: VRAM[accelerator] ?? null,
-})
-
-const offers: Offer[] = [
-  O('aws', 'p5.48xlarge', 'h100', 8, 192, 2048, 'us-east-1', 31.46, 98.32, 6, 'second', 4),
-  O('aws', 'p4d.24xlarge', 'a100', 8, 96, 1152, 'us-east-1', 12.42, 32.77, 14, 'second', 4),
-  O('aws', 'g6e.xlarge', 'l40s', 1, 4, 32, 'us-east-1', 0.74, 1.86, 40, 'second', 4),
-  O('aws', 'g5.xlarge', 'a10g', 1, 4, 16, 'us-west-2', 0.42, 1.01, 62, 'second', 4),
-  O('gcp', 'a3-highgpu-8g', 'h100', 8, 208, 1872, 'us-central1', 27.11, 88.24, 2, 'second', 96),
-  O('gcp', 'a2-ultragpu-8g', 'a100', 8, 96, 1360, 'us-central1', 11.04, 31.78, 5, 'second', 96),
-  O('vastai', 'host-42871', 'h100', 8, 128, 1024, 'eu-central', 11.68, 14.32, 3, 'minute', 2),
-  O('vastai', 'host-51903', 'l4', 1, 8, 32, 'eu-central', 0.31, 0.44, 410, 'minute', 2),
-  O('vastai', 'host-77120', 'l40s', 1, 16, 64, 'eu-central', 0.68, 0.84, 55, 'minute', 2),
-  O('vastai', 'host-38442', 'mi300x', 8, 192, 1536, 'us-west', 9.84, 12.6, 1, 'minute', 2),
-  O('runpod', 'H100 SXM5', 'h100', 8, 176, 1536, 'us-or-1', 15.84, 19.92, 8, 'minute', 11),
-  O('runpod', 'B200', 'b200', 8, 224, 2880, 'us-tx-3', null, 51.12, 2, 'minute', 11),
-  O('runpod', 'A10G', 'a10g', 1, 8, 32, 'us-or-1', null, 0.79, 90, 'minute', 11),
-  O('runpod', 'L40S', 'l40s', 1, 16, 62, 'eu-ro-1', null, 1.14, 47, 'minute', 11),
-  O('novita', 'H100-SXM-80GB', 'h100', 8, 128, 1024, 'eu-west', null, 18.32, 4, 'minute', 7),
-  O('novita', 'L4-24GB', 'l4', 1, 8, 32, 'eu-west', null, 0.42, 220, 'minute', 7),
-  O('lambda', 'gpu_8x_h100_sxm5', 'h100', 8, 208, 1800, 'us-east-3', null, 23.92, 0, 'minute', 19),
-  O('lambda', 'gpu_1x_h200', 'h200', 1, 26, 225, 'us-south-1', null, 3.79, 9, 'minute', 19),
-  O('hyperstack', 'n3-H100x8', 'h100', 8, 192, 1440, 'norway-1', null, 17.52, 5, 'minute', 26),
-  O('verda', 'vd-h100x8', 'h100', 8, 160, 1024, 'eu-north', null, 16.8, 3, 'hour', 33),
-  O('scaleway', 'H100-2-80G', 'h100', 2, 48, 480, 'fr-par-2', null, 5.42, 7, 'minute', 41),
-]
-
 /* ---------- the loggers, line for line ---------- */
 
 type LogFn = (i: number) => { rank: number; text: string }
@@ -602,7 +608,67 @@ const LOGGERS: Record<string, LogFn> = {
 
 /* ---------- the fetch interceptor ---------- */
 
-const paged = <T,>(items: T[]): { items: T[]; next_cursor: null } => ({ items, next_cursor: null })
+/** A page of a listing, as the daemon cuts one: ``total`` is what the filters matched, counted without the cursor. */
+type Paged<T> = { items: T[]; next_cursor: string | null; total: number }
+
+type OfferSort = 'price' | 'vram' | 'available'
+
+type Order = (a: Offer, b: Offer) => number
+
+/** The listings the daemon answers whole: no cursor, and nothing counted. */
+const whole = <T,>(items: T[]): { items: T[]; next_cursor: null } => ({ items, next_cursor: null })
+
+/**
+ * One page of what the filters matched, newest first by ``moment``.
+ *
+ * ``cursor`` is the id of the item the previous page ended on — that is how the daemon
+ * writes one — and the page picks up at what came before that item's moment.
+ * ``next_cursor`` is set only when the page came out full.
+ */
+const paged = <T extends { id: string }>(matched: T[], moment: (item: T) => number, cursor: string | null, limit: number): Paged<T> => {
+  const ordered = [...matched].sort((a, b) => moment(b) - moment(a))
+  const pivot = cursor === null ? undefined : ordered.find((item) => item.id === cursor)
+  const items = (pivot === undefined ? ordered : ordered.filter((item) => moment(item) < moment(pivot))).slice(0, limit)
+  const last = items[items.length - 1]
+  return { items, next_cursor: last && items.length === limit ? last.id : null, total: matched.length }
+}
+
+/** The states a compute still owes something in: what ``live=true`` lists, and ``live=false`` the rest of. */
+const LIVE = new Set<Compute['status']['state']>(['requested', 'provisioning', 'ready', 'degraded', 'deleting'])
+
+/** What one accelerator costs — the only comparison that holds between offers selling different numbers of them — with an offer that has no price at all ordered last. */
+const unit = (o: Offer): number => (o.price ?? Infinity) / Math.max(o.accelerator_count, 1)
+
+const spotted = (o: Offer): boolean => (o.spot_price ?? null) !== null
+
+/** How each order runs, as the daemon runs it: cheapest per accelerator first, and the other two highest first. */
+const ORDERS: Record<OfferSort, Order> = {
+  available: (a, b) => (b.available ?? 0) - (a.available ?? 0),
+  price: (a, b) => unit(a) - unit(b),
+  vram: (a, b) => (b.vram ?? 0) - (a.vram ?? 0),
+}
+
+const order = (sort: string | null): Order => ORDERS[sort === 'vram' || sort === 'available' ? sort : 'price']
+
+/** Every filter the catalog takes, over one offer: who sells it, what it holds, and what it costs. */
+const matches = (o: Offer, query: URLSearchParams): boolean => {
+  const provider = query.get('provider')
+  const kind = query.get('kind')
+  const accelerator = query.get('accelerator')
+  const spot = query.get('spot')
+  const minCount = Number(query.get('min_count') ?? 0)
+  const minVram = Number(query.get('min_vram') ?? 0)
+  const maxPrice = Number(query.get('max_price') ?? 0)
+  return (
+    (!provider || o.provider_id === provider || o.provider_name === provider) &&
+    (!kind || o.kind === kind) &&
+    (!accelerator || o.accelerator === accelerator.toLowerCase()) &&
+    (!minCount || o.accelerator_count >= minCount) &&
+    (!minVram || (o.vram ?? 0) >= minVram) &&
+    (!maxPrice || (o.price ?? Infinity) <= maxPrice) &&
+    (spot === null || spotted(o) === (spot === 'true'))
+  )
+}
 
 const json = (value: unknown): Response =>
   new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -614,7 +680,8 @@ function route(path: string, init: RequestInit | undefined): Response {
   const [raw] = path.split('?')
   const parts = (raw ?? '').replace(/^\/v1\//, '').split('/')
 
-  if (raw === '/v1/events') return stream(path.split('?')[1] ?? '')
+  if (raw === '/v1/events') return stream(path.split('?')[1] ?? '', new Headers(init?.headers).get('last-event-id'), init?.signal)
+  if (raw === '/v1/events/log') return logPage(path.split('?')[1] ?? '')
   if (raw === '/v1/health/live') return json({ live: true, version: '0.9.3' })
   if (raw === '/v1/provider-kinds') return json(providerKinds)
   if (parts[0] === 'functions' && parts[1]) {
@@ -623,14 +690,19 @@ function route(path: string, init: RequestInit | undefined): Response {
   }
   if (raw === '/v1/providers') {
     if (method === 'POST') return json(providers[0])
-    return json(paged(providers))
+    return json(whole(providers))
   }
   if (parts[0] === 'providers' && parts[1]) {
     if (method === 'DELETE') return new Response(null, { status: 204 })
     const found = providers.find((p) => p.id === parts[1])
     return found ? json(found) : notFound()
   }
-  if (parts[0] === 'offers') return json(paged(offers))
+  if (parts[0] === 'offers') {
+    const query = new URLSearchParams(path.split('?')[1] ?? '')
+    const limit = query.get('limit')
+    const matched = offers.filter((o) => matches(o, query)).sort(order(query.get('sort')))
+    return json({ items: limit === null ? matched : matched.slice(0, Number(limit)), next_cursor: null, total: matched.length })
+  }
 
   if (parts[0] === 'computes') {
     if (!parts[1]) {
@@ -638,8 +710,14 @@ function route(path: string, init: RequestInit | undefined): Response {
       const query = new URLSearchParams(path.split('?')[1] ?? '')
       const state = query.get('state')
       const live = query.get('live')
-      if (state) return json(paged(everything().filter((c) => c.status.state === state)))
-      return json(paged(live === 'true' ? computes : everything()))
+      const cause = query.get('cause')
+      const matched = everything().filter(
+        (c) =>
+          (!state || c.status.state === state) &&
+          (live === null || LIVE.has(c.status.state) === (live === 'true')) &&
+          (!cause || c.ended?.cause === cause),
+      )
+      return json(paged(matched, (c) => Date.parse(c.created_at), query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
     const c = everything().find((x) => x.id === parts[1])
     if (!c) return notFound()
@@ -653,9 +731,9 @@ function route(path: string, init: RequestInit | undefined): Response {
         const n = (nodes[c.id] ?? []).find((x) => x.id === parts[3])
         return n ? json(n) : notFound()
       }
-      return json(paged(nodes[c.id] ?? []))
+      return json(whole(nodes[c.id] ?? []))
     }
-    if (parts[2] === 'generations') return json(paged([]))
+    if (parts[2] === 'generations') return json(whole([]))
     if (parts[2] === 'exec') return json({ exit_code: 0, stdout: '', stderr: '' })
     return notFound()
   }
@@ -664,8 +742,9 @@ function route(path: string, init: RequestInit | undefined): Response {
     if (!parts[1]) {
       const query = new URLSearchParams(path.split('?')[1] ?? '')
       const compute = query.get('compute')
-      const all = compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()
-      return json(paged([...all].sort((a, b) => Date.parse(b.submitted_at) - Date.parse(a.submitted_at))))
+      const state = query.get('state')
+      const matched = (compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()).filter((t) => !state || t.state === state)
+      return json(paged(matched, (t) => Date.parse(t.submitted_at), query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
     const t = Object.values(tasks)
       .flat()
@@ -673,7 +752,7 @@ function route(path: string, init: RequestInit | undefined): Response {
     if (!t) return notFound()
     if (parts[2] === 'executions') {
       if (method === 'POST') return json(t.executions[0] ?? execution(t.id, 0, 1, 'started', 0, false, null))
-      return json(paged(t.executions))
+      return json(whole(t.executions))
     }
     if (method === 'DELETE') return new Response(null, { status: 204 })
     return json(t)
@@ -686,22 +765,36 @@ function route(path: string, init: RequestInit | undefined): Response {
 
 type Feed = { compute: string | null; types: Set<string> | null; send: (chunk: string) => void }
 
+/** What a frame carries of the fields the daemon stamps its row with, and filters the log by. */
+type Payload = { compute?: string | null; at?: string; node?: string; content?: string; task?: string | null } & Record<string, unknown>
+
+/** A frame the daemon keeps a row of, as its log serves it. */
+type Recorded = { compute: string | null; entry: { sequence: number; type: string; at: string; data: Payload } }
+
+/** What the daemon publishes without a row: it rides the stream under the last sequence, and never reaches the log. */
+const PUBLISHED = new Set(['compute.cost', 'node.metrics', 'node.progress'])
+
 const feeds = new Set<Feed>()
+const record: Recorded[] = []
 let sequence = 0
 
-const emit = (frame: string, payload: unknown): void => {
-  sequence += 1
+const wants = (feed: Feed, frame: string, compute: string | null): boolean => (!feed.types || feed.types.has(frame)) && (!feed.compute || feed.compute === compute)
+
+const message = (id: number, frame: string, data: string): string => `id: ${id}\nevent: ${frame}\ndata: ${data}\n\n`
+
+/** Tell every feed that wants it, and write down what the daemon would, stamped with the moment the payload carries, or now. */
+const emit = (frame: string, payload: Payload): void => {
   const data = JSON.stringify(payload)
-  const compute = (payload as { compute?: string | null }).compute ?? null
-  for (const feed of feeds) {
-    if (feed.types && !feed.types.has(frame)) continue
-    if (feed.compute && feed.compute !== compute) continue
-    feed.send(`id: ${sequence}\nevent: ${frame}\ndata: ${data}\n\n`)
+  const { compute = null, at } = payload
+  if (!PUBLISHED.has(frame)) {
+    sequence += 1
+    record.push({ compute, entry: { sequence, type: frame, at: at ?? iso(now()), data: payload } })
   }
+  for (const feed of feeds) if (wants(feed, frame, compute)) feed.send(message(sequence, frame, data))
 }
 
-/** An SSE body the fetch transport reads, filtered the way the daemon filters. */
-function stream(search: string): Response {
+/** An SSE body the fetch transport reads, filtered the way the daemon filters, resumed past ``Last-Event-ID`` when that names a sequence, and hung up when the fetch is aborted. */
+function stream(search: string, lastEventId: string | null, signal: AbortSignal | null | undefined): Response {
   const query = new URLSearchParams(search)
   const types = query.getAll('types')
   const encoder = new TextEncoder()
@@ -713,13 +806,55 @@ function stream(search: string): Response {
         types: types.length ? new Set(types) : null,
         send: (chunk) => controller.enqueue(encoder.encode(chunk)),
       }
+      const after = Number(lastEventId ?? Infinity)
+      for (const { compute, entry } of record) if (entry.sequence > after && wants(feed, entry.type, compute)) feed.send(message(entry.sequence, entry.type, JSON.stringify(entry.data)))
       feeds.add(feed)
+      signal?.addEventListener('abort', () => {
+        if (feed) feeds.delete(feed)
+        controller.close()
+      })
     },
     cancel() {
       if (feed) feeds.delete(feed)
     },
   })
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
+/** Any one of the strings, in the line a node printed: an entry that printed nothing holds none of them. */
+const said = (content: string | undefined, contains: string[]): boolean => content !== undefined && contains.some((text) => content.toLowerCase().includes(text))
+
+/**
+ * The recorded frames, newest first, a page at a time, filtered the way the daemon filters.
+ *
+ * ``cursor`` is the sequence the last page ended on. Every filter narrows the rows rather than
+ * the page: ``node`` scopes it to one machine's output, and ``contains`` keeps the entries whose
+ * printed line holds any one of the strings, case-insensitively.
+ */
+function logPage(search: string): Response {
+  const query = new URLSearchParams(search)
+  const compute = query.get('compute')
+  const task = query.get('task')
+  const node = query.get('node')
+  const types = query.getAll('types')
+  const contains = query.getAll('contains').map((text) => text.toLowerCase())
+  const cursor = Number(query.get('cursor') ?? Infinity)
+  const limit = Number(query.get('limit') ?? 200)
+  const items = record
+    .filter(
+      (r) =>
+        r.entry.sequence < cursor &&
+        (!compute || r.compute === compute) &&
+        (!task || r.entry.data.task === task) &&
+        (!node || r.entry.data.node === node) &&
+        (!types.length || types.includes(r.entry.type)) &&
+        (!contains.length || said(r.entry.data.content, contains)),
+    )
+    .slice(-limit)
+    .reverse()
+    .map((r) => r.entry)
+  const last = items[items.length - 1]
+  return json({ items, next_cursor: last && items.length === limit ? String(last.sequence) : null })
 }
 
 const nodeId = (computeId: string, rank: number): string => `nd_${computeId.slice(4)}_${rank}`
@@ -770,14 +905,12 @@ function tick(): void {
     }
   }
 
-  if (rnd() < 0.3) {
-    const c = computes[Math.floor(rnd() * computes.length)]
-    if (c) {
+  if (beat % 3 === 1)
+    for (const c of computes) {
       const rate = (nodes[c.id] ?? []).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
       const hours = (now() - Date.parse(c.created_at)) / 3.6e6
       emit('compute.cost', { type: 'compute.cost', compute: c.id, cost: rate * hours, nodes: ready(c.id), at: iso(now()) })
     }
-  }
 
   if (beat % 9 === 0) {
     const running = Object.values(tasks)
@@ -816,6 +949,10 @@ function history(): void {
   emit('compute.degraded', { type: 'compute.degraded', compute: C3, error: '6 of 8 nodes ready, floor is 4', at: iso(t - 4.3e5) })
   emit('task.started', { type: 'task.state', compute: C3, task: 'tk_a4f2e1', state: 'started', attempt: 1, at: iso(t - 3.1e5) })
   emit('task.started', { type: 'task.state', compute: C1, task: 'tk_9d21c4', state: 'started', attempt: 1, at: iso(t - 9.2e4) })
+  emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 0), content: 'step 9600 | loss 0.9127 | lr 1.0e-5 | 3.88 s/it', task: 'tk_71b3d0', at: iso(t - 3.52e6) })
+  emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 3), content: 'NCCL WARN Net : Connection closed by remote peer 10.0.9.5<46211>', task: 'tk_71b3d0', at: iso(t - 3.41e6) })
+  emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 0), content: 'saving checkpoint-9600\nERROR rank 3 stopped answering, the save is retried', task: 'tk_71b0ac', at: iso(t - 3.39e6) })
+  emit('compute.deleted', { type: 'compute.deleted', compute: C5, nodes_ready: 0, nodes_total: 16, at: iso(t - 1.64e6) })
 }
 
 /* ---------- installation ---------- */

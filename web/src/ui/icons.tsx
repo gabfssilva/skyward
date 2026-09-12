@@ -13,6 +13,7 @@ export const ICON = {
   auto: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none"/>',
   logs: '<path d="M5 6h14M5 12h10M5 18h7"/>',
   events: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   tasks: '<path d="M4 7l2 2 4-4M4 17l2 2 4-4M13 7h7M13 17h7"/>',
   ports: '<path d="M4 12h6M14 12h6"/><circle cx="12" cy="12" r="3"/><path d="M4 8v8M20 8v8"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',

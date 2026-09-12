@@ -415,6 +415,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/events/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the event log
+         * @description The recorded events, newest first, a page at a time: the last lines of every compute without replaying the log from its first. `types` filters on the frame name, as the stream does, and `cursor` is the `sequence` the previous page ended on.
+         *
+         *     An entry's `sequence` is the id the stream gives the same event, so a page can be followed with the stream from its newest entry and nothing falls between the two. `compute.cost`, `node.metrics` and `node.progress` are published rather than recorded, and are never in the log.
+         *
+         *     Every filter narrows the query rather than the page: `compute`, `node` and `task` scope it, and `contains` keeps the entries whose printed line holds any one of the strings, case-insensitively. A reader after one node's output, or after every line that said `Traceback`, asks for that.
+         */
+        get: operations["V1EventsLogLog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/functions": {
         parameters: {
             query?: never;
@@ -537,6 +561,8 @@ export interface paths {
          * @description Served from the cache. Any provider whose offers have expired is refreshed first — the TTL belongs to the provider, because a marketplace bundle is gone in minutes while a fixed instance type is not.
          *
          *     A refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up as `last_error` on the provider. A provider being down degrades the answer; it does not erase it.
+         *
+         *     The catalog is ordered, and cut to `limit` when one is given — nobody reads the four thousandth cheapest machine — while `total` says how many matched. `sort=price` compares what one accelerator costs, not what the whole machine does.
          */
         get: operations["V1OffersList"];
         put?: never;
@@ -630,7 +656,7 @@ export interface paths {
         };
         /**
          * List tasks
-         * @description Every call this daemon has been asked to make, newest last. `correlation_id` is how the tasks of one `&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own.
+         * @description Every call this daemon has been asked to make, newest first. `correlation_id` is how the tasks of one `&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own.
          */
         get: operations["V1TasksList"];
         put?: never;
@@ -778,15 +804,18 @@ export interface components {
          *     ``spec`` is what was asked for and ``status`` is what was observed, written by
          *     different actors and kept in one resource so that reading both is one call.
          *     ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
-         *     ``generation`` counts definitions, not writes.
+         *     ``generation`` counts definitions, not writes. ``offer`` is what the spec
+         *     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
          */
         Compute: {
             /** Format: date-time */
             created_at: string;
+            ended?: components["schemas"]["Ending"] | null;
             generation: number;
             id: string;
             lease: components["schemas"]["Lease"];
             name: string | null;
+            offer?: components["schemas"]["Offer"] | null;
             revision: number;
             spec: components["schemas"]["ComputeSpec"];
             status: components["schemas"]["ComputeStatus"];
@@ -1006,6 +1035,24 @@ export interface components {
             type: "compute.cost";
         };
         /**
+         * Ending
+         * @description How a compute ended: when its last machine was gone, why, and what the run came to.
+         *
+         *     Only a deleted compute has one. ``cost`` and the counts are derived from the node
+         *     and task rows each time the compute is read, the way the meter derives a live
+         *     compute's cost; ``failed`` counts the calls that ended in an error, failed or
+         *     timed out.
+         */
+        Ending: {
+            /** Format: date-time */
+            at: string;
+            calls: number;
+            /** @enum {string} */
+            cause: "requested" | "abandoned";
+            cost: number;
+            failed: number;
+        };
+        /**
          * Error
          * @description Every failure, in one shape, whatever produced it.
          *
@@ -1216,6 +1263,14 @@ export interface components {
             /** @default  */
             version: string;
         };
+        /** LogEntry */
+        LogEntry: {
+            /** Format: date-time */
+            at: string;
+            data: components["schemas"]["ComputeCreated"] | components["schemas"]["ComputeBound"] | components["schemas"]["ComputeAdopted"] | components["schemas"]["ComputeProvisioning"] | components["schemas"]["ComputeReady"] | components["schemas"]["ComputeDegraded"] | components["schemas"]["GenerationCreated"] | components["schemas"]["GenerationApplied"] | components["schemas"]["LeaseClaimed"] | components["schemas"]["LeaseReleased"] | components["schemas"]["ComputeAbandoned"] | components["schemas"]["ComputeDeleting"] | components["schemas"]["ComputeDeletionFailed"] | components["schemas"]["StraysTerminated"] | components["schemas"]["ComputeDeleted"] | components["schemas"]["CostEvent"] | components["schemas"]["NodeEvent"] | components["schemas"]["ProgressEvent"] | components["schemas"]["ConsoleEvent"] | components["schemas"]["PhaseEvent"] | components["schemas"]["MetricEvent"] | components["schemas"]["TaskEvent"];
+            sequence: number;
+            type: string;
+        };
         /** MetricEvent */
         MetricEvent: {
             compute: string;
@@ -1401,15 +1456,38 @@ export interface components {
             worker_timeout: number;
         };
         /**
+         * Page[LogEntry]
+         * @description A slice of a listing, and the cursor that continues it.
+         *
+         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
+         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
+         */
+        "Page_skyward.shared.events.LogEntry_": {
+            items: components["schemas"]["LogEntry"][];
+            next_cursor?: string | null;
+            total?: number | null;
+        };
+        /**
          * Page[Compute]
          * @description A slice of a listing, and the cursor that continues it.
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Compute_": {
             items: components["schemas"]["Compute"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Execution]
@@ -1417,10 +1495,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Execution_": {
             items: components["schemas"]["Execution"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Function]
@@ -1428,10 +1512,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Function_": {
             items: components["schemas"]["Function"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Generation]
@@ -1439,10 +1529,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Generation_": {
             items: components["schemas"]["Generation"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Node]
@@ -1450,10 +1546,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Node_": {
             items: components["schemas"]["Node"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Offer]
@@ -1461,10 +1563,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Offer_": {
             items: components["schemas"]["Offer"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Provider]
@@ -1472,10 +1580,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Provider_": {
             items: components["schemas"]["Provider"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /**
          * Page[Task]
@@ -1483,10 +1597,16 @@ export interface components {
          *
          *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
          *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
          */
         "Page_skyward.shared.schemas.Task_": {
             items: components["schemas"]["Task"][];
             next_cursor?: string | null;
+            total?: number | null;
         };
         /** PhaseEvent */
         PhaseEvent: {
@@ -1923,6 +2043,8 @@ export interface operations {
                 owned?: boolean | null;
                 /** @description `true` lists what is still running, `false` what is finished. */
                 live?: boolean | null;
+                /** @description Why the compute ended — `requested` or `abandoned`. */
+                cause?: ("requested" | "abandoned") | null;
             };
             header?: never;
             path?: never;
@@ -3281,6 +3403,50 @@ export interface operations {
             };
         };
     };
+    V1EventsLogLog: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+                compute?: string | null;
+                task?: string | null;
+                node?: string | null;
+                types?: string[] | null;
+                /** @description Keeps the entries whose printed line holds any one of these. */
+                contains?: string[] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_skyward.shared.events.LogEntry_"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+        };
+    };
     V1FunctionsList: {
         parameters: {
             query?: {
@@ -3529,6 +3695,12 @@ export interface operations {
                 max_price?: number | null;
                 /** @description Force a refetch even if the cache is still within its TTL. */
                 refresh?: boolean;
+                /** @description `true` lists only what can be had at a spot price. */
+                spot?: boolean | null;
+                /** @description `price` is per accelerator; `vram` and `available` run highest first. */
+                sort?: "price" | "vram" | "available";
+                /** @description How much of the ordered catalog to answer with. Unset is all of it. */
+                limit?: number | null;
             };
             header?: never;
             path?: never;

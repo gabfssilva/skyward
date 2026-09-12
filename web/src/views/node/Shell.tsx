@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useStore } from '../state/store'
-import type { Compute, Node } from '../api/client'
-import type { NodeMetrics } from '../state/model'
-import { clamp, readyOf } from '../state/model'
+import { useStore } from '../../state/store'
+import type { Compute, Node } from '../../api/client'
+import type { NodeMetrics } from '../../state/model'
+import { clamp, readyOf } from '../../state/model'
+import { Icon } from '../../ui/icons'
 
 type TermLine = { c: string; t: string }
 type ShellState = { lines: TermLine[]; history: string[] }
@@ -11,7 +11,7 @@ type ShellState = { lines: TermLine[]; history: string[] }
 const shells: Record<string, ShellState> = {}
 
 /** How much memory each accelerator carries, the way the prototype's catalog reads. */
-const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
+export const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
 const SMI_NAME: Record<string, string> = {
   h100: 'NVIDIA H100 80GB',
   a100: 'NVIDIA A100-SXM4',
@@ -112,68 +112,54 @@ function runCommand(ctx: Context, raw: string): void {
   if (cmd) sh.history.push(cmd)
 }
 
-function Picker() {
-  const computes = useStore((s) => s.computes)
-  const setUi = useStore((s) => s.setUi)
-  const navigate = useNavigate()
-  return (
-    <div className="sub">
-      A shell belongs to a node. Open a compute, or pick one:
-      <span className="chips" style={{ marginTop: 8 }}>
-        {computes.map((k) => (
-          <button
-            key={k.id}
-            className="chip"
-            onClick={() => {
-              setUi({ termNode: 0, dock: 'shell', dockMin: false })
-              navigate(`/computes/${k.id}`)
-            }}
-          >
-            {k.name ?? k.id} rank 0
-          </button>
-        ))}
-      </span>
-    </div>
-  )
-}
-
-export function Shell({ computeId }: { computeId: string | null }) {
+/** The prototype's ``shellCard``: a pty on one rank, in a card of its own on the node page. */
+export function ShellCard({ computeId, rank, onClose }: { computeId: string; rank: number; onClose: () => void }) {
   const compute = useStore((s) => s.computes.find((c) => c.id === computeId))
-  const allNodes = useStore((s) => s.nodes)
-  const termNode = useStore((s) => s.termNode)
-  const setUi = useStore((s) => s.setUi)
+  const nodes = useStore((s) => s.nodes[computeId])
   const metrics = useStore((s) => s.metrics)
   const [, bump] = useState(0)
   const out = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLInputElement>(null)
 
-  const nodes = computeId ? (allNodes[computeId] ?? []) : []
-  const ready = readyOf(nodes)
-  const rank = ready.some((n) => n.rank === termNode) ? termNode : (ready[0]?.rank ?? 0)
-
-  useEffect(() => {
-    if (ready.length && termNode !== rank) setUi({ termNode: rank })
-  }, [ready.length, termNode, rank, setUi])
-
   useEffect(() => {
     if (out.current) out.current.scrollTop = out.current.scrollHeight
   })
 
-  if (!computeId || !compute) return <Picker />
-  if (!ready.length) return <div className="sub">No node is ready to take a shell yet.</div>
+  useEffect(() => {
+    input.current?.focus()
+  }, [computeId, rank])
 
-  const node = ready.find((n) => n.rank === rank) ?? ready[0]!
+  const node = (nodes ?? []).find((n) => n.rank === rank)
+  const head = (
+    <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+      <span className="cap">Shell on rank {rank}</span>
+      <span className="mono faint">{node?.address ?? '—'} · pty over the daemon</span>
+      <button className="btn sm ghost" onClick={onClose}>
+        <Icon name="close" />
+        Close
+      </button>
+    </div>
+  )
+
+  if (!compute || !node || node.state !== 'ready')
+    return (
+      <section className="card">
+        {head}
+        <div className="sub">{compute ? 'This node is not ready to take a shell.' : 'Only a live compute takes a shell.'}</div>
+      </section>
+    )
+
+  const all = nodes ?? []
   const spec = compute.spec.specs[0]
-  const count = spec?.accelerator_count ?? 1
   const sh = shellFor(compute.id, rank)
   const context: Context = {
     compute,
     node,
     rank,
-    count,
-    peers: ready.length,
+    count: spec?.accelerator_count ?? 1,
+    peers: readyOf(all).length,
     concurrency: compute.spec.worker?.concurrency ?? 1,
-    head: nodes[0]?.address ?? '—',
+    head: all[0]?.address ?? '—',
     metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, net: 0 },
   }
 
@@ -187,47 +173,9 @@ export function Shell({ computeId }: { computeId: string | null }) {
     bump((n) => n + 1)
   }
 
-  const jump = (e: React.FormEvent<HTMLFormElement>): void => {
-    e.preventDefault()
-    const field = new FormData(e.currentTarget).get('rank')
-    const r = Number(field)
-    if (nodes.some((n) => n.rank === r && n.state === 'ready')) {
-      setUi({ termNode: r })
-      input.current?.focus()
-    }
-  }
-
   return (
-    <>
-      <div className="row" style={{ gap: 9, marginBottom: 7 }}>
-        <span className="cap">node</span>
-        <div className="pick">
-          {ready.slice(0, 6).map((x) => (
-            <button key={x.rank} aria-selected={x.rank === rank} onClick={() => setUi({ termNode: x.rank })}>
-              rank {x.rank}
-            </button>
-          ))}
-        </div>
-        {ready.length > 6 ? (
-          <form className="row" style={{ gap: 5 }} onSubmit={jump}>
-            <input
-              name="rank"
-              type="number"
-              min={0}
-              max={nodes.length - 1}
-              placeholder="rank"
-              aria-label="jump to rank"
-              style={{ width: 70, height: 28, borderRadius: 8, border: 0, background: 'var(--sunk)', padding: '0 8px', fontSize: 12 }}
-            />
-            <button className="btn sm" type="submit">
-              Go
-            </button>
-          </form>
-        ) : null}
-        <span className="mono faint" style={{ marginLeft: 'auto' }}>
-          {node.address ?? '—'} · {count}× {(node.accelerator ?? '?').toUpperCase()} · pty over the daemon
-        </span>
-      </div>
+    <section className="card">
+      {head}
       <div className="term">
         <div className="term-out" id="term-out" ref={out}>
           {sh.lines.map((l, i) => (
@@ -241,6 +189,6 @@ export function Shell({ computeId }: { computeId: string | null }) {
           <input id="term-input" name="cmd" autoComplete="off" spellCheck={false} aria-label="shell command" ref={input} />
         </form>
       </div>
-    </>
+    </section>
   )
 }

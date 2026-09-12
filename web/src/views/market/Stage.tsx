@@ -1,8 +1,9 @@
 import { useMemo } from 'react'
 import { openWizard } from '../../sheets'
-import { useStore } from '../../state/store'
+import { useOffers, useStore } from '../../state/store'
 import { money } from '../../state/model'
 import type { Offer } from '../../api/client'
+import { ACCELS } from '../../sheets/catalog'
 import { Chip, Pick } from '../../ui/primitives'
 
 const ondemand = (o: Offer): number => o.on_demand_price ?? o.price ?? 0
@@ -11,27 +12,40 @@ const accelOf = (o: Offer): string => o.accelerator ?? 'cpu'
 const availOf = (o: Offer): number => o.available ?? 0
 const fetchedAgo = (o: Offer): number => Math.max(0, Math.round((Date.now() - Date.parse(o.fetched_at)) / 60000))
 
+/**
+ * What a chip can ask the daemon for.
+ *
+ * The rows are one slice of an order the daemon cut, so they are no vocabulary of their own:
+ * chips read off them would wobble as the market pages. The app's own GPUs are the vocabulary,
+ * and an accelerator the loaded rows carry that it does not name is added to it — a GPU a
+ * provider sells is never unreachable.
+ */
+const vocabulary = (rows: readonly Offer[]): string[] => {
+  const known = Object.keys(ACCELS)
+  const extra = rows.map((o) => o.accelerator).filter((a): a is string => !!a && !known.includes(a))
+  return ['all', ...known, ...[...new Set(extra)].sort()]
+}
+
 export function Stage() {
-  const offers = useStore((s) => s.offers)
+  const rows = useStore((s) => s.offers)
+  const catalog = useOffers()
   const f = useStore((s) => s.market)
   const setUi = useStore((s) => s.setUi)
+  const moreOffers = useStore((s) => s.moreOffers)
 
-  const accels = useMemo(() => ['all', ...new Set(offers.map(accelOf))], [offers])
+  const accels = useMemo(() => vocabulary(rows), [rows])
 
   const per = (o: Offer): number => (f.market === 'spot' ? (spot(o) ?? 0) : (spot(o) ?? ondemand(o))) / (o.accelerator_count || 1)
 
-  const rows = offers
-    .filter((o) => (f.accel === 'all' || accelOf(o) === f.accel) && (f.market === 'all' || spot(o) != null))
-    .sort((a, b) =>
-      f.sort === 'price' ? per(a) - per(b) : f.sort === 'vram' ? (b.vram ?? 0) - (a.vram ?? 0) : availOf(b) - availOf(a),
-    )
   const cheapest = rows.length ? per(rows[0]!) : 1
 
   return (
     <section className="card">
       <div className="combhead">
         <b>Market</b>
-        <span className="sub">{offers.length} offers</span>
+        <span className="sub">
+          {rows.length} of {catalog?.total ?? rows.length} offers
+        </span>
       </div>
       <div className="row wrap" style={{ gap: 8, marginBottom: 10 }}>
         <div className="chips">
@@ -56,7 +70,7 @@ export function Stage() {
           options={[
             ['price', 'cheapest'],
             ['vram', 'most VRAM'],
-            ['avail', 'most available'],
+            ['available', 'most available'],
           ]}
           onChange={(v) => setUi({ market: { ...f, sort: v } })}
         />
@@ -117,6 +131,11 @@ export function Stage() {
           </tbody>
         </table>
       </div>
+      {catalog && catalog.total !== null && rows.length < catalog.total ? (
+        <button className="btn sm" style={{ marginTop: 10 }} disabled={catalog.loading} onClick={() => void moreOffers()}>
+          Show more
+        </button>
+      ) : null}
     </section>
   )
 }

@@ -314,6 +314,23 @@ discriminator is read off this union's members, and a union nested in it would
 be one member it cannot name.
 """
 
+
+class LogEntry(Struct, frozen=True):
+    """One recorded event, as the log holds it: where it sits, when it was written, and what it says.
+
+    ``sequence`` is the number a stream frame's ``id:`` carries for the same event, so a
+    reader that took a page can follow with the stream from its newest entry and miss
+    nothing in between. ``type`` is the frame name, the one ``types`` filters on. ``at``
+    is when the daemon recorded it: most payloads do not carry the moment, and a frame
+    replayed off the stream has no way to say it.
+    """
+
+    sequence: int
+    type: str
+    at: datetime
+    data: Event
+
+
 def name(event: Event) -> str:
     """The frame name an event goes out under, and the name a subscriber filters on."""
     match event:
@@ -343,6 +360,7 @@ __all__ = [
     "GenerationCreated",
     "LeaseClaimed",
     "LeaseReleased",
+    "LogEntry",
     "MetricEvent",
     "NodeEvent",
     "PhaseEvent",

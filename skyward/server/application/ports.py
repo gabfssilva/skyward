@@ -4,11 +4,13 @@ from collections.abc import AsyncIterator
 from typing import Literal, Protocol, runtime_checkable
 
 from skyward.server.application.ssh import Result
+from skyward.shared.events import LogEntry
 from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpecPatch,
     ComputeState,
+    DeletionCause,
     DependencyState,
     Execution,
     ExecutionCreate,
@@ -20,6 +22,7 @@ from skyward.shared.schemas import (
     Node,
     NodeState,
     Offer,
+    OfferSort,
     Page,
     Provider,
     ProviderCreate,
@@ -47,7 +50,15 @@ class Computes(Protocol):
 
     async def get(self, ref: str) -> Compute: ...
 
-    async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None, live: bool | None) -> Page[Compute]: ...
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        state: ComputeState | None,
+        owned: bool | None,
+        live: bool | None,
+        cause: DeletionCause | None = None,
+    ) -> Page[Compute]: ...
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute: ...
 
@@ -148,6 +159,24 @@ class Events(Protocol):
         """Yields (sequence, event_type, payload) after last_event_id, in runs of what was ready together."""
         ...
 
+    async def log(
+        self,
+        cursor: str | None,
+        limit: int,
+        *,
+        compute: str | None = None,
+        task: str | None = None,
+        node: str | None = None,
+        types: tuple[str, ...] | None = None,
+        contains: tuple[str, ...] | None = None,
+    ) -> Page[LogEntry]:
+        """The recorded events, newest first; ``cursor`` is the sequence the previous page ended on.
+
+        ``contains`` matches the line a node printed, any one of the strings, so a
+        search is a query over the whole log rather than a filter over the page in hand.
+        """
+        ...
+
 
 @runtime_checkable
 class Providers(Protocol):
@@ -173,12 +202,20 @@ class Offers(Protocol):
         min_vram: float | None,
         max_price: float | None,
         refresh: bool,
+        *,
+        spot: bool | None = None,
+        sort: OfferSort = "price",
+        limit: int | None = None,
     ) -> Page[Offer]:
         """Serve from cache, refreshing whatever the provider's TTL says is stale.
 
         A refresh that fails leaves the stale rows in place and records the error
         on the provider: a provider that is down should degrade the answer, not
         erase the catalog.
+
+        A reader after the cheapest few asks for a ``limit`` — nobody reads the four
+        thousandth cheapest machine — and ``total`` says how many the filters matched.
+        Unset is the whole catalog, which is what the planner and the CLI want.
         """
         ...
 

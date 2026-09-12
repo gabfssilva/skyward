@@ -9,7 +9,10 @@ import pytest
 
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import BACKLOG, PAGE, EventStore, Live, Record
-from skyward.shared.events import ConsoleEvent, MetricEvent
+from skyward.server.persistence.store import now
+from skyward.server.persistence.tables import EventRow
+from skyward.shared.events import ConsoleEvent, LogEntry, MetricEvent, NodeEvent
+from skyward.shared.schemas import Page
 
 pytestmark = pytest.mark.local
 
@@ -18,12 +21,22 @@ WAIT = 5.0
 type Runs = AsyncIterator[tuple[Record, ...]]
 
 
-def line(compute: str, content: str) -> ConsoleEvent:
-    return ConsoleEvent(compute=compute, node="n0", content=content)
+def line(compute: str, content: str, node: str = "n0") -> ConsoleEvent:
+    return ConsoleEvent(compute=compute, node=node, content=content)
 
 
 def content(payload: bytes) -> str:
     return msgspec.json.decode(payload, type=ConsoleEvent).content
+
+
+async def outgrown(compute: str) -> None:
+    """A row as an older release wrote it: the payload names neither its own type nor the state it moved to."""
+    await EventRow.raw(
+        "INSERT INTO events (type, compute_id, payload, created_at) VALUES ('node.requested', {}, {}, {})",
+        compute,
+        f'{{"compute":"{compute}","node":"n0"}}',
+        now(),
+    ).run()
 
 
 async def run(stream: Runs) -> tuple[Record, ...]:
@@ -210,3 +223,93 @@ def describe_a_feed_hung_up_on() -> None:
             await stream.aclose()
 
         assert [sequence for sequence, _, _ in held] == list(range(1, BACKLOG + 1))
+
+
+def describe_reading_the_log() -> None:
+    async def it_reads_the_newest_first_a_page_at_a_time(events: EventStore) -> None:
+        await events.record_all([line("cmp_a", f"line {index}") for index in range(5)])
+
+        first = await events.log(None, 2)
+        second = await events.log(first.next_cursor, 2)
+        last = await events.log(second.next_cursor, 2)
+
+        assert [*said(first), *said(second), *said(last)] == ["line 4", "line 3", "line 2", "line 1", "line 0"]
+        assert last.next_cursor is None
+
+    async def it_reads_one_computes_events_among_the_others(events: EventStore) -> None:
+        await events.record_all([line("cmp_a", "a0"), line("cmp_b", "b0"), line("cmp_a", "a1")])
+
+        page = await events.log(None, 10, compute="cmp_a")
+
+        assert said(page) == ["a1", "a0"]
+
+    async def it_reads_only_the_frames_asked_for(events: EventStore) -> None:
+        await events.record(NodeEvent(compute="cmp_a", node="n0", state="ready"))
+        await events.record(line("cmp_a", "printed"))
+
+        page = await events.log(None, 10, types=("node.ready",))
+
+        assert [entry.type for entry in page.items] == ["node.ready"]
+
+    async def it_reads_one_nodes_lines_among_the_others(events: EventStore) -> None:
+        await events.record_all([line("cmp_a", "from zero", "n0"), line("cmp_a", "from one", "n1")])
+
+        page = await events.log(None, 10, node="n1")
+
+        assert said(page) == ["from one"]
+
+    async def it_reads_only_the_lines_that_said_one_of_the_words(events: EventStore) -> None:
+        await events.record_all([line("cmp_a", "CUDA out of memory"), line("cmp_a", "epoch 3 done"), line("cmp_a", "Traceback (most recent call last)")])
+
+        page = await events.log(None, 10, contains=("traceback", "out of memory"))
+
+        assert said(page) == ["Traceback (most recent call last)", "CUDA out of memory"]
+
+    async def a_search_answers_with_lines_rather_than_with_payloads(events: EventStore) -> None:
+        await events.record(NodeEvent(compute="cmp_a", node="n0", state="ready"))
+
+        page = await events.log(None, 10, contains=("ready",))
+
+        assert page.items == (), "the word is in the row, not in anything anybody printed"
+
+    async def a_row_this_daemon_cannot_read_is_skipped_rather_than_failing_the_page(events: EventStore) -> None:
+        await events.record(line("cmp_a", "before"))
+        await outgrown("cmp_a")
+        await events.record(line("cmp_a", "after"))
+
+        page = await events.log(None, 10)
+
+        assert said(page) == ["after", "before"]
+
+    async def a_page_of_rows_it_cannot_read_still_leads_to_the_next_one(events: EventStore) -> None:
+        await events.record(line("cmp_a", "oldest"))
+        await outgrown("cmp_a")
+        await outgrown("cmp_a")
+        await events.record(line("cmp_a", "newest"))
+
+        first = await events.log(None, 3)
+        second = await events.log(first.next_cursor, 3)
+
+        assert said(first) == ["newest"] and first.next_cursor is not None, "the cursor is a row, not an entry"
+        assert said(second) == ["oldest"]
+
+    async def it_says_when_each_event_was_recorded(events: EventStore) -> None:
+        before = now()
+        await events.record(line("cmp_a", "printed"))
+
+        (entry,) = (await events.log(None, 10)).items
+
+        assert before <= entry.at <= now()
+
+    async def a_page_is_followed_by_the_stream_from_its_newest_entry(events: EventStore) -> None:
+        await events.record(line("cmp_a", "before the page"))
+        (newest,) = (await events.log(None, 1)).items
+        await events.record(line("cmp_a", "after the page"))
+
+        (record,) = await take(events.stream(str(newest.sequence), None, None, None), 1)
+
+        assert content(record[2]) == "after the page"
+
+
+def said(page: Page[LogEntry]) -> list[str]:
+    return [entry.data.content for entry in page.items if isinstance(entry.data, ConsoleEvent)]

@@ -29,9 +29,13 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 | `status_observed_generation` | reconciler | which one has actually been applied |
 | `status_state` | `ComputeStore.apply` | `requested`, `provisioning`, `ready`, `degraded`, `deleting`, `deleted` — moved only by an event, recorded in the same transaction |
 | `status_nodes_ready` / `status_nodes_total` | reconciler | how many machines answer, of how many that exist |
+| `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` — or `abandoned`, the reconciler's when nobody renewed the lease and `delete_on_exit` was set |
+| `deleted_at` | `ComputeStore.apply` | when the state reached `deleted`, written once |
 | `revision` | either | the optimistic-concurrency token behind `If-Match` |
 
 `generation` against `status_observed_generation` is the progress bar. It is why there is no operation resource to poll — the gap between the two *is* the pending work.
+
+A deleted compute is served with how it ended: those two columns, and a bill and a count of calls derived from its node and task rows each time it is read. Nothing sums them on the way to `deleted`, the same way nothing accumulates a live compute's cost.
 
 ## What only exists because the daemon can die
 
@@ -60,7 +64,7 @@ That leaves exactly one gap, and it is the one every payment gateway has — a c
 | `functions` | what a blob of code is | so a task can name it without carrying it |
 | `tasks` | one call, one terminal outcome | `state` derived from executions |
 | `executions` | one physical attempt | `ordinal` counts attempts, `rank` says which node |
-| `events` | the log the SSE stream replays | `sequence` is monotonic and gapless |
+| `events` | the log the SSE stream replays | `sequence` is monotonic and gapless; `compute_id`, `node_id` and `task_id` are what a reader narrows by |
 | `idempotency` | what a key has already been used to do | key plus request fingerprint |
 
 A few of these carry decisions worth stating outright.
@@ -71,7 +75,7 @@ A few of these carry decisions worth stating outright.
 
 **`blobs` deduplicates by construction.** The same argument broadcast to a hundred nodes is stored once, and a result read twice is not consumed the first time.
 
-**`events` is never garbage-collected.** `sequence` is the primary key because it must be monotonic and gapless in commit order, and nothing prunes it. A cursor that was once valid stays valid — which is what lets a client reconnect and print a bootstrap it was not around to watch.
+**`events` is never garbage-collected.** `sequence` is the primary key because it must be monotonic and gapless in commit order, and nothing prunes it. A cursor that was once valid stays valid — which is what lets a client reconnect and print a bootstrap it was not around to watch. It is also read the other way — newest first, a page at a time — which is how a client asks for the last lines of a compute instead of replaying a log that holds every line every node ever printed. That read narrows on the indexed columns, and a search over what was printed matches the line rather than the row that carried it.
 
 **`idempotency` stores a fingerprint, not just a key.** That is what distinguishes a replay from a collision: the same key with the same request is the caller retrying, and gets the original resource; the same key with a different request is a bug, and gets a `409`.
 

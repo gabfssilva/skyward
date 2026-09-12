@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from functools import reduce
+from operator import or_
 
-from msgspec import Struct
+from msgspec import DecodeError, Struct
+from piccolo.columns.combination import WhereRaw
 
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
 from skyward.shared import codec
-from skyward.shared.events import ConsoleEvent, Event, TaskEvent, name
+from skyward.shared.events import ConsoleEvent, Event, LogEntry, NodeEvent, PhaseEvent, TaskEvent, name
+from skyward.shared.observability import logger
+from skyward.shared.schemas import Page
+
+logger = logger.bind(component="events")
 
 type Record = tuple[int, str, bytes]
 type Filter = tuple[str | None, str | None, tuple[str, ...] | None]
@@ -17,6 +24,13 @@ BACKLOG = 1024
 
 PAGE = 500
 """Rows one replay query reads: a long backlog is paged, not loaded whole."""
+
+PRINTED = "json_extract(payload, '$.content') LIKE {}"
+"""What a search over the log matches: the line a node printed, not the row carrying it.
+
+A payload is JSON and its field names travel inside it, so a ``LIKE`` over the
+whole of it would answer every search for ``node`` or ``compute`` with the log.
+"""
 
 
 class Live(Struct, frozen=True):
@@ -93,7 +107,8 @@ class EventStore:
         replay will never repeat, and a cursor past it would skip what did happen.
 
         The frame name and the filter columns are the event's own: every event names
-        its compute, and the ones about a task's execution or a task name that too.
+        its compute, and the ones that came off a node, or belong to a task's
+        execution, name that too.
         """
         row, frame, payload = await _row(event)
         await row.save().run()
@@ -148,6 +163,65 @@ class EventStore:
                     yield tuple(run)
         finally:
             self._feeds.pop(feed, None)
+
+    async def log(
+        self,
+        cursor: str | None,
+        limit: int,
+        *,
+        compute: str | None = None,
+        task: str | None = None,
+        node: str | None = None,
+        types: tuple[str, ...] | None = None,
+        contains: tuple[str, ...] | None = None,
+    ) -> Page[LogEntry]:
+        """The recorded events, newest first, a page at a time.
+
+        The other end of the log from :meth:`stream`. A subscriber catches up forward from
+        a cursor, which is right for a feed and wrong for a reader after the last lines of
+        every compute: going forward, those are the last rows of a log that holds every
+        line ever printed. ``cursor`` is the sequence the previous page ended on.
+
+        Every filter is the table's, because a page whose reader throws half of it away is
+        a page of somebody else's lines: ``node`` scopes it to one machine's output, and
+        ``contains`` keeps the entries whose printed line holds any one of the strings —
+        which is what a search over a hundred thousand lines has to be to not read them all.
+
+        A row written under a vocabulary this daemon no longer has is skipped rather than
+        failing the page: nothing here is garbage-collected, so the table holds payloads
+        from every release the file has lived through, and one of them from before an event
+        said its own name is not a reason a reader cannot see the rest. The cursor comes
+        off the rows read rather than the entries returned, so paging carries on across
+        them instead of stopping at the first.
+        """
+        query = EventRow.select(EventRow.sequence, EventRow.type, EventRow.payload, EventRow.created_at)
+
+        if cursor:
+            query = query.where(EventRow.sequence < int(cursor))
+        if compute:
+            query = query.where(EventRow.compute_id == compute)
+        if task:
+            query = query.where(EventRow.task_id == task)
+        if node:
+            query = query.where(EventRow.node_id == node)
+        if types:
+            query = query.where(EventRow.type.is_in(list(types)))
+        if contains:
+            query = query.where(reduce(or_, (WhereRaw(PRINTED, f"%{text}%") for text in contains)))
+
+        rows = await query.order_by(EventRow.sequence, ascending=False).limit(limit)
+        decoder = codec.json(Event)
+        items: list[LogEntry] = []
+
+        for row in rows:
+            try:
+                data = await decoder.decode(row["payload"].encode())
+            except DecodeError:
+                logger.debug("event {} was written under a vocabulary this daemon does not have", row["sequence"])
+                continue
+            items.append(LogEntry(sequence=row["sequence"], type=row["type"], at=row["created_at"], data=data))
+
+        return Page(items=tuple(items), next_cursor=str(rows[-1]["sequence"]) if len(rows) == limit else None)
 
     async def _replay(self, after: int, compute: str | None, task: str | None, types: tuple[str, ...] | None) -> AsyncIterator[tuple[Record, ...]]:
         while True:
@@ -207,6 +281,7 @@ async def _row(event: Event) -> tuple[EventRow, str, bytes]:
     row = EventRow(
         type=frame,
         compute_id=event.compute,
+        node_id=_node(event),
         task_id=_task(event),
         payload=payload.decode(),
         created_at=now(),
@@ -218,5 +293,13 @@ def _task(event: Event) -> str | None:
     match event:
         case TaskEvent(task=task) | ConsoleEvent(task=task):
             return task
+        case _:
+            return None
+
+
+def _node(event: Event) -> str | None:
+    match event:
+        case ConsoleEvent(node=node) | NodeEvent(node=node) | PhaseEvent(node=node):
+            return node
         case _:
             return None

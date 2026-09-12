@@ -1,94 +1,147 @@
 import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
-import { useStore, computeById, isLive } from '../../state/store'
+import type { Compute, Node } from '../../api/client'
+import { useStore, computeById, isLive, spentOf } from '../../state/store'
 import { valuesFor } from '../../state/nodes'
-import { accrued, dur, gpusOf, median, money, ms, nodeLive, rateOf, readyOf, targetOf } from '../../state/model'
+import { dur, median, money, nodeLive, ranOf, rateOf, readyOf, targetOf } from '../../state/model'
 import { Icon } from '../../ui/icons'
-import { Pill } from '../../ui/primitives'
 
 const NONE: never[] = []
 
-const Meter = ({ value, label, unit }: { value: ReactNode; label: string; unit?: string }) => (
-  <div className="gauge-r">
-    <b>
-      {value}
-      {unit ? <small>{unit}</small> : null}
-    </b>
-    <span>{label}</span>
-  </div>
-)
+/** One figure of the compact rail: a bold value and what it is. */
+export function Stat({ value, label, unit }: { value: ReactNode; label: string; unit?: string }) {
+  return (
+    <span className="stat">
+      <b>
+        {value}
+        {unit ? <small>{unit}</small> : null}
+      </b>
+      <span>{label}</span>
+    </span>
+  )
+}
 
-export function Rail({ computeId }: { computeId?: string }) {
-  const params = useParams()
-  const id = computeId ?? params.id ?? ''
-  const navigate = useNavigate()
-  const c = useStore((s) => computeById(s, id))
-  const live = useStore((s) => isLive(s, id))
-  const nodes = useStore((s) => s.nodes[id]) ?? NONE
+/** The compute's stats, the way the node and task rails carry them. */
+export function ComputeStats({ c, nodes, live }: { c: Compute; nodes: readonly Node[]; live: boolean }) {
   const metrics = useStore((s) => s.metrics)
-  const openSheet = useStore((s) => s.openSheet)
-  const closeSheet = useStore((s) => s.closeSheet)
-  const setUi = useStore((s) => s.setUi)
-  if (!c) return null
-
-  const gpu = valuesFor(id, nodes, metrics, 'gpu')
-
-  const remove = async () => {
-    await api.deleteCompute(id)
-    closeSheet()
-    navigate('/computes')
+  const spent = useStore((s) => spentOf(s, c))
+  if (!live) {
+    const cost = c.ended?.cost ?? 0
+    const ran = ranOf(c)
+    return (
+      <>
+        <Stat value={cost ? money(cost, cost < 10 ? 2 : 0) : '—'} label="spent" />
+        <Stat value={ran < 60e3 ? '—' : dur(ran)} label="ran" />
+        <Stat value={nodes.length || targetOf(c)} label="nodes" />
+        <Stat value={c.ended?.calls || '—'} label="calls" />
+      </>
+    )
   }
-
+  const gpu = valuesFor(c.id, nodes, metrics, 'gpu')
   return (
     <>
-      <div className="gauge-r">
-        <b style={{ fontSize: 28 }}>{c.name ?? c.id}</b>
-        <span>
-          <Pill state={c.status.state} /> · gen {c.generation} · {c.id}
-        </span>
-      </div>
-      <Meter value={money(rateOf(nodes), 2)} label="per hour" unit="/h" />
-      <Meter
+      <Stat value={money(rateOf(nodes), 2)} label="per hour" unit="/h" />
+      <Stat
         value={
           <>
             {readyOf(nodes).length}
             <small>/{targetOf(c)}</small>
           </>
         }
-        label="nodes ready"
+        label="ready"
       />
-      <Meter value={Math.round(median(gpu) || 0)} label="median GPU" unit="%" />
-      <Meter value={gpusOf(nodes)} label="GPUs attached" />
-      <Meter value={money(accrued(c, nodes), 0)} label={`spent in ${dur(Date.now() - ms(c.created_at))}`} />
-      {live ? (
-        <div className="spacer row" style={{ gap: 6, position: 'relative' }}>
-          <button className="btn" onClick={() => openSheet({ kind: 'scale', computeId: id })}>
-            <Icon name="scale" />
-            Scale
-          </button>
-          <button className="btn" onClick={() => setUi({ dock: 'shell', dockMin: false })}>
-            <Icon name="shell" />
-            Shell
-          </button>
-          <button
-            className="btn danger"
-            onClick={() =>
-              openSheet({
-                kind: 'confirm',
-                title: `Delete ${c.name ?? c.id}?`,
-                body: `${nodes.filter(nodeLive).length} machines are terminated at the provider.`,
-                confirm: 'Delete',
-                danger: true,
-                onConfirm: () => void remove(),
-              })
-            }
-          >
-            <Icon name="trash" />
-            Delete
-          </button>
-        </div>
-      ) : null}
+      <Stat value={Math.round(median(gpu) || 0)} label="median GPU" unit="%" />
+      <Stat value={spent === undefined ? '—' : money(spent, spent < 10 ? 2 : 0)} label="spent" />
+    </>
+  )
+}
+
+/** The actions on a compute: Logs, Scale, Shell and Delete while it runs, Events once it is gone. */
+export function ComputeActions({ c, nodes, live, rank = 0 }: { c: Compute; nodes: readonly Node[]; live: boolean; rank?: number }) {
+  const navigate = useNavigate()
+  const act = useStore((s) => s.act)
+  const setUi = useStore((s) => s.setUi)
+  const openSheet = useStore((s) => s.openSheet)
+  const closeSheet = useStore((s) => s.closeSheet)
+  const name = c.name ?? c.id
+
+  const toActivity = (kind: 'logs' | 'events') => {
+    setUi({ act: { ...act, kind, compute: c.id, rank: 'all' } })
+    navigate('/activity')
+  }
+  const remove = async () => {
+    await api.deleteCompute(c.id)
+    closeSheet()
+    navigate('/')
+  }
+
+  if (!live)
+    return (
+      <div className="spacer row" style={{ gap: 6 }}>
+        <button className="btn sm" onClick={() => toActivity('events')}>
+          <Icon name="events" />
+          Events
+        </button>
+      </div>
+    )
+  return (
+    <div className="spacer row" style={{ gap: 6, position: 'relative' }}>
+      <button className="btn sm" onClick={() => toActivity('logs')}>
+        <Icon name="logs" />
+        Logs
+      </button>
+      <button className="btn sm" onClick={() => openSheet({ kind: 'scale', computeId: c.id })}>
+        <Icon name="scale" />
+        Scale
+      </button>
+      <button
+        className="btn sm"
+        onClick={() => {
+          setUi({ shell: true })
+          navigate(`/computes/${c.id}/nodes/${rank}`)
+        }}
+      >
+        <Icon name="shell" />
+        Shell
+      </button>
+      <button
+        className="btn sm danger"
+        onClick={() =>
+          openSheet({
+            kind: 'confirm',
+            title: `Delete ${name}?`,
+            body: `${nodes.filter(nodeLive).length} machines are terminated at the provider.`,
+            confirm: 'Delete',
+            danger: true,
+            onConfirm: () => void remove(),
+          })
+        }
+      >
+        <Icon name="trash" />
+        Delete
+      </button>
+    </div>
+  )
+}
+
+/** The compute page's rail: a way back, and the actions. */
+export function Rail() {
+  const { id = '' } = useParams()
+  const navigate = useNavigate()
+  const c = useStore((s) => computeById(s, id))
+  const live = useStore((s) => isLive(s, id))
+  const nodes = useStore((s) => s.nodes[id]) ?? NONE
+  if (!c) return null
+  return (
+    <>
+      <div className="crumb">
+        <button aria-label="Computes" onClick={() => navigate('/')}>
+          <Icon name="fleet" />
+          Computes
+        </button>
+      </div>
+      <ComputeActions c={c} nodes={nodes} live={live} />
     </>
   )
 }

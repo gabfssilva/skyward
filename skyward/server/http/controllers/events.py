@@ -8,7 +8,8 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
-from skyward.shared.events import Event
+from skyward.shared.events import Event, LogEntry
+from skyward.shared.schemas import Page
 
 MESSAGE = b"id: %d\r\nevent: %s\r\ndata: %s\r\n\r\n"
 """One Server-Sent Event, byte for byte as litestar's ``ServerSentEvent`` frames it.
@@ -78,4 +79,40 @@ class EventController(Controller):
             messages(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    @get(
+        "/log",
+        summary="Read the event log",
+        description=(
+            "The recorded events, newest first, a page at a time: the last lines of every compute without replaying "
+            "the log from its first. `types` filters on the frame name, as the stream does, and `cursor` is the "
+            "`sequence` the previous page ended on.\n\n"
+            "An entry's `sequence` is the id the stream gives the same event, so a page can be followed with the "
+            "stream from its newest entry and nothing falls between the two. `compute.cost`, `node.metrics` and "
+            "`node.progress` are published rather than recorded, and are never in the log.\n\n"
+            "Every filter narrows the query rather than the page: `compute`, `node` and `task` scope it, and "
+            "`contains` keeps the entries whose printed line holds any one of the strings, case-insensitively. A "
+            "reader after one node's output, or after every line that said `Traceback`, asks for that."
+        ),
+    )
+    async def log(
+        self,
+        events: ports.Events,
+        cursor: str | None = None,
+        limit: int = Parameter(default=200, ge=1, le=1000),
+        compute: str | None = None,
+        task: str | None = None,
+        node: str | None = None,
+        types: list[str] | None = None,
+        contains: list[str] | None = Parameter(default=None, description="Keeps the entries whose printed line holds any one of these."),
+    ) -> Page[LogEntry]:
+        return await events.log(
+            cursor,
+            limit,
+            compute=compute,
+            task=task,
+            node=node,
+            types=tuple(types) if types else None,
+            contains=tuple(contains) if contains else None,
         )

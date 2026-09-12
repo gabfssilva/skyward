@@ -1,15 +1,16 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
-import type { Node, Task } from '../../api/client'
-import { accrued, ago, clock, dur, gpusOf, median, money, ms, nodeLive, rateOf, readyOf, targetOf, taskOf, execsOf } from '../../state/model'
+import type { Compute, Task } from '../../api/client'
+import { ago, clock, dur, ms, taskOf, execsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
-import { bandOf, computeById, nodesOf, useStore, valuesOf } from '../../state/store'
+import { bandOf, computeById, isLive, nodesOf, useStore } from '../../state/store'
 import { Band } from '../../ui/charts'
 import { Comb } from '../../ui/comb'
 import { combNodes } from '../../state/nodes'
 import { Icon } from '../../ui/icons'
 import { Fn, Pill } from '../../ui/primitives'
+import { ComputeActions, ComputeStats } from '../compute/Rail'
 import { Stage as TasksStage } from './Stage'
 
 const attemptOf = (t: Task): number => t.executions.reduce((n, e) => Math.max(n, e.ordinal), 1)
@@ -17,22 +18,78 @@ const attemptOf = (t: Task): number => t.executions.reduce((n, e) => Math.max(n,
 const barFill = (e: ExecRow): string | undefined =>
   e.state === 'failed' ? 'var(--bad)' : e.state === 'started' ? 'var(--boot)' : undefined
 
-function useTask(id: string | undefined) {
+/** What the page is about, once both halves of it are in the store. */
+type Subject = { t: Task; computeId: string; c: Compute }
+
+const asking = new Map<string, Promise<void>>()
+
+/** what the daemon does not know: a task it never had, or a compute it no longer keeps */
+const missing = new Set<string>()
+
+/** Ask for one id once, however many of the page's parts want it. */
+const once = (id: string, work: () => Promise<void>): Promise<void> => {
+  const running = asking.get(id) ?? work().finally(() => asking.delete(id))
+  asking.set(id, running)
+  return running
+}
+
+/** File a task the page fetched where the store keeps tasks, its compute's list newest first. */
+function file(t: Task): void {
+  const { tasks, setEntities } = useStore.getState()
+  const known = tasks[t.compute_id] ?? []
+  if (known.some((x) => x.id === t.id)) return
+  setEntities({ tasks: { ...tasks, [t.compute_id]: [t, ...known].sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at)) } })
+}
+
+/**
+ * The task the page is about, and the compute it ran on.
+ *
+ * History is paged, so a link can name a task no page carried, and a task can name a
+ * compute nothing loaded. Each is asked for once — the task from the daemon, the compute
+ * through ``learn`` — and the compute is learnt before the task is filed, so the page is
+ * never handed a task whose compute is still on its way. ``looking`` says the daemon may
+ * yet answer, which is what tells a page filling in from one that never will.
+ */
+function useTask(id: string | undefined): { found: Subject | null; looking: boolean } {
   const tasks = useStore((s) => s.tasks)
-  return id ? taskOf(tasks, id) : null
+  const found = id ? taskOf(tasks, id) : null
+  const computeId = found?.computeId
+  const c = useStore((s) => (computeId ? computeById(s, computeId) : undefined))
+  const [, bump] = useState(0)
+  const have = found !== null
+  const named = c !== undefined
+
+  useEffect(() => {
+    if (!id || have || missing.has(id)) return
+    void once(id, async () => {
+      const t = await api.task(id).catch(() => null)
+      if (!t) return void missing.add(id)
+      await useStore.getState().learn([t.compute_id])
+      file(t)
+    }).then(() => bump((n) => n + 1))
+  }, [id, have])
+
+  useEffect(() => {
+    if (!computeId || named || missing.has(computeId)) return
+    void once(computeId, async () => {
+      await useStore.getState().learn([computeId])
+      if (!computeById(useStore.getState(), computeId)) missing.add(computeId)
+    }).then(() => bump((n) => n + 1))
+  }, [computeId, named])
+
+  const lost = !!id && (missing.has(id) || (computeId !== undefined && missing.has(computeId)))
+  return { found: found && c ? { ...found, c } : null, looking: !lost }
 }
 
 export function TaskStage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const found = useTask(id)
+  const { found, looking } = useTask(id)
   const state = useStore((s) => s)
   const sel = useStore((s) => s.sel)
   const pick = useStore((s) => s.pick)
-  if (!found) return <TasksStage />
-  const { t, computeId } = found
-  const c = computeById(state, computeId)
-  if (!c) return <TasksStage />
+  if (!found) return looking ? null : <TasksStage />
+  const { t, computeId, c } = found
   const nodes = nodesOf(state, computeId)
   const ex = execsOf(t, nodes)
   const ranks = new Set(ex.map((e) => e.rank))
@@ -149,14 +206,12 @@ export function TaskStage() {
 export function TaskInspector() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const found = useTask(id)
+  const { found } = useTask(id)
   const state = useStore((s) => s)
   const setUi = useStore((s) => s.setUi)
   const reloadCompute = useStore((s) => s.reloadCompute)
   if (!found) return null
-  const { t, computeId } = found
-  const c = computeById(state, computeId)
-  if (!c) return null
+  const { t, computeId, c } = found
   const nodes = nodesOf(state, computeId)
   const ex = execsOf(t, nodes)
   const worker = c.spec.worker
@@ -223,12 +278,14 @@ export function TaskInspector() {
           <button
             className="btn sm"
             onClick={() => {
-              setUi({ dock: 'logs', dockMin: false })
-              navigate(`/computes/${computeId}`)
+              const ranks = new Set(ex.map((e) => e.rank))
+              const rank = ranks.size === 1 ? [...ranks][0]! : 'all'
+              setUi({ act: { ...state.act, kind: 'logs', compute: computeId, rank } })
+              navigate('/activity')
             }}
           >
             <Icon name="logs" />
-            Logs
+            Logs in Activity
           </button>
         </div>
       </section>
@@ -242,86 +299,33 @@ export function TaskInspector() {
   )
 }
 
-/** The rail of a task: its compute, exactly as `renderRail` draws a compute. */
+/** The task page's compact rail: the crumb down to the function, then the compute's stats and actions, as on a node. */
 export function TaskRail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const found = useTask(id)
+  const { found } = useTask(id)
   const state = useStore((s) => s)
-  const openSheet = useStore((s) => s.openSheet)
-  const setUi = useStore((s) => s.setUi)
   if (!found) return null
-  const c = computeById(state, found.computeId)
-  if (!c) return null
-  const nodes: Node[] = nodesOf(state, c.id)
-  const v = valuesOf(state, c.id, 'gpu')
-  const meters: readonly (readonly [ReactNode, string])[] = [
-    [
-      <>
-        {money(rateOf(nodes), 2)}
-        <small>/h</small>
-      </>,
-      'per hour',
-    ],
-    [
-      <>
-        {readyOf(nodes).length}
-        <small>/{targetOf(c)}</small>
-      </>,
-      'nodes ready',
-    ],
-    [
-      <>
-        {Math.round(median(v) || 0)}
-        <small>%</small>
-      </>,
-      'median GPU',
-    ],
-    [<>{gpusOf(nodes)}</>, 'GPUs attached'],
-    [<>{money(accrued(c, nodes), 0)}</>, `spent in ${dur(Date.now() - ms(c.created_at))}`],
-  ]
+  const { t, c } = found
+  const nodes = nodesOf(state, c.id)
+  const live = isLive(state, c.id)
   return (
     <>
-      <div className="gauge-r">
-        <b style={{ fontSize: 28 }}>{c.name}</b>
-        <span>
-          <Pill state={c.status.state} /> · gen {c.generation} · {c.id}
-        </span>
+      <div className="crumb">
+        <button aria-label="Computes" onClick={() => navigate('/')}>
+          <Icon name="fleet" />
+        </button>
+        <span className="sep">/</span>
+        <button onClick={() => navigate(`/computes/${c.id}`)}>
+          <b>{c.name ?? c.id}</b>
+        </button>
+        <Pill state={c.status.state} />
+        <span className="sep">/</span>
+        <Fn sha={t.function} />
+        <Pill state={t.state} />
       </div>
-      {meters.map(([value, label]) => (
-        <div className="gauge-r" key={label}>
-          <b>{value}</b>
-          <span>{label}</span>
-        </div>
-      ))}
-      <div className="spacer row" style={{ gap: 6, position: 'relative' }}>
-        <button className="btn" onClick={() => openSheet({ kind: 'scale', computeId: c.id })}>
-          <Icon name="scale" />
-          Scale
-        </button>
-        <button className="btn" onClick={() => setUi({ dock: 'shell', dockMin: false })}>
-          <Icon name="shell" />
-          Shell
-        </button>
-        <button
-          className="btn danger"
-          onClick={() =>
-            openSheet({
-              kind: 'confirm',
-              title: `Delete ${c.name}?`,
-              body: `${nodes.filter(nodeLive).length} machines are terminated at the provider.`,
-              confirm: 'Delete',
-              danger: true,
-              onConfirm: () => {
-                void api.deleteCompute(c.id).then(() => navigate('/computes'))
-              },
-            })
-          }
-        >
-          <Icon name="trash" />
-          Delete
-        </button>
-      </div>
+      <ComputeStats c={c} nodes={nodes} live={live} />
+      <ComputeActions c={c} nodes={nodes} live={live} />
     </>
   )
 }

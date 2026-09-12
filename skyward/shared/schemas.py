@@ -73,12 +73,28 @@ type Market = Literal["spot", "on_demand"]
 An allocation is a preference and may not be satisfiable; a market is a decision,
 and it is what the machines are actually billed under.
 """
+type OfferSort = Literal["price", "vram", "available"]
+"""How a page of the catalog is ordered.
+
+``price`` is per accelerator, which is the only way offers selling different
+numbers of them compare, and a machine selling none is compared on its price
+alone. The other two are what the market is read for when price is not the
+constraint, and both run highest first.
+"""
+
 type BillingUnit = Literal["second", "minute", "hour"]
 """The granularity a provider bills at — prices are always per hour, this is the rounding.
 
 A machine kept for 61 seconds costs 2 minutes on a per-minute provider and a full
 hour on a per-hour one. Stamped by each adapter on its offers, because it is a fact
 about the provider's billing, not a preference.
+"""
+type DeletionCause = Literal["requested", "abandoned"]
+"""Why a compute was deleted.
+
+``requested`` is a ``DELETE`` somebody sent — a ``with`` block exiting, ``sky compute
+delete``, a button. ``abandoned`` is the reconciler's: nobody renewed the lease, and
+``delete_on_exit`` said that a compute nobody holds is torn down.
 """
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process", "loky"]
@@ -498,13 +514,30 @@ class Lease(Struct, frozen=True):
     expires_at: datetime | None = None
 
 
+class Ending(Struct, frozen=True):
+    """How a compute ended: when its last machine was gone, why, and what the run came to.
+
+    Only a deleted compute has one. ``cost`` and the counts are derived from the node
+    and task rows each time the compute is read, the way the meter derives a live
+    compute's cost; ``failed`` counts the calls that ended in an error, failed or
+    timed out.
+    """
+
+    at: datetime
+    cause: DeletionCause
+    cost: float
+    calls: int
+    failed: int
+
+
 class Compute(Struct, frozen=True):
     """A set of machines held under one intention, as the API serves it.
 
     ``spec`` is what was asked for and ``status`` is what was observed, written by
     different actors and kept in one resource so that reading both is one call.
     ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
-    ``generation`` counts definitions, not writes.
+    ``generation`` counts definitions, not writes. ``offer`` is what the spec
+    resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
     """
 
     id: str
@@ -515,6 +548,8 @@ class Compute(Struct, frozen=True):
     status: ComputeStatus
     lease: Lease
     created_at: datetime
+    offer: "Offer | None" = None
+    ended: Ending | None = None
 
 
 class LeaseClaim(Struct, frozen=True):
@@ -676,10 +711,16 @@ class Page[T](Struct, frozen=True):
 
     ``next_cursor`` is null on the last page. Cursors are opaque and are not
     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+
+    ``total`` is how many rows the filters match, counted for the listings where
+    counting is one more read of an index: fifty of fifty is a different answer
+    from fifty of nine thousand, and a reader cannot tell them apart from a page.
+    It is null where nothing counted.
     """
 
     items: tuple[T, ...]
     next_cursor: str | None = None
+    total: int | None = None
 
 
 class ProviderKind(Struct, frozen=True):

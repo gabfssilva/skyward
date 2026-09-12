@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from skyward.shared.errors import NotFoundError
+from skyward.shared.events import ComputeProvisioning, LogEntry
 from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
@@ -11,6 +12,7 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     ComputeState,
     ComputeStatus,
+    DeletionCause,
     DependencyState,
     Execution,
     ExecutionCreate,
@@ -23,6 +25,7 @@ from skyward.shared.schemas import (
     Node,
     NodeBounds,
     Offer,
+    OfferSort,
     Page,
     Provider,
     ProviderCreate,
@@ -158,8 +161,16 @@ class MockComputes:
     async def get(self, ref: str) -> Compute:
         return COMPUTE
 
-    async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None, live: bool | None) -> Page[Compute]:
-        return Page(items=(COMPUTE,))
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        state: ComputeState | None,
+        owned: bool | None,
+        live: bool | None,
+        cause: DeletionCause | None = None,
+    ) -> Page[Compute]:
+        return Page(items=(COMPUTE,), total=1)
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute:
         return COMPUTE
@@ -232,7 +243,7 @@ class MockTasks:
         return TASK
 
     async def list(self, cursor: str | None, limit: int, compute: str | None, state: TaskState | None, correlation_id: str | None) -> Page[Task]:
-        return Page(items=(TASK,))
+        return Page(items=(TASK,), total=1)
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
         return TASK
@@ -271,6 +282,20 @@ class MockEvents:
             (3, "task.succeeded", b'{"task":"tsk_9d21f0"}'),
         )
 
+    async def log(
+        self,
+        cursor: str | None,
+        limit: int,
+        *,
+        compute: str | None = None,
+        task: str | None = None,
+        node: str | None = None,
+        types: tuple[str, ...] | None = None,
+        contains: tuple[str, ...] | None = None,
+    ) -> Page[LogEntry]:
+        provisioning = ComputeProvisioning(compute=COMPUTE.id, nodes_ready=0, nodes_total=4, generation=COMPUTE.generation)
+        return Page(items=(LogEntry(sequence=1, type="compute.provisioning", at=COMPUTE.created_at, data=provisioning),))
+
 
 class MockProviders:
     async def create(self, body: ProviderCreate) -> Provider:
@@ -299,8 +324,12 @@ class MockOffers:
         min_vram: float | None,
         max_price: float | None,
         refresh: bool,
+        *,
+        spot: bool | None = None,
+        sort: OfferSort = "price",
+        limit: int | None = None,
     ) -> Page[Offer]:
-        return Page(items=(OFFER,))
+        return Page(items=(OFFER,), total=1)
 
 
 class MockReconciler:

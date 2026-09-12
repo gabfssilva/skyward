@@ -1,58 +1,71 @@
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../../state/store'
-import { dur, median, money, ms, rateOf, specLine } from '../../state/model'
+import { rateOf } from '../../state/model'
+import { combNodes } from '../../state/nodes'
 import { Icon } from '../../ui/icons'
-import { Legend } from '../../ui/primitives'
-import { LiveComb } from './LiveComb'
-import { valuesFor } from '../../state/nodes'
+import { Hives, type HiveItem } from '../../ui/comb'
+import { History } from './History'
 
+/** The home: every live compute as one hive, then what has ended. */
 export function Stage() {
   const navigate = useNavigate()
   const computes = useStore((s) => s.computes)
   const nodesByCompute = useStore((s) => s.nodes)
+  const tasks = useStore((s) => s.tasks)
   const metrics = useStore((s) => s.metrics)
+  const progress = useStore((s) => s.progress)
   const openSheet = useStore((s) => s.openSheet)
+  const pick = useStore((s) => s.pick)
+  /* the daemon's count keeps the card and its filters up when a cause narrows the first page to nothing */
+  const ended = useStore((s) => s.history.length > 0 || !!s.histPages?.total)
 
   if (!computes.length)
     return (
-      <section className="card">
-        <div className="empty">
-          <Icon name="fleet" />
-          <b>Nothing is running</b>
-          <span>A compute is a set of machines the daemon keeps for you. Buy the first one from the market.</span>
-          <button className="btn primary" style={{ marginTop: 8 }} onClick={() => openSheet({ kind: 'wizard' })}>
-            <Icon name="plus" />
-            New compute
-          </button>
-        </div>
-      </section>
+      <>
+        <section className="card">
+          <div className="empty">
+            <Icon name="fleet" />
+            <b>Nothing is running</b>
+            <span>A compute is a set of machines the daemon keeps for you. Buy the first one from the market.</span>
+            <button className="btn primary" style={{ marginTop: 8 }} onClick={() => openSheet({ kind: 'wizard' })}>
+              <Icon name="plus" />
+              New compute
+            </button>
+          </div>
+        </section>
+        {ended ? <History /> : null}
+      </>
     )
+
+  const items: HiveItem[] = computes.map((c) => {
+    const nodes = nodesByCompute[c.id] ?? []
+    const busy: Record<number, number> = {}
+    for (const t of tasks[c.id] ?? [])
+      if (t.state === 'running') for (const e of t.executions) if (e.state === 'started') busy[e.rank] = (busy[e.rank] ?? 0) + 1
+    return {
+      id: c.id,
+      name: c.name ?? c.id,
+      state: c.status.state,
+      rate: rateOf(nodes),
+      slots: Math.max(1, c.spec.worker?.concurrency ?? 1),
+      nodes: combNodes(c.id, nodes, metrics, progress),
+      busy,
+    }
+  })
 
   return (
     <>
-      {computes.map((c) => {
-        const nodes = nodesByCompute[c.id] ?? []
-        return (
-          <section className="card" key={c.id}>
-            <div className="combhead">
-              <button className="row" style={{ gap: 8 }} onClick={() => navigate(`/computes/${c.id}`)}>
-                <i className={`dot ${c.status.state}`} />
-                <b>{c.name}</b>
-              </button>
-              <span className="sub">
-                {nodes.length} {nodes.length === 1 ? 'node' : 'nodes'} · {specLine(c, nodes)}
-              </span>
-              <span className="mono faint" style={{ marginLeft: 'auto' }}>
-                {money(rateOf(nodes))}/h · median GPU {Math.round(median(valuesFor(c.id, nodes, metrics, 'gpu')) || 0)}% · {dur(Date.now() - ms(c.created_at))}
-              </span>
-            </div>
-            <LiveComb compute={c} nodes={nodes} />
-            <div style={{ marginTop: 12 }}>
-              <Legend states={nodes.map((n) => n.state)} />
-            </div>
-          </section>
-        )
-      })}
+      <section className="card">
+        <Hives
+          items={items}
+          onPick={(computeId, rank) => {
+            pick({ computeId, rank })
+            navigate(`/computes/${computeId}`)
+          }}
+          onOpen={(computeId) => navigate(`/computes/${computeId}`)}
+        />
+      </section>
+      {ended ? <History /> : null}
     </>
   )
 }

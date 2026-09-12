@@ -12,6 +12,7 @@ type Item = { label: string; hint: string; run: () => void }
 export function Palette() {
   const navigate = useNavigate()
   const computes = useStore((s) => s.computes)
+  const history = useStore((s) => s.history)
   const tasks = useStore((s) => s.tasks)
   const functions = useStore((s) => s.functions)
   const setUi = useStore((s) => s.setUi)
@@ -31,6 +32,14 @@ export function Palette() {
       ...computes.map((c) => ({
         label: c.name ?? c.id,
         hint: `${nodesOf(state, c.id).length} nodes · ${money(rateOf(nodesOf(state, c.id)))}/h`,
+        run: () => {
+          closeSheet()
+          navigate(`/computes/${c.id}`)
+        },
+      })),
+      ...history.map((c) => ({
+        label: c.name ?? c.id,
+        hint: `compute · ${c.status.state}`,
         run: () => {
           closeSheet()
           navigate(`/computes/${c.id}`)
@@ -64,11 +73,11 @@ export function Palette() {
       ),
       ...computes.map((c) => ({
         label: `${c.name ?? c.id} · logs`,
-        hint: 'open the log dock',
+        hint: 'in Activity',
         run: () => {
           closeSheet()
-          setUi({ dock: 'logs', dockMin: false })
-          navigate(`/computes/${c.id}`)
+          setUi({ act: { ...state.act, kind: 'logs', compute: c.id, rank: 'all' } })
+          navigate('/activity')
         },
       })),
       ...computes.map((c) => ({
@@ -76,14 +85,14 @@ export function Palette() {
         hint: 'pty on rank 0',
         run: () => {
           closeSheet()
-          setUi({ dock: 'shell', dockMin: false, termNode: 0 })
-          navigate(`/computes/${c.id}`)
+          setUi({ shell: true })
+          navigate(`/computes/${c.id}/nodes/0`)
         },
       })),
     ]
     const needle = q.toLowerCase()
     return needle ? all.filter((x) => (x.label + x.hint).toLowerCase().includes(needle)) : all
-  }, [computes, tasks, functions, q, navigate, setUi, openSheet, closeSheet])
+  }, [computes, history, tasks, functions, q, navigate, setUi, openSheet, closeSheet])
 
   const idx = clamp(i, 0, Math.max(0, items.length - 1))
 

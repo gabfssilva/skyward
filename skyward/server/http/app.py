@@ -116,8 +116,8 @@ def services() -> Services:
     wake = Wakeup()
 
     events = EventStore()
-    computes = ComputeStore(events)
     nodes = NodeStore()
+    computes = ComputeStore(events, nodes)
     blobs = BlobStore()
     providers = ProviderStore()
     tasks = TaskStore(computes, nodes, blobs)

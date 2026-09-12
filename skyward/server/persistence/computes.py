@@ -8,12 +8,15 @@ import msgspec
 from msgspec import Struct, field
 from piccolo.columns import Column
 from piccolo.custom_types import Combinable
+from piccolo.query.functions.aggregate import Count
 
 from skyward.server.persistence.db import transaction
 from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import after, digest, ident, now, once, packed, unpacked
-from skyward.server.persistence.tables import ComputeRow, GenerationRow
+from skyward.server.persistence.tables import ComputeRow, GenerationRow, TaskRow
 from skyward.shared import lifecycle
+from skyward.shared.billing import accrued
 from skyward.shared.errors import ComputeNotResizableError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
 from skyward.shared.events import (
     ComputeBound,
@@ -35,6 +38,8 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     ComputeState,
     ComputeStatus,
+    DeletionCause,
+    Ending,
     Error,
     Generation,
     GenerationCreate,
@@ -74,10 +79,11 @@ STATUS: Mapping[str, Column] = {
 class Infrastructure(Struct, frozen=True):
     """Everything about a compute that is real, costs money, and is not in the spec.
 
-    None of it is in the API's ``Compute``, and all of it has to survive the
-    daemon: the provider account the machines were bought from, the offer they
-    were bought as, whatever the adapter needs to find them again, and the key
-    without which they are unreachable metal that keeps billing.
+    Only the offer is served with the API's ``Compute`` — the rest is bookkeeping
+    and secrets — and all of it has to survive the daemon: the provider account the
+    machines were bought from, the offer they were bought as, whatever the adapter
+    needs to find them again, and the key without which they are unreachable metal
+    that keeps billing.
     """
 
     provider_id: str | None = None
@@ -116,8 +122,9 @@ class ComputeStore:
     is the property a watcher of the stream is promised.
     """
 
-    def __init__(self, events: EventStore) -> None:
+    def __init__(self, events: EventStore, nodes: NodeStore) -> None:
         self._events = events
+        self._nodes = nodes
 
     async def apply(self, event: Event) -> bool:
         """Apply one event to the compute it names, and say whether its state moved.
@@ -137,6 +144,9 @@ class ComputeStore:
         (the provider refusing to release with the same words as last tick). What a
         repeat carries that is new — a count — is still written. A fact with
         something to say is recorded, and touches no state.
+
+        The move into ``deleted`` also writes when it happened. There is no way back
+        from ``deleted``, so the move happens once and no repeat rewrites the moment.
         """
         projection = await _projected(event)
         attempts = ATTEMPTS
@@ -155,8 +165,10 @@ class ComputeStore:
 
             async with transaction():
                 if moved or columns:
+                    ended = {ComputeRow.deleted_at: now()} if moved and state == "deleted" else {}
                     landed = await ComputeRow.update({
                         **columns,
+                        **ended,
                         ComputeRow.status_state: state or current,
                         ComputeRow.revision: row["revision"] + 1,
                     }).where((ComputeRow.id == row["id"]) & (ComputeRow.revision == row["revision"])).returning(ComputeRow.id).run()
@@ -204,33 +216,52 @@ class ComputeStore:
         return await self.get(compute_id), created
 
     async def get(self, ref: str) -> Compute:
-        return await _to_compute(await self._row(ref))
+        return await self._served(await self._row(ref))
 
-    async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None, live: bool | None) -> Page[Compute]:
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        state: ComputeState | None,
+        owned: bool | None,
+        live: bool | None,
+        cause: DeletionCause | None = None,
+    ) -> Page[Compute]:
         """Newest first.
 
         A compute's row outlives its machines, so what a daemon has the most of is
         history: paged from the oldest end, a page answers what a laptop ran months
         ago before it answers what is running now.
-        """
-        query = ComputeRow.objects()
 
+        The filters are counted as well as applied, without the cursor, so a page
+        says how many computes there are to walk and not how many are left.
+        """
+        narrowed: list[Combinable] = []
+
+        if state:
+            narrowed.append(ComputeRow.status_state == state)
+        if live:
+            narrowed.append(ComputeRow.status_state.is_in(list(LIVE)))
+        elif live is False:
+            narrowed.append(ComputeRow.status_state.not_in(list(LIVE)))
+        if owned:
+            narrowed.append(ComputeRow.lease_owner.is_not_null() & (ComputeRow.lease_expires_at > now()))
+        elif owned is False:
+            narrowed.append(ComputeRow.lease_owner.is_null() | (ComputeRow.lease_expires_at <= now()))
+        if cause:
+            narrowed.append(ComputeRow.deletion_cause == cause)
+
+        query = ComputeRow.objects().where(*narrowed)
         if pivot := await after(cursor, ComputeRow.id, ComputeRow.created_at):
             query = query.where(ComputeRow.created_at < pivot)
-        if state:
-            query = query.where(ComputeRow.status_state == state)
-        if live:
-            query = query.where(ComputeRow.status_state.is_in(list(LIVE)))
-        elif live is False:
-            query = query.where(ComputeRow.status_state.not_in(list(LIVE)))
-        if owned:
-            query = query.where(ComputeRow.lease_owner.is_not_null() & (ComputeRow.lease_expires_at > now()))
-        elif owned is False:
-            query = query.where(ComputeRow.lease_owner.is_null() | (ComputeRow.lease_expires_at <= now()))
 
         rows = await query.order_by(ComputeRow.created_at, ascending=False).limit(limit)
-        items = tuple([await _to_compute(row) for row in rows])
-        return Page(items=items, next_cursor=items[-1].id if items and len(items) == limit else None)
+        items = tuple([await self._served(row) for row in rows])
+        return Page(
+            items=items,
+            next_cursor=items[-1].id if items and len(items) == limit else None,
+            total=await ComputeRow.count().where(*narrowed),
+        )
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute:
         """Resize in place.
@@ -250,7 +281,7 @@ class ComputeStore:
         current = await unpacked(row.spec, ComputeSpec)
 
         if body.nodes == current.nodes:
-            return await _to_compute(row)
+            return await self._served(row)
         if freezes := plugins.collective(current.plugins):
             raise ComputeNotResizableError(
                 f"compute {row.id} runs {freezes}, a collective: its process group was formed with the ranks it "
@@ -261,7 +292,7 @@ class ComputeStore:
         await self.regenerate(row, msgspec.structs.replace(current, nodes=body.nodes))
         return await self.get(row.id)
 
-    async def delete(self, ref: str, expected_revision: int, idempotency_key: str) -> Compute:
+    async def delete(self, ref: str, expected_revision: int, idempotency_key: str, cause: DeletionCause = "requested") -> Compute:
         """Write the intent, and say that it was written.
 
         Nothing is torn down here. The reconciler destroys the infrastructure and
@@ -269,6 +300,10 @@ class ComputeStore:
         a store that marked it deleted on the way out would be a store that lies
         about the bill. What is written is ``deleting``, through :meth:`apply`, so
         the answer to this request already says so and so does the stream.
+
+        ``cause`` is why: a client asking, or the reconciler letting go of a compute
+        nobody holds. The first one given is the one kept — asking again for a
+        compute already on its way out asks for nothing new.
         """
 
         async def mark() -> str:
@@ -276,6 +311,7 @@ class ComputeStore:
             spec = msgspec.structs.replace(await unpacked(row.spec, ComputeSpec), desired="deleted")
 
             row.spec = await packed(spec)
+            row.deletion_cause = row.deletion_cause or cause
             row.revision += 1
             await row.save().run()
             await self.apply(ComputeDeleting(compute=row.id, nodes_ready=row.status_nodes_ready, nodes_total=row.status_nodes_total))
@@ -415,6 +451,28 @@ class ComputeStore:
             raise NotFoundError(f"no such compute: {compute_id}")
         return row
 
+    async def _served(self, row: ComputeRow) -> Compute:
+        return await _to_compute(row, await self._ended(row) if row.status_state == "deleted" else None)
+
+    async def _ended(self, row: ComputeRow) -> Ending:
+        """What a deleted compute came to.
+
+        Derived when read, like the meter's reading and from the same rows: the bill
+        is its machines' up to the moment the last of them was gone, and the calls
+        are its tasks, counted by how they turned out. Nothing was summed on the way
+        to ``deleted``, so there is no total to disagree with the rows it came from.
+        """
+        nodes = await self._nodes.of(row.id)
+        outcomes = await TaskRow.select(TaskRow.state, Count()).where(TaskRow.compute_id == row.id).group_by(TaskRow.state)
+        counted = {outcome["state"]: outcome["count"] for outcome in outcomes}
+        return Ending(
+            at=row.deleted_at,
+            cause=msgspec.convert(row.deletion_cause, DeletionCause),
+            cost=round(sum(accrued(node, row.deleted_at) for node in nodes), 6),
+            calls=sum(counted.values()),
+            failed=counted.get("failed", 0) + counted.get("timed_out", 0),
+        )
+
     async def _freeze(self, compute_id: str, number: int, spec: ComputeSpec) -> None:
         await GenerationRow(
             id=f"{compute_id}:{number}",
@@ -489,7 +547,7 @@ async def _projected(event: Event) -> dict[Column, Any]:
     return columns
 
 
-async def _to_compute(row: ComputeRow) -> Compute:
+async def _to_compute(row: ComputeRow, ended: Ending | None) -> Compute:
     return Compute(
         id=row.id,
         name=row.name,
@@ -505,6 +563,8 @@ async def _to_compute(row: ComputeRow) -> Compute:
         ),
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
         created_at=row.created_at,
+        offer=await unpacked(row.offer, Offer) if row.offer else None,
+        ended=ended,
     )
 
 

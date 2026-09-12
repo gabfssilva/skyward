@@ -1,7 +1,10 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { api } from '../../api/client'
+import type { Offer, Page } from '../../api/client'
 import { useStore } from '../../state/store'
-import { METRICS, money, rateOf, type MetricKey } from '../../state/model'
-import { Histo, Spark } from '../../ui/charts'
+import { METRICS, money, offerPerGpu, type MetricKey } from '../../state/model'
+import { Histo } from '../../ui/charts'
 import { Icon } from '../../ui/icons'
 import { Pick } from '../../ui/primitives'
 import { valuesFor } from '../../state/nodes'
@@ -13,8 +16,7 @@ export function Inspector() {
   const computes = useStore((s) => s.computes)
   const nodesByCompute = useStore((s) => s.nodes)
   const metrics = useStore((s) => s.metrics)
-  const offers = useStore((s) => s.offers)
-  const spend = useStore((s) => s.spend)
+  const costs = useStore((s) => s.costs)
   const metric = useStore((s) => s.metric)
   const setUi = useStore((s) => s.setUi)
 
@@ -22,28 +24,41 @@ export function Inspector() {
   const across = computes.flatMap((c) => valuesFor(c.id, nodesByCompute[c.id] ?? [], metrics, metric))
 
   const split = computes
-    .map((c, i) => ({ c, r: rateOf(nodesByCompute[c.id] ?? []), hue: HUES[i % 5]! }))
-    .sort((a, b) => b.r - a.r)
+    .map((c, i) => ({ c, spent: costs[c.id], hue: HUES[i % 5]! }))
+    .sort((a, b) => (b.spent ?? 0) - (a.spent ?? 0))
+  const total = split.reduce((sum, x) => sum + (x.spent ?? 0), 0)
+  const metered = split.some((x) => x.spent !== undefined)
 
-  const cheap = offers
-    .filter((o) => o.accelerator === 'h100')
-    .map((o) => ({ o, per: (o.spot_price ?? o.on_demand_price ?? o.price ?? 0) / Math.max(1, o.accelerator_count) }))
-    .sort((a, b) => a.per - b.per)
-    .slice(0, 4)
+  const [cheap, setCheap] = useState<Offer[]>([])
+
+  /* ``s.offers`` is the Market view's own slice, so this card asks its own question: the daemon orders by the price of one accelerator and answers in four rows */
+  useEffect(() => {
+    let live = true
+    void api
+      .offers({ accelerator: 'h100', sort: 'price', limit: 4 })
+      .catch((): Page<Offer> => ({ items: [] }))
+      .then((read) => {
+        if (live) setCheap(read.items)
+      })
+    return () => {
+      live = false
+    }
+  }, [])
 
   return (
     <>
       <section className="card tight">
-        <div className="cap">Spend, last {spend.length} minutes</div>
-        <div style={{ margin: '8px 0 10px' }}>
-          <Spark values={spend} fmt={(v) => money(v)} />
+        <div className="cap">Spent so far</div>
+        <div className="gauge-r" style={{ margin: '8px 0 10px' }}>
+          <b>{metered ? money(total, total < 10 ? 2 : 0) : '—'}</b>
+          <span>since each running compute started</span>
         </div>
         <div style={{ display: 'flex', gap: 3 }}>
           {split.map((x) => (
             <div
               key={x.c.id}
-              data-tip={`${x.c.name} · ${money(x.r)}/h`}
-              style={{ flex: Math.max(x.r, 0.01), height: 8, borderRadius: 3, background: `var(${x.hue})` }}
+              data-tip={`${x.c.name} · ${x.spent === undefined ? 'not metered yet' : money(x.spent)}`}
+              style={{ flex: Math.max(x.spent ?? 0, 0.01), height: 8, borderRadius: 3, background: `var(${x.hue})` }}
             />
           ))}
         </div>
@@ -54,7 +69,7 @@ export function Inspector() {
                 <i style={{ width: 9, height: 9, borderRadius: 3, background: `var(${x.hue})` }} />
                 {x.c.name}
               </button>
-              <span className="mono">{money(x.r)}/h</span>
+              <span className="mono">{x.spent === undefined ? '—' : money(x.spent)}</span>
             </div>
           ))}
         </div>
@@ -79,14 +94,14 @@ export function Inspector() {
           </button>
         </div>
         <div style={{ marginTop: 7 }}>
-          {cheap.map(({ o, per }) => (
+          {cheap.map((o) => (
             <div className="kv" key={o.id}>
               <span>
                 {o.kind}
                 <span className="faint mono"> {o.accelerator_count}×</span>
               </span>
               <span className="mono">
-                {money(per)}
+                {money(offerPerGpu(o))}
                 <span className="faint"> /GPU·h</span>
               </span>
             </div>

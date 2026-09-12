@@ -534,6 +534,6 @@ def describe_a_file_written_under_the_old_vocabulary() -> None:
 
         await connect(database)
 
-        mended = await ComputeStore(EventStore()).get(compute.id)
+        mended = await ComputeStore(EventStore(), NodeStore()).get(compute.id)
         assert mended.spec.retry is None, "the counters nobody read are gone, and that reads as no decision"
         assert all(row["kind"] != "object" for row in await GenerationRow.raw("SELECT json_type(spec, '$.retry') AS kind FROM generations").run())

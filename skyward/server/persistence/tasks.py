@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 
 import msgspec
 from msgspec import UNSET
+from piccolo.custom_types import Combinable
 
 from skyward.server.persistence.computes import LIVE, ComputeStore
 from skyward.server.persistence.functions import BlobStore
@@ -122,19 +123,25 @@ class TaskStore:
         first tasks the compute ever ran, and the ones it is running now are the last
         page anybody reaches.
         """
-        query = TaskRow.objects()
+        narrowed: list[Combinable] = []
 
+        if compute:
+            narrowed.append(TaskRow.compute_id == compute)
+        if state:
+            narrowed.append(TaskRow.state == state)
+        if correlation_id:
+            narrowed.append(TaskRow.correlation_id == correlation_id)
+
+        query = TaskRow.objects().where(*narrowed)
         if pivot := await after(cursor, TaskRow.id, TaskRow.submitted_at):
             query = query.where(TaskRow.submitted_at < pivot)
-        if compute:
-            query = query.where(TaskRow.compute_id == compute)
-        if state:
-            query = query.where(TaskRow.state == state)
-        if correlation_id:
-            query = query.where(TaskRow.correlation_id == correlation_id)
 
         items = await _tasks(await query.order_by(TaskRow.submitted_at, ascending=False).limit(limit))
-        return Page(items=items, next_cursor=items[-1].id if items and len(items) == limit else None)
+        return Page(
+            items=items,
+            next_cursor=items[-1].id if items and len(items) == limit else None,
+            total=await TaskRow.count().where(*narrowed),
+        )
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
         """Stop it if it has not started; ask it to stop if it has.

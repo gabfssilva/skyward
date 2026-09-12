@@ -180,7 +180,7 @@ class Reconciler:
         if abandoned(compute) and compute.spec.delete_on_exit:
             log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
             await self._computes.apply(ComputeAbandoned(compute=compute.id))
-            await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
+            await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
             compute = await self._computes.get(compute.id)
 
         await self._machines.resolve(compute)

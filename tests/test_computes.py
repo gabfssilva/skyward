@@ -10,6 +10,7 @@ import asyncio
 import sqlite3
 import uuid
 from collections import deque
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,12 +30,13 @@ from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
-from skyward.server.persistence.tables import ComputeRow
+from skyward.server.persistence.store import now
+from skyward.server.persistence.tables import ComputeRow, EventRow, NodeRow, TaskRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import ComputeNotConnectedError, NameTakenError
-from skyward.shared.events import ComputeDeleted, ComputeDeleting
+from skyward.shared.events import ComputeAbandoned, ComputeDeleted
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, Image, Node, Task, TaskCreate
+from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCreate
 
 pytestmark = pytest.mark.local
 
@@ -42,7 +44,7 @@ pytestmark = pytest.mark.local
 def describe_naming_a_compute() -> None:
     async def it_is_refused_when_another_compute_already_has_the_name(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
-        store = ComputeStore(EventStore())
+        store = ComputeStore(EventStore(), NodeStore())
         first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
 
         with pytest.raises(NameTakenError) as refused:
@@ -54,8 +56,7 @@ def describe_naming_a_compute() -> None:
     async def it_is_free_again_once_that_compute_is_deleted(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
-        await store.apply(ComputeDeleting(compute=first.id, nodes_ready=0, nodes_total=0))
-        await store.apply(ComputeDeleted(compute=first.id))
+        await _delete(store, first.id)
 
         second, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="second")
 
@@ -66,7 +67,7 @@ def describe_naming_a_compute() -> None:
     async def it_is_still_taken_while_that_compute_is_deleting(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         first, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="first")
-        await store.apply(ComputeDeleting(compute=first.id, nodes_ready=0, nodes_total=0))
+        await store.delete(first.id, first.revision, "delete")
 
         with pytest.raises(NameTakenError):
             await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="second")
@@ -79,7 +80,7 @@ def describe_naming_a_compute() -> None:
             old.execute("INSERT INTO computes (id, name, status_state) VALUES ('cmp_old', 'training', 'deleted')")
 
         await connect(path)
-        store = ComputeStore(EventStore())
+        store = ComputeStore(EventStore(), NodeStore())
         fresh, _ = await store.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="again")
 
         assert (await store.get("training")).id == fresh.id
@@ -89,7 +90,7 @@ def describe_naming_a_compute() -> None:
 
     async def it_lets_two_computes_go_unnamed(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
-        store = ComputeStore(EventStore())
+        store = ComputeStore(EventStore(), NodeStore())
 
         first, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="first")
         second, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="second")
@@ -118,8 +119,7 @@ def describe_listing_computes() -> None:
         store = await _store(tmp_path)
         running, _ = await store.create(ComputeCreate(spec=SPEC, name="running"), idempotency_key="k1")
         gone, _ = await store.create(ComputeCreate(spec=SPEC, name="gone"), idempotency_key="k2")
-        await store.apply(ComputeDeleting(compute=gone.id, nodes_ready=0, nodes_total=0))
-        await store.apply(ComputeDeleted(compute=gone.id))
+        await _delete(store, gone.id)
 
         live = await store.list(None, 50, None, None, True)
         finished = await store.list(None, 50, None, None, False)
@@ -137,6 +137,113 @@ def describe_listing_computes() -> None:
 
         assert [compute.name for compute in first.items] == ["c3", "c2"]
         assert [compute.name for compute in second.items] == ["c1", "c0"]
+
+    async def they_are_asked_for_by_why_they_ended(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        asked, _ = await store.create(ComputeCreate(spec=SPEC, name="asked"), idempotency_key="k1")
+        left, _ = await store.create(ComputeCreate(spec=SPEC, name="left"), idempotency_key="k2")
+        await _delete(store, asked.id)
+        await _delete(store, left.id, "abandoned")
+
+        page = await store.list(None, 50, None, None, None, "abandoned")
+
+        assert [compute.name for compute in page.items] == ["left"]
+
+    async def a_page_says_how_many_there_are_to_walk(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        for index in range(3):
+            await store.create(ComputeCreate(spec=SPEC, name=f"c{index}"), idempotency_key=f"k{index}")
+
+        page = await store.list(None, 2, None, None, None)
+
+        assert len(page.items) == 2 and page.total == 3, "what the filters match, not what the page carries"
+
+
+def describe_a_compute_that_has_ended() -> None:
+    async def a_live_one_has_no_ending(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="live")
+
+        assert (await store.get(compute.id)).ended is None
+
+    async def it_says_when_its_last_machine_was_gone_and_that_somebody_asked(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="asked")
+        before = now()
+
+        await _delete(store, compute.id)
+
+        ended = (await store.get(compute.id)).ended
+        assert ended is not None
+        assert ended.cause == "requested" and ended.at >= before
+
+    async def it_says_it_was_abandoned_when_the_reconciler_let_it_go(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="left")
+
+        await _delete(store, compute.id, "abandoned")
+
+        ended = (await store.get(compute.id)).ended
+        assert ended is not None and ended.cause == "abandoned"
+
+    async def the_first_cause_given_is_the_one_kept(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="twice")
+        await store.delete(compute.id, compute.revision, "reclaimed", "abandoned")
+
+        await _delete(store, compute.id)
+
+        ended = (await store.get(compute.id)).ended
+        assert ended is not None and ended.cause == "abandoned"
+
+    async def its_bill_is_its_machines_and_its_calls_are_counted_by_how_they_ended(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="billed")
+        tasks, nodes = TaskStore(store, NodeStore(), BlobStore()), NodeStore()
+        for outcome in ("succeeded", "failed", "timed_out", "succeeded"):
+            task = await _submit(tasks, compute.id)
+            await TaskRow.update({TaskRow.state: outcome}).where(TaskRow.id == task.id).run()
+        launched = now() - timedelta(hours=3)
+        for held, price, unit in ((timedelta(minutes=61), 2.0, "hour"), (timedelta(seconds=90), 3.6, "second")):
+            node = await nodes.request(compute.id, compute.generation)
+            await NodeRow.update({
+                NodeRow.launched_at: launched,
+                NodeRow.terminated_at: launched + held,
+                NodeRow.price_per_hour: price,
+                NodeRow.billing_unit: unit,
+            }).where(NodeRow.id == node.id).run()
+        await nodes.request(compute.id, compute.generation)
+
+        await _delete(store, compute.id)
+
+        ended = (await store.get(compute.id)).ended
+        assert ended is not None
+        assert ended.cost == pytest.approx(2 * 2.0 + 90 / 3600 * 3.6)
+        assert (ended.calls, ended.failed) == (4, 2)
+
+    async def a_page_carries_the_ending_of_each_deleted_compute_on_it(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        gone, _ = await store.create(ComputeCreate(spec=SPEC, name="gone"), idempotency_key="k1")
+        await store.create(ComputeCreate(spec=SPEC, name="running"), idempotency_key="k2")
+        await _delete(store, gone.id)
+
+        page = await store.list(None, 50, None, None, None)
+
+        assert {compute.name: compute.ended is not None for compute in page.items} == {"gone": True, "running": False}
+
+    async def one_deleted_before_its_row_kept_how_is_told_from_the_log(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="aged")
+        await store.apply(ComputeAbandoned(compute=compute.id))
+        await _delete(store, compute.id)
+        said = await EventRow.select(EventRow.created_at).where((EventRow.compute_id == compute.id) & (EventRow.type == "compute.deleted")).first()
+        await ComputeRow.update({ComputeRow.deleted_at: None, ComputeRow.deletion_cause: None}).where(ComputeRow.id == compute.id).run()
+
+        await connect(tmp_path / "skyward.sqlite")
+
+        ended = (await ComputeStore(EventStore(), NodeStore()).get(compute.id)).ended
+        assert said is not None and ended is not None
+        assert (ended.at, ended.cause) == (said["created_at"], "abandoned")
 
 
 def describe_listing_a_computes_tasks() -> None:
@@ -159,6 +266,15 @@ def describe_listing_a_computes_tasks() -> None:
 
         assert [task.id for task in first.items] == [submitted[3].id, submitted[2].id]
         assert [task.id for task in second.items] == [submitted[1].id, submitted[0].id]
+
+    async def a_page_says_how_many_tasks_match(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        for _ in range(3):
+            await _submit(tasks, compute)
+
+        page = await tasks.list(None, 2, compute, None, None)
+
+        assert len(page.items) == 2 and page.total == 3
 
 
 def describe_reaching_a_compute_this_daemon_is_not_holding() -> None:
@@ -228,6 +344,15 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
 
 
 def describe_binding_a_compute() -> None:
+    async def it_is_served_with_the_offer_it_was_bound_to(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="bound")
+
+        await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1"))
+
+        assert compute.offer is None
+        assert (await store.get(compute.id)).offer == OFFER
+
     async def the_first_key_written_is_the_key_kept(tmp_path: Path) -> None:
         """Two daemons on one file race their minted pairs; the machines trust the winner's."""
         store = await _store(tmp_path)
@@ -317,7 +442,7 @@ def describe_a_spec_written_under_the_old_vocabulary() -> None:
         """A row from before ``NodeBounds.desired`` became ``initial`` must still decode."""
         database = tmp_path / "skyward.sqlite"
         await connect(database)
-        store = ComputeStore(EventStore())
+        store = ComputeStore(EventStore(), NodeStore())
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="aged")
         await ComputeRow.raw(
             "UPDATE computes SET spec = json_remove(json_set(spec, '$.nodes.desired', "
@@ -326,7 +451,7 @@ def describe_a_spec_written_under_the_old_vocabulary() -> None:
 
         await connect(database)
 
-        mended = await ComputeStore(EventStore()).get(compute.id)
+        mended = await ComputeStore(EventStore(), NodeStore()).get(compute.id)
         assert mended.spec.nodes == SPEC.nodes
 
 
@@ -341,7 +466,8 @@ async def _bought(
     one entry per listing; the last one is repeated once they run out.
     """
     await connect(database)
-    computes, nodes, providers = ComputeStore(EventStore()), NodeStore(), ProviderStore()
+    nodes, providers = NodeStore(), ProviderStore()
+    computes = ComputeStore(EventStore(), nodes)
     spec = msgspec.structs.replace(SPEC, options=msgspec.structs.replace(SPEC.options, provision_timeout=provision_timeout))
     compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="bought")
     await computes.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"prefix": "skyward-"}))
@@ -386,7 +512,13 @@ OLD_COMPUTES = """CREATE TABLE "computes" ("id" VARCHAR(255) PRIMARY KEY NOT NUL
 
 async def _store(tmp_path: Path) -> ComputeStore:
     await connect(tmp_path / "skyward.sqlite")
-    return ComputeStore(EventStore())
+    return ComputeStore(EventStore(), NodeStore())
+
+
+async def _delete(store: ComputeStore, compute: str, cause: DeletionCause = "requested") -> None:
+    """Ask for it to go, and then say that it went — what the reconciler says once its machines are gone."""
+    await store.delete(compute, (await store.get(compute)).revision, f"delete:{compute}", cause)
+    await store.apply(ComputeDeleted(compute=compute))
 
 
 async def _tasks(tmp_path: Path) -> tuple[TaskStore, str]:

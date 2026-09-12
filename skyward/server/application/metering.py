@@ -8,38 +8,15 @@ and a daemon restart changes nothing — the meter is a reader.
 
 from __future__ import annotations
 
-from datetime import datetime
-from math import ceil
-
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import now
+from skyward.shared.billing import accrued
 from skyward.shared.events import CostEvent
 from skyward.shared.observability import logger
-from skyward.shared.schemas import BillingUnit, Node
 
 logger = logger.bind(component="metering")
-
-UNIT_SECONDS: dict[BillingUnit, int] = {"second": 1, "minute": 60, "hour": 3600}
-
-
-def accrued(node: Node, at: datetime) -> float:
-    """What this node has cost up to ``at``, in dollars.
-
-    Elapsed time is rounded up to the provider's billing unit — a machine held
-    for 61 seconds is billed 2 minutes on a per-minute provider and a full hour
-    on a per-hour one. A node that never got a machine, or whose price was never
-    learned, costs nothing that can be counted; it contributes zero rather than
-    a guess.
-    """
-    if node.launched_at is None or node.price_per_hour is None:
-        return 0.0
-
-    unit = UNIT_SECONDS[node.billing_unit or "hour"]
-    elapsed = ((node.terminated_at or at) - node.launched_at).total_seconds()
-    billed = ceil(max(elapsed, 0.0) / unit) * unit
-    return billed / 3600 * node.price_per_hour
 
 
 class Meter:

@@ -99,14 +99,14 @@ export const dur = (ms: number): string => {
 
 export const ago = (ms: number): string => {
   const s = Math.floor((Date.now() - ms) / 1000)
-  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 172800 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`
 }
 
 export const clock = (ms: number): string => new Date(ms).toLocaleTimeString('en-GB', { hour12: false })
 
 /* ---------- wire-shape derivations ---------- */
 
-import type { Compute, Execution, Node, Task } from '../api/client'
+import type { Compute, Ending, Execution, Node, Offer, Task } from '../api/client'
 
 export type NodeState = Node['state']
 export type ComputeState = Compute['status']['state']
@@ -116,9 +116,11 @@ export const ms = (iso: string | null | undefined): number => (iso ? Date.parse(
 export const nodeLive = (n: Node): boolean => !['failed', 'lost', 'deleted'].includes(n.state)
 export const readyOf = (nodes: readonly Node[]): Node[] => nodes.filter((n) => n.state === 'ready')
 export const rateOf = (nodes: readonly Node[]): number => nodes.filter(nodeLive).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
-export const gpusOf = (nodes: readonly Node[]): number => readyOf(nodes).length
-export const accrued = (c: Compute, nodes: readonly Node[]): number => (rateOf(nodes) * (Date.now() - ms(c.created_at))) / 3.6e6
 export const targetOf = (c: Compute): number => c.spec.nodes.max ?? c.spec.nodes.initial
+export const endedAt = (c: Compute): number => ms(c.ended?.at ?? c.created_at)
+export const ranOf = (c: Compute): number => endedAt(c) - ms(c.created_at)
+
+export const CAUSE: Record<Ending['cause'], string> = { requested: 'someone asked for it', abandoned: 'nobody renewed its lease' }
 
 /** The shape of a compute: how many nodes it is, of what, where. Unloaded nodes fall back to the target. */
 export const specLine = (c: Compute, nodes: readonly Node[]): string => {
@@ -183,4 +185,111 @@ export const execsOf = (t: Task, nodes: readonly Node[]): ExecRow[] => {
       error: null,
     }))
   return [...real, ...filled].sort((a, b) => a.rank - b.rank || a.ordinal - b.ordinal)
+}
+
+/* ---------- hive geometry ---------- */
+
+export const SQ3 = Math.sqrt(3)
+
+/** How many rings a hive of ``n`` cells needs around its centre. */
+export const ringsFor = (n: number): number => (n <= 1 ? 0 : Math.ceil((-3 + Math.sqrt(9 + 12 * (n - 1))) / 6))
+
+const DIRS: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [1, -1],
+  [0, -1],
+  [-1, 0],
+  [-1, 1],
+  [0, 1],
+]
+
+export type Axial = readonly [number, number]
+
+const ring = (k: number): Axial[] => {
+  const out: Axial[] = []
+  let q = -k
+  let r = k
+  for (const [dq, dr] of DIRS)
+    for (let j = 0; j < k; j++) {
+      out.push([q, r])
+      q += dq
+      r += dr
+    }
+  return out
+}
+
+/** ``n`` axial cells, spiralling out from the centre ring by ring. */
+export const spiral = (n: number): Axial[] => {
+  const out: Axial[] = [[0, 0]]
+  for (let k = 1; out.length < n; k++) out.push(...ring(k).slice(0, n - out.length))
+  return out
+}
+
+/** Like ``spiral``, but a partial last ring fills from the bottom up, so the hive stands on its base. */
+export const bloom = (n: number): Axial[] => {
+  const out: Axial[] = [[0, 0]]
+  for (let k = 1; out.length < n; k++) {
+    const cells = ring(k)
+    const left = n - out.length
+    if (left >= cells.length) {
+      out.push(...cells)
+      continue
+    }
+    const fromBase = ([q, r]: Axial): number => Math.abs(Math.atan2(1.5 * r, SQ3 * (q + r / 2)) - Math.PI / 2)
+    out.push(...cells.sort((a, b) => fromBase(a) - fromBase(b)).slice(0, left))
+  }
+  return out
+}
+
+/** The points of a pointy-top hexagon of circumradius ``s``, centred on the origin. */
+export const hexPts = (s: number): string =>
+  Array.from({ length: 6 }, (_, i) => {
+    const a = (Math.PI / 180) * (60 * i - 90)
+    return `${(s * Math.cos(a)).toFixed(2)},${(s * Math.sin(a)).toFixed(2)}`
+  }).join(' ')
+
+export type HiveLayout = { cells: readonly (readonly [number, number])[]; w: number; h: number }
+
+/** Where each of ``n`` cells of circumradius ``s`` sits, and the box that holds them. */
+export const hive = (n: number, s: number, gap = 0.12): HiveLayout => {
+  const step = s * (1 + gap)
+  const pts = bloom(n).map(([q, r]) => [SQ3 * step * (q + r / 2), 1.5 * step * r] as const)
+  const xs = pts.map((p) => p[0])
+  const ys = pts.map((p) => p[1])
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  const ox = minX - (s * SQ3) / 2
+  const oy = minY - s
+  return { cells: pts.map(([x, y]) => [x - ox, y - oy] as const), w: Math.max(...xs) - ox + (s * SQ3) / 2, h: Math.max(...ys) - oy + s }
+}
+
+/** The cell radius that fits a hive of ``n`` in a box of ``room`` × ``tall``. */
+export const hiveSize = (n: number, room = 980, tall = 640): number => {
+  const k = ringsFor(n)
+  return Math.min(room / ((2 * k + 1) * SQ3 * 1.12), tall / ((3 * k + 2) * 1.12))
+}
+
+/* ---------- dates ---------- */
+
+export const HOUR = 3.6e6
+export const DAY = 24 * HOUR
+
+export const dateOf = (ms: number): string => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + clock(ms).slice(0, 5)
+
+/* ---------- slots and work ---------- */
+
+/** Worker slots per node: the executor's concurrency, one when unset. */
+export const slotsOf = (c: Compute): number => Math.max(1, c.spec.worker?.concurrency ?? 1)
+
+/** How many executions are running on one rank right now. */
+export const busyOf = (tasks: readonly Task[], nodes: readonly Node[], rank: number): number =>
+  tasks.filter((t) => t.state === 'running').reduce((s, t) => s + execsOf(t, nodes).filter((e) => e.rank === rank && e.state === 'started').length, 0)
+
+/** What one accelerator-hour costs on an offer: the spot price when there is one, else on demand. */
+export const offerPerGpu = (o: Offer): number => (o.spot_price ?? o.on_demand_price ?? o.price ?? 0) / Math.max(1, o.accelerator_count)
+
+/** What one accelerator-hour costs on this compute: the first priced node, split by its cards. */
+export const perGpu = (c: Compute, nodes: readonly Node[]): number => {
+  const priced = nodes.find((n) => (n.price_per_hour ?? 0) > 0)
+  return priced ? (priced.price_per_hour ?? 0) / Math.max(1, c.offer?.accelerator_count ?? c.spec.specs[0]?.accelerator_count ?? 1) : 0
 }
