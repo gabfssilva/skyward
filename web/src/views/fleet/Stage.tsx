@@ -15,7 +15,6 @@ export function Stage() {
   const metrics = useStore((s) => s.metrics)
   const progress = useStore((s) => s.progress)
   const openSheet = useStore((s) => s.openSheet)
-  const pick = useStore((s) => s.pick)
   /* the daemon's count keeps the card and its filters up when a cause narrows the first page to nothing */
   const ended = useStore((s) => s.history.length > 0 || !!s.histPages?.total)
 
@@ -56,14 +55,7 @@ export function Stage() {
   return (
     <>
       <section className="card">
-        <Hives
-          items={items}
-          onPick={(computeId, rank) => {
-            pick({ computeId, rank })
-            navigate(`/computes/${computeId}`)
-          }}
-          onOpen={(computeId) => navigate(`/computes/${computeId}`)}
-        />
+        <Hives items={items} onOpen={(computeId) => navigate(`/computes/${computeId}`)} />
       </section>
       {ended ? <History /> : null}
     </>

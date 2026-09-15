@@ -24,6 +24,7 @@ export type Provider = Schemas['Provider']
 export type ProviderCreate = Schemas['ProviderCreate']
 export type ProviderKind = Schemas['ProviderKind']
 export type Offer = Schemas['Offer']
+export type Accelerator = Schemas['Accelerator']
 export type FunctionRef = Schemas['Function']
 export type Generation = Schemas['Generation']
 export type Liveness = Schemas['Liveness']
@@ -93,7 +94,37 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T
 }
 
-const body = (value: unknown): RequestInit => ({ body: JSON.stringify(value) })
+const body = (value: unknown): { body: string } => ({ body: JSON.stringify(value) })
+
+/**
+ * A fresh ``Idempotency-Key``, the one header every create and delete must carry.
+ *
+ * Hex like the ``uuid4().hex`` the CLI sends, drawn from ``getRandomValues`` because
+ * ``randomUUID`` needs a secure context and a daemon bound to another host is opened over plain http.
+ */
+const once = (): Record<string, string> => ({
+  'Idempotency-Key': Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''),
+})
+
+/** How many times a compute write re-reads the revision before a conflict is handed back, as ``sky`` does. */
+const WRITE_ATTEMPTS = 5
+
+/**
+ * A write against a compute, guarded by ``If-Match`` on the revision it was just read at.
+ *
+ * The revision also moves on bookkeeping nobody asked for — the reconciler writes what it observed on every
+ * tick — so a ``revision_conflict`` re-reads and re-sends the same write, key included, rather than failing a
+ * change nothing was racing.
+ */
+async function conditional<T>(id: string, init: RequestInit & { headers?: Record<string, string> }, attempts = WRITE_ATTEMPTS): Promise<T> {
+  const current = await request<Compute>(`/computes/${id}`)
+  try {
+    return await request<T>(`/computes/${id}`, { ...init, headers: { ...init.headers, 'If-Match': `"${current.revision}"` } })
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'revision_conflict' && attempts > 1) return conditional(id, init, attempts - 1)
+    throw error
+  }
+}
 
 export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause'] }
 export type NodeQuery = { include_terminal?: boolean; generation?: number }
@@ -117,25 +148,25 @@ export const api = {
 
   computes: (query?: ComputeQuery): Promise<Page<Compute>> => request<Page<Compute>>(`/computes${qs(query)}`),
   compute: (id: string): Promise<Compute> => request<Compute>(`/computes/${id}`),
-  createCompute: (payload: ComputeCreate): Promise<Compute> => request<Compute>('/computes', { method: 'POST', ...body(payload) }),
-  patchCompute: (id: string, patch: ComputeSpecPatch): Promise<Compute> => request<Compute>(`/computes/${id}`, { method: 'PATCH', ...body(patch) }),
-  scale: (id: string, nodes: NodeBounds): Promise<Compute> => request<Compute>(`/computes/${id}`, { method: 'PATCH', ...body({ nodes }) }),
-  deleteCompute: (id: string): Promise<void> => request<void>(`/computes/${id}`, { method: 'DELETE' }),
+  createCompute: (payload: ComputeCreate): Promise<Compute> => request<Compute>('/computes', { method: 'POST', ...body(payload), headers: once() }),
+  patchCompute: (id: string, patch: ComputeSpecPatch): Promise<Compute> => conditional<Compute>(id, { method: 'PATCH', ...body(patch) }),
+  scale: (id: string, nodes: NodeBounds): Promise<Compute> => conditional<Compute>(id, { method: 'PATCH', ...body({ nodes }) }),
+  deleteCompute: (id: string): Promise<void> => conditional<void>(id, { method: 'DELETE', headers: once() }),
   generations: (id: string): Promise<Page<Generation>> => request<Page<Generation>>(`/computes/${id}/generations`),
 
   nodes: (computeId: string, query?: NodeQuery): Promise<Page<Node>> => request<Page<Node>>(`/computes/${computeId}/nodes${qs(query)}`),
   node: (computeId: string, nodeId: string): Promise<Node> => request<Node>(`/computes/${computeId}/nodes/${nodeId}`),
-  drainNode: (computeId: string, nodeId: string): Promise<void> => request<void>(`/computes/${computeId}/nodes/${nodeId}`, { method: 'DELETE' }),
+  drainNode: (computeId: string, nodeId: string): Promise<void> => request<void>(`/computes/${computeId}/nodes/${nodeId}`, { method: 'DELETE', headers: once() }),
 
   exec: (computeId: string, command: string, node?: number): Promise<Schemas['Result']> =>
     request<Schemas['Result']>(`/computes/${computeId}/exec${qs({ command, node })}`, { method: 'POST' }),
 
   tasks: (query?: TaskQuery): Promise<Page<Task>> => request<Page<Task>>(`/tasks${qs(query)}`),
   task: (id: string): Promise<Task> => request<Task>(`/tasks/${id}`),
-  cancelTask: (id: string): Promise<void> => request<void>(`/tasks/${id}`, { method: 'DELETE' }),
+  cancelTask: (id: string): Promise<void> => request<void>(`/tasks/${id}`, { method: 'DELETE', headers: once() }),
   executions: (taskId: string): Promise<Page<Execution>> => request<Page<Execution>>(`/tasks/${taskId}/executions`),
   retry: (taskId: string, payload: ExecutionCreate = { acknowledge_duplication: false }): Promise<Execution> =>
-    request<Execution>(`/tasks/${taskId}/executions`, { method: 'POST', ...body(payload) }),
+    request<Execution>(`/tasks/${taskId}/executions`, { method: 'POST', ...body(payload), headers: once() }),
 
   function: (sha256: string): Promise<FunctionRef> => request<FunctionRef>(`/functions/${sha256}`),
 
@@ -149,4 +180,5 @@ export const api = {
   providerKinds: (): Promise<ProviderKind[]> => request<ProviderKind[]>('/provider-kinds'),
 
   offers: (query?: OfferQuery): Promise<Page<Offer>> => request<Page<Offer>>(`/offers${qs(query)}`),
+  accelerators: (): Promise<Accelerator[]> => request<Accelerator[]>('/accelerators'),
 }

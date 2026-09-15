@@ -109,6 +109,9 @@ source = "vcs"
 [tool.hatch.build.hooks.vcs]
 version-file = "skyward/_version.py"
 
+[tool.hatch.build]
+artifacts = ["skyward/server/http/console/"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["skyward"]
 

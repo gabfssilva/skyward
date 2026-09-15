@@ -13,12 +13,15 @@ from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import pytest
+from litestar.testing import AsyncTestClient
 
 from skyward.providers.registry import REGISTRY
+from skyward.server.http.app import create_app, services
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.offers import RETRY_SECONDS, OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import ProviderRow
+from skyward.shared.accelerators import CATALOG
 from skyward.shared.schemas import Offer, OfferSort, Page, Provider, ProviderCreate
 
 pytestmark = pytest.mark.local
@@ -213,3 +216,14 @@ def describe_reading_the_catalog() -> None:
         page = await read(cache, limit=2)
 
         assert [offer.id for offer in page.items] == ["three", "two"] and page.total == 3
+
+
+def describe_the_accelerator_vocabulary() -> None:
+    async def it_answers_every_catalog_entry_as_an_object(tmp_path: Path) -> None:
+        await connect(tmp_path / "skyward.sqlite")
+        async with AsyncTestClient(app=create_app(services(), logging=False)) as http:
+            response = await http.get("/v1/accelerators")
+
+        assert response.status_code == 200
+        assert len(response.json()) == len(CATALOG)
+        assert {"name": "h100", "vram": 80, "manufacturer": "NVIDIA", "architecture": "Hopper", "cuda_min": "11.8", "cuda_max": "13.1"} in response.json()

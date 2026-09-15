@@ -1,6 +1,38 @@
 {
   "components": {
     "schemas": {
+      "Accelerator": {
+        "properties": {
+          "architecture": {
+            "default": "",
+            "type": "string"
+          },
+          "cuda_max": {
+            "default": "",
+            "type": "string"
+          },
+          "cuda_min": {
+            "default": "",
+            "type": "string"
+          },
+          "manufacturer": {
+            "default": "",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "vram": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "vram"
+        ],
+        "title": "Accelerator",
+        "type": "object"
+      },
       "Compute": {
         "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.",
         "properties": {
@@ -2860,6 +2892,33 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/accelerators": {
+      "get": {
+        "deprecated": false,
+        "description": "The vocabulary offers are normalized into, with what each name is: its VRAM, who makes it, its architecture and the CUDA range it runs. An offer can still carry a name absent from this list \u2014 a GPU the catalog has never heard of keeps its own squashed name rather than disappearing from the listing.",
+        "operationId": "V1AcceleratorsList",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Accelerator"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "List the accelerators the catalog knows",
+        "tags": [
+          "offers"
+        ]
+      }
+    },
     "/v1/blobs/{sha256}": {
       "get": {
         "deprecated": false,
@@ -8171,7 +8230,7 @@
       "name": "providers"
     },
     {
-      "description": "The cached hardware catalog \u2014 what each registered account currently sells, normalized into one vocabulary so an `h100` from one provider compares against an `h100` from another.\n\nA cache, not a ledger: a refresh replaces a provider's rows wholesale, because an offer that vanished upstream must vanish here. A refresh that *fails* leaves the stale rows in place, since stale offers beat no offers.",
+      "description": "The cached hardware catalog \u2014 what each registered account currently sells, normalized into one vocabulary so an `h100` from one provider compares against an `h100` from another.\n\nA cache, not a ledger: a refresh replaces a provider's rows wholesale, because an offer that vanished upstream must vanish here. A refresh that *fails* leaves the stale rows in place, since stale offers beat no offers.\n\n`GET /accelerators` is that vocabulary: the VRAM, maker and architecture behind every name the catalog knows.",
       "name": "offers"
     },
     {

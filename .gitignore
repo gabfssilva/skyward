@@ -5,6 +5,7 @@
 
 __pycache__/
 skyward/_version.py
+skyward/server/http/console/
 
 docs/plans/
 docs/guides/ignored/

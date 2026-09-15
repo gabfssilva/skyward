@@ -35,8 +35,6 @@ export type Pages = { key: string; cursor: string | null; loading: boolean; tota
 /** How much of the ordered catalog the market holds, and how much of it there is. */
 export type Catalog = { key: string; limit: number; loading: boolean; total: number | null }
 
-export type Sel = { computeId: string; rank: number } | null
-
 export type Sheet =
   | null
   | { kind: 'wizard' }
@@ -74,7 +72,6 @@ export type HistoryFilters = {
 export type BandPoint = { min: number; med: number; max: number }
 
 export type Ui = {
-  sel: Sel
   metric: MetricKey
   /** the node page's shell card is open */
   shell: boolean
@@ -128,7 +125,6 @@ export type Store = Entities &
     offerPages: Catalog | null
     setUi: (patch: Partial<Ui>) => void
     setEntities: (patch: Partial<Entities>) => void
-    pick: (sel: Sel) => void
     openSheet: (sheet: Sheet) => void
     closeSheet: () => void
     /** buffer one event; the fold lands on the next frame, in one `set` */
@@ -191,7 +187,6 @@ export const useStore = create<Store>((set, get) => ({
   feed: null,
   functions: {},
 
-  sel: null,
   metric: 'gpu',
   shell: false,
   logFollow: true,
@@ -215,7 +210,6 @@ export const useStore = create<Store>((set, get) => ({
 
   setUi: (patch) => set(patch),
   setEntities: (patch) => set(patch),
-  pick: (sel) => set({ sel }),
   openSheet: (sheet) => set({ sheet }),
   closeSheet: () => set({ sheet: null }),
 

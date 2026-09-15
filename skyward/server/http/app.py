@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from litestar import Litestar
+from litestar import Litestar, Router
 from litestar.di import Provide
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
@@ -22,13 +22,14 @@ from skyward.server.application.reconciler import Reconciler, Wakeup
 from skyward.server.application.runtimes import Files, Forward, Runtimes, Terminal
 from skyward.server.http.controllers.blobs import BlobController
 from skyward.server.http.controllers.computes import ComputeController
+from skyward.server.http.controllers.console import console
 from skyward.server.http.controllers.events import EventController
 from skyward.server.http.controllers.files import FileController
 from skyward.server.http.controllers.forward import ForwardController
 from skyward.server.http.controllers.functions import FunctionController
 from skyward.server.http.controllers.health import HealthController
 from skyward.server.http.controllers.nodes import NodeController
-from skyward.server.http.controllers.offers import OfferController
+from skyward.server.http.controllers.offers import AcceleratorController, OfferController
 from skyward.server.http.controllers.providers import ProviderController, ProviderKindController
 from skyward.server.http.controllers.shell import ShellController
 from skyward.server.http.controllers.tasks import TaskController
@@ -52,6 +53,9 @@ from skyward.shared.schemas import PhaseMark
 from skyward.worker.journal import Console
 
 logger = logger.bind(component="daemon")
+
+CONSOLE = Path(__file__).resolve().parent / "console"
+"""Where ``task web:build`` puts the browser console, inside the package so the wheel carries it."""
 
 TICK_SECONDS = 5
 METER_SECONDS = 10
@@ -187,7 +191,7 @@ def services() -> Services:
     )
 
 
-def create_app(svc: Services | None = None, database: Path | None = None, logging: bool = False) -> Litestar:
+def create_app(svc: Services | None = None, database: Path | None = None, logging: bool = False, console_at: Path | None = None) -> Litestar:
     """The daemon as an ASGI app.
 
     ``logging`` is off by default because this module is imported into the user's
@@ -195,6 +199,9 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     config turns the *root* logger up to INFO for everyone the moment an app is
     constructed. A guest does not get to do that. A standalone daemon, which owns its
     process, is welcome to ask for it on.
+
+    ``console_at`` is a built browser console to serve at the root, beside the API
+    under ``/v1``. Only a daemon somebody can open in a browser has a use for one.
     """
     svc = svc or mock_services()
 
@@ -245,7 +252,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     shells = [ShellController] if svc.shell else []
     filing = [FileController] if svc.files else []
 
-    app = Litestar(
+    api = Router(
         path="/v1",
         route_handlers=[
             ComputeController,
@@ -257,11 +264,16 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             ProviderController,
             ProviderKindController,
             OfferController,
+            AcceleratorController,
             HealthController,
             *forwarding,
             *shells,
             *filing,
         ],
+    )
+
+    app = Litestar(
+        route_handlers=[api, *([console(console_at)] if console_at else [])],
         dependencies={
             "computes": Provide(lambda: svc.computes, sync_to_thread=False),
             "generations": Provide(lambda: svc.generations, sync_to_thread=False),
@@ -298,7 +310,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
                 "**Imperative** (`task`) are append-only facts with one terminal outcome. `executions` are the physical "
                 "attempts; retrying creates an execution, never a task, so a `Future` keeps a stable handle."
             ),
-            path="/schema",
+            path="/v1/schema",
             render_plugins=[ScalarRenderPlugin()],
             tags=list(TAGS),
         ),
@@ -322,4 +334,4 @@ def daemon() -> Litestar:
     """
     setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL")), console=sys.stdout.isatty()))
     database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
-    return create_app(services(), database=database)
+    return create_app(services(), database=database, console_at=CONSOLE if (CONSOLE / "index.html").is_file() else None)

@@ -1,4 +1,5 @@
 import type {
+  Accelerator,
   Compute,
   FunctionRef,
   ComputeSpec,
@@ -156,6 +157,15 @@ const ARCH: Record<string, string> = {
   l4: 'Ada Lovelace',
   mi300x: 'CDNA3',
 }
+
+const accelerators: Accelerator[] = Object.entries(VRAM).map(([name, vram]) => ({
+  name,
+  vram,
+  manufacturer: name === 'mi300x' ? 'AMD' : 'NVIDIA',
+  architecture: ARCH[name] ?? '',
+  cuda_min: '',
+  cuda_max: '',
+}))
 
 const O = (
   kind: string,
@@ -684,6 +694,7 @@ function route(path: string, init: RequestInit | undefined): Response {
   if (raw === '/v1/events/log') return logPage(path.split('?')[1] ?? '')
   if (raw === '/v1/health/live') return json({ live: true, version: '0.9.3' })
   if (raw === '/v1/provider-kinds') return json(providerKinds)
+  if (raw === '/v1/accelerators') return json(accelerators)
   if (parts[0] === 'functions' && parts[1]) {
     const fn = functions[parts[1]]
     return fn ? json(fn) : notFound()

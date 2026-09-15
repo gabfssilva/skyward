@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { api } from '../../api/client'
 import type { Compute, Node, Task } from '../../api/client'
 import { useStore, historyOf, computeById, isLive, useLogs, useEvents, spentOf } from '../../state/store'
 import type { Store } from '../../state/store'
@@ -9,7 +8,7 @@ import type { MetricKey } from '../../state/model'
 import { combNodes, valuesFor } from '../../state/nodes'
 import { dispatchLine } from '../tasks/Stage'
 import { Fn, Legend, Pill } from '../../ui/primitives'
-import { Comb, HexPop } from '../../ui/comb'
+import { Comb } from '../../ui/comb'
 import { Spark } from '../../ui/charts'
 import { Icon } from '../../ui/icons'
 import { EvLineRow, LogLineRow } from '../../ui/lines'
@@ -149,9 +148,6 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
   const navigate = useNavigate()
   const state = useStore((s) => s)
   const metrics = state.metrics
-  const sel = state.sel
-  const choose = state.pick
-  const setUi = state.setUi
   const id = c.id
   const ready = readyOf(nodes)
   const sl = slotsOf(c)
@@ -180,20 +176,6 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
   const fnName = (sha: string) => state.functions[sha]?.name ?? sha.slice(0, 8)
   const ranksOf = (t: Task) => new Set(execsOf(t, nodes).map((e) => e.rank)).size
 
-  const selected = sel && sel.computeId === id ? sel.rank : null
-  const pick = (rank: number) => choose(selected === rank ? null : { computeId: id, rank })
-  const shell = (rank: number) => {
-    setUi({ shell: true })
-    navigate(`/computes/${id}/nodes/${rank}`)
-  }
-  const drain = async (rank: number) => {
-    const n = nodes.find((x) => x.rank === rank)
-    if (!n) return
-    choose(null)
-    await api.drainNode(id, n.id)
-    await useStore.getState().reloadCompute(id)
-  }
-
   return (
     <>
       <div className="cmp-comb">
@@ -203,21 +185,7 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
           computeId={id}
           name={c.name ?? c.id}
           size={Math.min(60, hiveSize(nodes.length, 500, 460))}
-          selected={selected}
-          onPick={pick}
-          pop={(node, x, y, w) => (
-            <HexPop
-              node={node}
-              x={x}
-              y={y}
-              w={w}
-              history={historyOf(useStore.getState(), id, node.rank, 'gpu')}
-              onShell={() => shell(node.rank)}
-              onDrain={() => void drain(node.rank)}
-              onReplace={() => void drain(node.rank)}
-              onClose={() => choose(null)}
-            />
-          )}
+          onPick={(rank) => navigate(`/computes/${id}/nodes/${rank}`)}
         />
         <div className="row wrap" style={{ gap: 14 }}>
           <Legend states={nodes.map((n) => n.state)} />

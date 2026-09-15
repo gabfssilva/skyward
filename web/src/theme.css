@@ -102,14 +102,9 @@ svg.ic{width:1em;height:1em;flex:0 0 auto;stroke:currentColor;fill:none;stroke-w
 .empty b{color:var(--ink);font-size:15px}
 
 /* ---------- comb ---------- */
-.comb{display:block;position:relative;width:100%}
+.comb{display:block;width:100%}
 .comb svg{display:block;height:auto;max-width:100%;overflow:visible}
-.hx{cursor:pointer;transform-box:fill-box;transform-origin:center;transform:translate(var(--x),var(--y));transition:transform .4s cubic-bezier(.2,.7,.2,1),opacity .3s,filter .3s}
-svg.open .hx:not(.sel){filter:blur(3px)}
-svg.open .hx.under{pointer-events:none}
-svg.open .hx{transform:translate(var(--x2),var(--y2))}
-svg.open .hx.sel{transform:translate(var(--x2),var(--y2)) scale(var(--s))}
-.hx.sel .edge{stroke-width:2}
+.hx{cursor:pointer;transform-box:fill-box;transform-origin:center;transform:translate(var(--x),var(--y));transition:transform .4s cubic-bezier(.2,.7,.2,1),opacity .3s}
 .hx polygon.cell{transition:fill .5s ease}
 .hx .edge{stroke:none;stroke-width:1.5;vector-effect:non-scaling-stroke;fill:none}
 .hx:hover .edge{stroke:var(--ink)}
@@ -126,21 +121,6 @@ svg.open .hx.sel{transform:translate(var(--x2),var(--y2)) scale(var(--s))}
 .combhead b{font-size:15px;font-weight:700;letter-spacing:-.01em}
 .combhead .row svg{font-size:18px;color:var(--faint)}
 
-.hexpop{position:absolute;z-index:6;aspect-ratio:1/1.1547;transform:translate(-50%,-50%);color:var(--on-accent);text-align:center;display:grid;place-items:center;
-  opacity:0;animation:fadein .25s .3s ease-out forwards;pointer-events:none}
-.hexpop .in{width:62%;display:grid;gap:7px;justify-items:center;font-size:12.5px;pointer-events:auto}
-.hexpop .st{font-size:17px;font-weight:800;letter-spacing:-.01em}
-.hexpop .trio{display:flex;gap:16px}
-.hexpop .trio b{display:block;font-size:20px;font-weight:800;line-height:1;letter-spacing:-.02em}
-.hexpop .trio span{font-size:11px;opacity:.8}
-.hexpop .in>svg{width:100%}
-.hexpop .in>svg path:first-child{fill:currentColor;opacity:.22}
-.hexpop .in>svg path:nth-child(2){stroke:currentColor}
-.hexpop .in>svg circle{fill:currentColor}
-.hexpop .mono{font-size:11px}
-.hbtn{width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.22);display:grid;place-items:center;color:inherit;font-size:17px}
-.hbtn:hover{background:rgba(255,255,255,.34)}
-@keyframes fadein{to{opacity:1}}
 /* ---------- controls ---------- */
 .btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px;border-radius:var(--rs);
   background:var(--sunk);font-size:13px;font-weight:600;transition:background .12s,color .12s}
@@ -224,6 +204,23 @@ tbody tr:first-child td{border-top:0}
 .steps{display:flex;gap:5px;margin-inline:auto}
 .steps i{width:26px;height:4px;border-radius:2px;background:var(--edge)}
 .steps i.on{background:var(--accent)}
+.sheet.wizard{height:min(492px,90vh);display:flex;flex-direction:column}
+.wizard .sheet-body{flex:1;min-height:0;overflow-y:auto}
+.pkgs{display:flex;align-items:center;gap:5px;min-height:36px;padding:5px 6px;border-radius:var(--rs);background:var(--sunk);cursor:text;overflow-x:auto;scrollbar-width:thin}
+.pkgs:focus-within{outline:2px solid var(--accent)}
+.pkg{flex:none;display:inline-flex;align-items:center;gap:2px;height:24px;padding:0 3px 0 8px;border-radius:7px;background:var(--panel);color:var(--ink)}
+.pkg button{display:grid;place-items:center;width:18px;height:18px;border-radius:5px;color:var(--faint);font-size:12px}
+.pkg button:hover{color:var(--ink);background:var(--sunk)}
+.field .pkgs input{flex:1;min-width:10ch;height:24px;padding:0 4px;background:none}
+.field .pkgs input:focus{outline:none}
+.wizard .spec-i .mono{min-width:0}
+.spec-i .tick{display:block;flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.tick>span{display:inline-block}
+.tick.moving{mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent)}
+.tick.moving>span>span{padding-right:4ch}
+.tick.moving>span{animation:tick var(--lap) linear 1s infinite}
+.tick.moving:hover>span{animation-play-state:paused}
+@keyframes tick{to{transform:translateX(-50%)}}
 .palette{width:min(540px,100%);background:var(--panel);border-radius:18px;overflow:hidden}
 .palette .pin{display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--faint);font-size:20px}
 .palette input{flex:1;height:52px;border:0;background:none;font-size:15px}
@@ -323,4 +320,4 @@ tbody tr:first-child td{border-top:0}
   .evline{grid-template-columns:54px 1fr} .evline span:nth-child(2){display:none}
   .r2{grid-template-columns:1fr!important}
 }
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.spec-i .tick{overflow-x:auto}.tick.moving{mask-image:none}.tick [aria-hidden]{display:none}}

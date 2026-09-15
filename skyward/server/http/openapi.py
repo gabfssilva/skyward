@@ -110,7 +110,8 @@ TAGS: tuple[Tag, ...] = (
             "so an `h100` from one provider compares against an `h100` from another.\n\n"
             "A cache, not a ledger: a refresh replaces a provider's rows wholesale, because an offer that vanished "
             "upstream must vanish here. A refresh that *fails* leaves the stale rows in place, since stale offers beat "
-            "no offers."
+            "no offers.\n\n"
+            "`GET /accelerators` is that vocabulary: the VRAM, maker and architecture behind every name the catalog knows."
         ),
     ),
     Tag(

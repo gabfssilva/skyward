@@ -25,6 +25,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Build package
         run: task build
       - name: Publish to PyPI

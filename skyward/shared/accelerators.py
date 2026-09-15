@@ -13,10 +13,13 @@ rest of Skyward already speaks.
 """
 
 import re
-from typing import NamedTuple
+
+from msgspec import Struct
 
 
-class Accelerator(NamedTuple):
+class Accelerator(Struct, frozen=True):
+    """One name of the vocabulary, and what the card behind it is."""
+
     name: str
     vram: float
     manufacturer: str = ""

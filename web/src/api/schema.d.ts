@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/v1/accelerators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the accelerators the catalog knows
+         * @description The vocabulary offers are normalized into, with what each name is: its VRAM, who makes it, its architecture and the CUDA range it runs. An offer can still carry a name absent from this list — a GPU the catalog has never heard of keeps its own squashed name rather than disappearing from the listing.
+         */
+        get: operations["V1AcceleratorsList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/blobs/{sha256}": {
         parameters: {
             query?: never;
@@ -797,6 +817,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Accelerator */
+        Accelerator: {
+            /** @default  */
+            architecture: string;
+            /** @default  */
+            cuda_max: string;
+            /** @default  */
+            cuda_min: string;
+            /** @default  */
+            manufacturer: string;
+            name: string;
+            vram: number;
+        };
         /**
          * Compute
          * @description A set of machines held under one intention, as the API serves it.
@@ -1900,6 +1933,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    V1AcceleratorsList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accelerator"][];
+                };
+            };
+        };
+    };
     V1BlobsSha256Download: {
         parameters: {
             query?: never;

@@ -1,6 +1,5 @@
 import type { Node } from '../api/client'
 import type { NodeMetrics } from './model'
-import { ms } from './model'
 import type { CombNode } from '../ui/comb'
 
 /** What the daemon last said about a node that is still coming up, keyed by node id. */
@@ -15,18 +14,12 @@ export const combNode = (
   metrics: Record<string, NodeMetrics>,
   progress: Record<string, NodeProgress> = {},
 ): CombNode => {
-  const p = progress[n.id]
   return {
     rank: n.rank,
     state: n.state,
-    id: n.id,
     address: n.address ?? null,
     price: n.price_per_hour ?? 0,
-    market: n.market ?? null,
-    launched_at: ms(n.launched_at) || null,
-    phase: p?.phase ?? null,
-    completion: p?.completion ?? null,
-    phases_done: p?.phases_done ?? 0,
+    phase: progress[n.id]?.phase ?? null,
     error: n.last_error?.message ?? null,
     m: metrics[`${computeId}/${n.rank}`] ?? EMPTY,
   }

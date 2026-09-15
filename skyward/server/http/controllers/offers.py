@@ -3,7 +3,24 @@ from litestar.params import Parameter
 
 from skyward.server.application import ports
 from skyward.server.http.exceptions import failures
+from skyward.shared.accelerators import CATALOG, Accelerator
 from skyward.shared.schemas import Offer, OfferSort, Page
+
+
+class AcceleratorController(Controller):
+    path = "/accelerators"
+    tags = ["offers"]
+
+    @get(
+        summary="List the accelerators the catalog knows",
+        description=(
+            "The vocabulary offers are normalized into, with what each name is: its VRAM, who makes it, its architecture "
+            "and the CUDA range it runs. An offer can still carry a name absent from this list — a GPU the catalog has "
+            "never heard of keeps its own squashed name rather than disappearing from the listing."
+        ),
+    )
+    async def list(self) -> tuple[Accelerator, ...]:
+        return tuple(CATALOG.values())
 
 
 class OfferController(Controller):

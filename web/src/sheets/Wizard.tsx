@@ -1,65 +1,121 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { ComputeCreate, Offer, PluginRef, Spec } from '../api/client'
+import type { Accelerator, ComputeCreate, ComputeSpec, Offer, Provider, Worker } from '../api/client'
 import { useStore } from '../state/store'
 import { money } from '../state/model'
 import { Icon } from '../ui/icons'
+import { Chip, Pick } from '../ui/primitives'
 import { Scrim, CloseBtn } from './Scrim'
-import { ACCELS, COLLECTIVE, PLUGINS, PROVIDER_NAMES } from './catalog'
+import { COLLECTIVE, PLUGINS } from './catalog'
 
-const WSTEPS = ['What you need', 'Where to buy it', 'What runs on it', 'Review']
+const STEPS = 3
 
-/** How much of the price-ordered catalog step 2 asks the daemon for. */
-const OFFERS = 200
-
-type Mode = 'fixed' | 'partial' | 'elastic'
-type Allocation = 'spot' | 'on_demand' | 'spot_if_available' | 'cheapest'
-type Selection = 'cheapest' | 'first'
-type Executor = 'thread' | 'process' | 'loky'
+type Allocation = ComputeSpec['allocation']
+type Executor = NonNullable<Worker['executor']>
+type Line = 'datacenter' | 'pro' | 'consumer' | 'other'
 
 type Draft = {
   step: number
+  /** Provider ids; none chosen is every account. */
+  providers: readonly string[]
   accel: string
+  /** Accelerators per node; zero asks for none. */
   count: number
-  mode: Mode
+  cpus: number | null
+  memory: number | null
   initial: number
-  min: number
-  max: number
+  min: number | null
+  max: number | null
   allocation: Allocation
-  selection: Selection
-  picks: string[]
   base: string
   python: string
-  pip: string
-  plugins: string[]
+  pip: readonly string[]
+  plugins: readonly string[]
   executor: Executor
   concurrency: number
+  reuse: boolean
   name: string
   ttl: number
-  deleteOnExit: boolean
 }
 
-const newWizard = (offer: Offer | undefined): Draft => ({
-  step: offer ? 2 : 1,
+type Shelf =
+  | { state: 'loading' }
+  | { state: 'failed'; message: string }
+  | { state: 'ready'; offers: readonly Offer[]; catalog: ReadonlyMap<string, Accelerator> }
+
+type Buy = { offer: Offer; market: 'spot' | 'on_demand'; price: number }
+
+type Model = { name: string; label: string; vram: number; make: string; line: Line; from: number }
+
+type Market = {
+  models: readonly Model[]
+  /** The accelerator asked for, or the nearest in VRAM when the chosen accounts stopped selling it. */
+  accel: string
+  buys: readonly Buy[]
+  choice: Buy | null
+  /** How many accelerators each account sells at the chosen allocation. */
+  sold: ReadonlyMap<string, number>
+}
+
+const ALLOCS: readonly (readonly [Allocation, string])[] = [
+  ['spot_if_available', 'spot if available'],
+  ['spot', 'spot only'],
+  ['on_demand', 'on demand'],
+  ['cheapest', 'cheapest'],
+]
+
+const LINES: readonly (readonly [Line, string])[] = [
+  ['datacenter', 'Data center'],
+  ['pro', 'Pro · workstation'],
+  ['consumer', 'Consumer'],
+  ['other', 'Unclassified'],
+]
+
+/** The adapters that read `Image.base`: they run a container, the rest boot a machine image of their own. */
+const CONTAINERS: ReadonlySet<string> = new Set(['runpod', 'vastai', 'novita', 'salad'])
+
+const DATACENTER: ReadonlySet<string> = new Set([
+  'a10', 'a100', 'a100x', 'a10g', 'a16', 'a2', 'a30', 'a40', 'a800', 'b100', 'b200', 'b300', 'gb200', 'gb300', 'gh200',
+  'h100', 'h100-nvl', 'h200', 'h200-nvl', 'k80', 'l4', 'l40', 'l40s', 'p100', 'p4', 'p40', 't4', 't4g', 'v100',
+])
+
+/** The names no rule reads well: a word order the catalog does not keep, and salad's bundles of several cards. */
+const LABELS: Readonly<Record<string, string>> = {
+  'rtx-pro-server-6000': 'RTX PRO 6000 Server',
+  gtx107010801080ti: 'GTX 1070 / 1080 / 1080 Ti',
+  stablediffusioncompatible: 'Any SD-capable GPU',
+}
+
+const WORDS: Readonly<Record<string, string>> = {
+  ti: 'Ti', super: 'Super', ada: 'Ada', laptop: 'Laptop', maxq: 'Max-Q', wk: 'Workstation', sff: 'SFF', xt: 'XT', xtx: 'XTX',
+}
+
+const DUO: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }
+const TRIO: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,120px))', gap: 10, marginTop: 8 }
+const STACK: CSSProperties = { display: 'flex', flexDirection: 'column', minHeight: '100%' }
+
+const newDraft = (offer: Offer | undefined): Draft => ({
+  step: 1,
+  providers: offer ? [offer.provider_id] : [],
   accel: offer?.accelerator ?? 'h100',
-  count: offer?.accelerator_count ?? 8,
-  mode: 'fixed',
-  initial: 8,
-  min: 8,
-  max: 16,
+  count: offer ? (offer.accelerator ? offer.accelerator_count : 0) : 1,
+  cpus: null,
+  memory: null,
+  initial: 1,
+  min: null,
+  max: null,
   allocation: 'spot_if_available',
-  selection: 'cheapest',
-  picks: offer ? [offer.id] : [],
-  base: 'pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel',
+  base: '',
   python: '3.12',
-  pip: 'transformers, trl',
-  plugins: ['torch'],
+  pip: [],
+  plugins: [],
   executor: 'thread',
-  concurrency: 8,
+  concurrency: 1,
+  reuse: true,
   name: '',
   ttl: 600,
-  deleteOnExit: true,
 })
 
 /** The offer the wizard opens on, handed over by the market view through `openWizard`. */
@@ -69,76 +125,64 @@ export const seedWizard = (offer: Offer | undefined): void => {
   seed = offer
 }
 
-const ondemandOf = (o: Offer): number => o.on_demand_price ?? o.price ?? 0
-const priceOf = (o: Offer, allocation: Allocation): number => (allocation === 'on_demand' ? ondemandOf(o) : (o.spot_price ?? ondemandOf(o)))
-
 export function Wizard() {
   const navigate = useNavigate()
   const closeSheet = useStore((s) => s.closeSheet)
   const load = useStore((s) => s.load)
-  const [w, setW] = useState<Draft>(() => newWizard(seed))
-  const [opened] = useState(() => seed)
-  const [fetched, setFetched] = useState<Offer[]>(() => (seed ? [seed] : []))
+  const accounts = useStore((s) => s.providers)
+  const [w, setW] = useState<Draft>(() => newDraft(seed))
+  const [shelf, setShelf] = useState<Shelf>({ state: 'loading' })
   const [busy, setBusy] = useState(false)
-  const patch = (p: Partial<Draft>) => setW((prev) => ({ ...prev, ...p }))
+  /** Why the last create was refused; any edit clears it, since the draft it was about is gone. */
+  const [failure, setFailure] = useState<string | null>(null)
+  const patch = (p: Partial<Draft>) => {
+    setFailure(null)
+    setW((prev) => ({ ...prev, ...p }))
+  }
 
   useEffect(() => {
     let live = true
-    void api
-      .offers({ accelerator: w.accel, min_count: w.count, sort: 'price', limit: OFFERS })
-      .then((read) => {
-        if (live) setFetched(read.items)
+    Promise.all([api.offers(), api.accelerators()])
+      .then(([page, catalog]) => {
+        if (live) setShelf({ state: 'ready', offers: page.items, catalog: new Map(catalog.map((a) => [a.name, a])) })
       })
-      .catch(() => {
-        if (live) setFetched([])
+      .catch((error: unknown) => {
+        if (live) setShelf({ state: 'failed', message: error instanceof Error ? error.message : String(error) })
       })
     return () => {
       live = false
     }
-  }, [w.accel, w.count])
+  }, [])
 
-  /* the offer the market opened on can sit outside the slice the daemon answered with, and a seeded pick still has to resolve */
-  const offers = useMemo(() => (opened && !fetched.some((o) => o.id === opened.id) ? [opened, ...fetched] : fetched), [opened, fetched])
-  const picked = useMemo(() => w.picks.map((id) => offers.find((o) => o.id === id)).filter((o): o is Offer => !!o), [w.picks, offers])
-  const price = useMemo(() => {
-    if (!picked.length) return null
-    const chosen = w.selection === 'cheapest' ? picked.slice().sort((a, b) => priceOf(a, w.allocation) - priceOf(b, w.allocation))[0]! : picked[0]!
-    const node = priceOf(chosen, w.allocation)
-    return { node, offer: chosen, total: node * Number(w.initial || 1) }
-  }, [picked, w.selection, w.allocation, w.initial])
+  const m = useMemo(() => (shelf.state === 'ready' ? market(shelf.offers, shelf.catalog, w) : market([], new Map(), w)), [shelf, w])
+  const tone = (providerId: string): string => `var(--c${(Math.max(0, accounts.findIndex((p) => p.id === providerId)) % 5) + 1})`
 
   const create = async () => {
     setBusy(true)
     try {
-      const specs: Spec[] = picked.map((o) => ({
-        provider: { kind: o.kind, name: o.provider_name },
-        accelerator: o.accelerator,
-        accelerator_count: o.accelerator_count,
-        cpus: o.cpus,
-        memory_gb: o.memory_gb,
-        region: o.region,
-      }))
-      const plugins: PluginRef[] = w.plugins.map((kind) => ({ kind, params: {} }))
+      const chosen = w.providers.length ? accounts.filter((p) => w.providers.includes(p.id)) : accounts
       const payload: ComputeCreate = {
         name: w.name || null,
         spec: {
           allocation: w.allocation,
-          selection: w.selection,
-          delete_on_exit: w.deleteOnExit,
+          selection: 'cheapest',
+          delete_on_exit: false,
           desired: 'running',
-          ttl: Number(w.ttl),
-          nodes: {
-            initial: Number(w.initial),
-            min: Number(w.mode === 'fixed' ? w.initial : w.min),
-            max: w.mode === 'elastic' ? Number(w.max) : null,
-          },
-          specs,
-          plugins,
+          ttl: w.ttl,
+          nodes: { initial: w.initial, min: w.min, max: w.max },
+          specs: chosen.map((p) => ({
+            provider: { kind: p.kind, name: p.name },
+            accelerator: w.count ? m.accel : null,
+            accelerator_count: w.count || 1,
+            cpus: w.cpus,
+            memory_gb: w.memory,
+          })),
+          plugins: w.plugins.map((kind) => ({ kind, params: {} })),
           volumes: [],
           image: {
-            base: w.base,
-            python: w.python,
-            pip: w.pip.split(',').map((s) => s.trim()).filter(Boolean),
+            base: w.base || null,
+            python: w.python || null,
+            pip: [...w.pip],
             apt: [],
             excludes: [],
             includes: [],
@@ -147,44 +191,41 @@ export function Wizard() {
             skyward: 'auto',
             warm: false,
           },
-          worker: { executor: w.executor, concurrency: Number(w.concurrency), buffer: 0, reuse: true },
+          worker: { executor: w.executor, concurrency: w.concurrency, buffer: 0, reuse: w.executor === 'process' ? w.reuse : true },
         },
       }
       const compute = await api.createCompute(payload)
       closeSheet()
       await load()
       navigate(`/computes/${compute.id}`)
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
     }
   }
 
   const next = () => {
-    if (w.step === 4) {
-      void create()
-      return
-    }
-    patch({ step: w.step + 1 })
+    if (w.step === STEPS) void create()
+    else patch({ step: w.step + 1 })
   }
 
   return (
     <Scrim>
-      <div className="sheet" role="dialog" aria-label="New compute">
+      <div className="sheet wizard" role="dialog" aria-label="New compute">
         <div className="sheet-head">
           <b>New compute</b>
-          <span className="sub">{WSTEPS[w.step - 1]}</span>
           <div className="steps">
-            {WSTEPS.map((s, i) => (
-              <i key={s} className={i < w.step ? 'on' : ''} />
+            {Array.from({ length: STEPS }, (_, i) => (
+              <i key={i} className={i < w.step ? 'on' : ''} />
             ))}
           </div>
           <CloseBtn />
         </div>
         <div className="sheet-body">
-          {w.step === 1 ? <Step1 w={w} patch={patch} /> : null}
-          {w.step === 2 ? <Step2 w={w} patch={patch} offers={offers} /> : null}
-          {w.step === 3 ? <Step3 w={w} patch={patch} /> : null}
-          {w.step === 4 ? <Step4 w={w} picked={picked} price={price} /> : null}
+          {w.step === 1 ? <Need w={w} patch={patch} m={m} shelf={shelf} accounts={accounts} tone={tone} /> : null}
+          {w.step === 2 ? <Runs w={w} patch={patch} m={m} /> : null}
+          {w.step === 3 ? <Review w={w} m={m} shelf={shelf} tone={tone} /> : null}
         </div>
         <div className="sheet-foot">
           {w.step > 1 ? (
@@ -193,11 +234,15 @@ export function Wizard() {
               Back
             </button>
           ) : null}
-          <span className="sub">
-            {price ? `${money(price.total)} per hour · ${money(price.total * 8, 0)} for an eight-hour run` : 'Pick an offer to price it'}
-          </span>
-          <button className="btn primary" style={{ marginLeft: 'auto' }} disabled={busy || (w.step === 2 && !w.picks.length)} onClick={next}>
-            {w.step === 4 ? (
+          {failure ? (
+            <span className="sub trunc" style={{ color: 'var(--bad)', minWidth: 0 }} data-tip={failure}>
+              {failure}
+            </span>
+          ) : (
+            <span className="sub">{m.choice ? `${money(m.choice.price * w.initial)} per hour` : shelf.state === 'ready' ? 'No offer fits' : ''}</span>
+          )}
+          <button className="btn primary" style={{ marginLeft: 'auto' }} disabled={busy || !m.choice} onClick={next}>
+            {w.step === STEPS ? (
               <>
                 <Icon name="check" />
                 Create compute
@@ -212,277 +257,319 @@ export function Wizard() {
   )
 }
 
-type StepProps = { w: Draft; patch: (p: Partial<Draft>) => void }
+/**
+ * The market the daemon would buy from, read the way `market._candidates` reads it: over one spec per chosen
+ * account, the accelerator count is matched exactly and vCPUs and RAM as floors. Asking for no accelerator filters on
+ * nothing but those floors.
+ */
+function market(offers: readonly Offer[], catalog: ReadonlyMap<string, Accelerator>, w: Draft): Market {
+  const inAccounts = (o: Offer) => !w.providers.length || w.providers.includes(o.provider_id)
+  const buyable = offers.filter((o) => buysOf(o, w.allocation).length)
 
-const ALLOCS: readonly (readonly [Allocation, string])[] = [
-  ['spot_if_available', 'spot if available'],
-  ['spot', 'spot only'],
-  ['on_demand', 'on demand'],
-  ['cheapest', 'cheapest'],
-]
+  const grouped = new Map<string, Offer[]>()
+  const sold = new Map<string, Set<string>>()
+  for (const o of buyable) {
+    if (!o.accelerator) continue
+    sold.set(o.provider_id, (sold.get(o.provider_id) ?? new Set()).add(o.accelerator))
+    if (inAccounts(o)) grouped.set(o.accelerator, [...(grouped.get(o.accelerator) ?? []), o])
+  }
+  const models = [...grouped].map(([name, own]): Model => {
+    const entry = catalog.get(name)
+    const perAccelerator = own.flatMap((o) => buysOf(o, w.allocation).map((b) => ({ ...b, price: b.price / Math.max(1, o.accelerator_count) })))
+    return {
+      name,
+      label: labelOf(name),
+      vram: entry?.vram ?? Math.max(0, ...own.map((o) => o.vram ?? 0)),
+      make: entry ? `${entry.manufacturer} ${entry.architecture}` : 'unclassified',
+      line: lineOf(name),
+      from: cheapest(perAccelerator, w.allocation)?.price ?? 0,
+    }
+  })
 
-const MODES: readonly (readonly [Mode, string])[] = [
-  ['fixed', 'fixed'],
-  ['partial', 'start early'],
-  ['elastic', 'elastic'],
-]
+  const want = catalog.get(w.accel)?.vram ?? offers.find((o) => o.accelerator === w.accel)?.vram ?? 0
+  const accel =
+    !models.length || models.some((model) => model.name === w.accel)
+      ? w.accel
+      : models.reduce((best, model) => (Math.abs(model.vram - want) < Math.abs(best.vram - want) ? model : best)).name
 
-function Step1({ w, patch }: StepProps) {
+  const fits = (o: Offer) =>
+    (!w.count || (o.accelerator === accel && o.accelerator_count === w.count)) &&
+    (w.cpus === null || o.cpus >= w.cpus) &&
+    (w.memory === null || o.memory_gb >= w.memory)
+  const buys = offers.filter((o) => inAccounts(o) && fits(o)).flatMap((o) => buysOf(o, w.allocation))
+
+  return { models, accel, buys, choice: cheapest(buys, w.allocation), sold: new Map([...sold].map(([id, names]) => [id, names.size])) }
+}
+
+/** `market._buys`: an offer with no spot price is not a spot offer, and asking for spot excludes it. */
+function buysOf(o: Offer, allocation: Allocation): Buy[] {
+  const spot: Buy[] = allocation !== 'on_demand' && o.spot_price != null ? [{ offer: o, market: 'spot', price: o.spot_price }] : []
+  const onDemand: Buy[] = allocation !== 'spot' && o.on_demand_price != null ? [{ offer: o, market: 'on_demand', price: o.on_demand_price }] : []
+  return [...spot, ...onDemand]
+}
+
+/** `market._cheapest`: `spot_if_available` prefers the spot market; every other allocation prefers the price. */
+function cheapest(buys: readonly Buy[], allocation: Allocation): Buy | null {
+  const spot = allocation === 'spot_if_available' ? buys.filter((b) => b.market === 'spot') : []
+  return (spot.length ? spot : buys).reduce<Buy | null>((best, b) => (best && best.price <= b.price ? best : b), null)
+}
+
+/** `rtx-4070tisuper` is what the catalog keys a card by; RTX 4070 Ti Super is what a person calls it. */
+function labelOf(name: string): string {
+  const known = LABELS[name]
+  if (known) return known
+  return name
+    .split('-')
+    .map((part) =>
+      (part.match(/ti(?=super|$)|super|ada|laptop|maxq|wk|sff|xtx|xt|\d+|[a-z]/g) ?? []).reduce((text, token) => {
+        const word = WORDS[token]
+        if (word) return `${text} ${word}`
+        if (/\d/.test(token) && /[A-Z]{3}$/.test(text)) return `${text} ${token}`
+        return text + token.toUpperCase()
+      }, ''),
+    )
+    .join(' ')
+    .trim()
+}
+
+/** Who a card is sold to, read off its name: the catalog records who makes a card, not who it is for. */
+function lineOf(name: string): Line {
+  if (DATACENTER.has(name) || /^(mi\d|gaudi|inferentia|trainium|instinct|tpu)/.test(name)) return 'datacenter'
+  if (/^(rtx-a|rtx-pro|quadro|radeon-pro)/.test(name) || name.includes('ada')) return 'pro'
+  if (/^(gtx|rtx|rx-|titan)/.test(name)) return 'consumer'
+  return 'other'
+}
+
+const toggled = (list: readonly string[], item: string): readonly string[] => (list.includes(item) ? list.filter((x) => x !== item) : [...list, item])
+
+type StepProps = { w: Draft; patch: (p: Partial<Draft>) => void; m: Market }
+
+function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf; accounts: readonly Provider[]; tone: (providerId: string) => string }) {
+  const chosen = accounts.filter((p) => w.providers.includes(p.id)).map((p) => p.name)
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <div>
-        <div className="cap">Accelerator</div>
-        <div className="chips" style={{ marginTop: 7 }}>
-          {Object.entries(ACCELS).map(([k, a]) => (
-            <button key={k} className="chip" aria-pressed={w.accel === k} style={{ height: 30 }} onClick={() => patch({ accel: k, picks: [] })}>
-              {k.toUpperCase()}{' '}
-              <span className="mono faint" style={{ fontSize: 10 }}>
-                {a.vram}GB
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }} className="r2">
-        <div>
-          <div className="cap">GPUs per node</div>
-          <div className="pick" style={{ marginTop: 7 }}>
-            {[1, 2, 4, 8].map((n) => (
-              <button key={n} aria-selected={w.count === n} onClick={() => patch({ count: n, picks: [] })}>
-                {n}
-              </button>
-            ))}
-          </div>
+    <div style={{ ...STACK, gap: 16 }}>
+      <div className="r2" style={DUO}>
+        <div className="field">
+          <label htmlFor="wiz-name">Name</label>
+          <input id="wiz-name" value={w.name} placeholder="llama-3-sft" onChange={(e) => patch({ name: e.target.value })} />
         </div>
         <div>
           <div className="cap">Price to take</div>
-          <div className="pick" style={{ marginTop: 7 }}>
-            {ALLOCS.map(([v, l]) => (
-              <button key={v} aria-selected={w.allocation === v} onClick={() => patch({ allocation: v })}>
-                {l}
-              </button>
-            ))}
+          <div style={{ marginTop: 7 }}>
+            <Pick value={w.allocation} options={ALLOCS} onChange={(allocation) => patch({ allocation })} />
           </div>
         </div>
       </div>
-      <div>
-        <div className="cap">How many nodes</div>
-        <div className="row wrap" style={{ gap: 10, margin: '8px 0 10px' }}>
-          <div className="pick">
-            {MODES.map(([v, l]) => (
-              <button key={v} aria-selected={w.mode === v} onClick={() => patch({ mode: v, ...(v === 'fixed' ? { min: w.initial } : {}) })}>
-                {l}
-              </button>
-            ))}
-          </div>
-          <div className="chips">
-            {[1, 4, 8, 16, 32, 64, 128].map((n) => (
-              <button
-                key={n}
-                className="chip"
-                aria-pressed={Number(w.initial) === n}
-                onClick={() => patch({ initial: n, ...(w.mode === 'fixed' ? { min: n } : {}) })}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,120px)', gap: 10 }}>
-          <div className="field">
-            <label htmlFor="wiz-initial">Open at</label>
-            <input id="wiz-initial" type="number" min={1} value={w.initial} onChange={(e) => patch({ initial: Number(e.target.value) })} />
-          </div>
-          {w.mode !== 'fixed' ? (
-            <div className="field">
-              <label htmlFor="wiz-min">Floor</label>
-              <input id="wiz-min" type="number" min={1} value={w.min} onChange={(e) => patch({ min: Number(e.target.value) })} />
-            </div>
-          ) : null}
-          {w.mode === 'elastic' ? (
-            <div className="field">
-              <label htmlFor="wiz-max">Ceiling</label>
-              <input id="wiz-max" type="number" min={1} value={w.max} onChange={(e) => patch({ max: Number(e.target.value) })} />
-            </div>
-          ) : null}
-        </div>
-        <div className="sub" style={{ marginTop: 8 }}>
-          {w.mode === 'fixed'
-            ? `Work starts when all ${w.initial} nodes are ready.`
-            : w.mode === 'partial'
-              ? `Asks for ${w.initial}, starts working at ${w.min}; latecomers join the same generation.`
-              : `Scales between ${w.min} and ${w.max} as tasks queue and nodes idle.`}
-        </div>
-      </div>
-    </div>
-  )
-}
 
-function Step2({ w, patch, offers }: StepProps & { offers: Offer[] }) {
-  const sorted = offers
-    .filter((o) => o.accelerator === w.accel && o.accelerator_count === w.count)
-    .slice()
-    .sort((a, b) => priceOf(a, w.allocation) - priceOf(b, w.allocation))
-  const toggle = (id: string) => {
-    const i = w.picks.indexOf(id)
-    patch({ picks: i < 0 ? [...w.picks, id] : w.picks.filter((x) => x !== id) })
-  }
-  return (
-    <div>
-      <div className="combhead">
-        <b>
-          {sorted.length} offers match {w.count}× {w.accel.toUpperCase()}
-        </b>
-        <span className="sub">pick one, or several — several become a fallback chain</span>
-      </div>
-      {sorted.length ? (
-        <div className="scroll" style={{ maxHeight: '42vh', overflowY: 'auto' }}>
-          <table>
-            <thead>
-              <tr>
-                <th />
-                <th>Provider</th>
-                <th>Instance</th>
-                <th>Region</th>
-                <th className="right">Node /h</th>
-                <th className="right">{w.initial} nodes /h</th>
-                <th>Available</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((o) => {
-                const on = w.picks.includes(o.id)
-                return (
-                  <tr key={o.id} style={{ cursor: 'pointer', ...(on ? { background: 'var(--accent-soft)' } : {}) }} onClick={() => toggle(o.id)}>
-                    <td style={{ width: 26 }}>
-                      {on ? (
-                        <span className="mono" style={{ color: 'var(--accent)' }}>
-                          {w.picks.indexOf(o.id) + 1}
-                        </span>
-                      ) : (
-                        <span className="faint">—</span>
-                      )}
-                    </td>
-                    <td>
-                      <b style={{ fontWeight: 600 }}>{o.kind}</b>
-                      {o.spot_price == null ? (
-                        <div className="faint" style={{ fontSize: 10 }}>
-                          no spot market
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="mono">{o.instance_type}</td>
-                    <td className="mono faint">{o.region}</td>
-                    <td className="right mono">
-                      <b>{money(priceOf(o, w.allocation))}</b>
-                    </td>
-                    <td className="right mono faint">{money(priceOf(o, w.allocation) * Number(w.initial || 1))}</td>
-                    <td className="mono faint">{o.available ? o.available : <span style={{ color: 'var(--bad)' }}>none</span>}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty">
-          <Icon name="market" />
-          <b>No offer matches that shape</b>
-          <span>Try another GPU count, or fetch fresh offers.</span>
-        </div>
-      )}
-      {w.picks.length > 1 ? (
-        <div className="strip" style={{ marginTop: 10 }}>
-          <span className="sub">With {w.picks.length} specs, the daemon takes</span>
-          <div className="pick">
-            {([['cheapest', 'the cheapest'], ['first', 'the first that answers']] as const).map(([v, l]) => (
-              <button key={v} aria-selected={w.selection === v} onClick={() => patch({ selection: v })}>
-                {l}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function Step3({ w, patch }: StepProps) {
-  const togglePlugin = (k: string) => {
-    const i = w.plugins.indexOf(k)
-    patch({ plugins: i < 0 ? [...w.plugins, k] : w.plugins.filter((x) => x !== k) })
-  }
-  return (
-    <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }} className="r2">
+      <div className="r2" style={DUO}>
         <div className="field">
-          <label htmlFor="wiz-base">Base image</label>
-          <input id="wiz-base" value={w.base} onChange={(e) => patch({ base: e.target.value })} />
+          <label htmlFor="wiz-accel">
+            Accelerator{' '}
+            <span className="faint">
+              · {m.models.length} from {chosen.length ? chosen.join(', ') : 'your accounts'}
+            </span>
+          </label>
+          <select
+            id="wiz-accel"
+            disabled={shelf.state !== 'ready'}
+            value={w.count ? m.accel : ''}
+            onChange={(e) => patch(e.target.value ? { accel: e.target.value, count: w.count || 1 } : { count: 0 })}
+          >
+            <option value="">None</option>
+            {LINES.map(([line, title]) => {
+              const list = m.models.filter((model) => model.line === line).sort((a, b) => b.vram - a.vram || a.label.localeCompare(b.label))
+              return list.length ? (
+                <optgroup key={line} label={title}>
+                  {list.map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {`${model.label} · ${model.vram ? `${Math.round(model.vram)}GB` : '—'} · ${model.make} · from ${money(model.from, model.from < 1 ? 3 : 2)}/accelerator·h`}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null
+            })}
+          </select>
         </div>
+        <div>
+          <div className="cap">Accounts</div>
+          <div className="chips" style={{ marginTop: 7 }}>
+            <Chip pressed={!w.providers.length} onClick={() => patch({ providers: [] })}>
+              any
+            </Chip>
+            {accounts.map((p) => (
+              <Chip key={p.id} pressed={w.providers.includes(p.id)} onClick={() => patch({ providers: toggled(w.providers, p.id) })}>
+                <i className="dot" style={{ background: tone(p.id) }} />
+                {p.name}
+                <span className="mono faint" style={{ fontSize: 10 }}>
+                  {m.sold.get(p.id) ?? 0}
+                </span>
+              </Chip>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="r2" style={DUO}>
+        <div>
+          <div className="cap">Each node</div>
+          <div style={TRIO}>
+            <Num id="wiz-count" label="Accelerators" min={0} value={w.count} onChange={(count) => patch({ count })} />
+            <Num id="wiz-cpus" label="vCPUs" placeholder="any" optional value={w.cpus} onChange={(cpus) => patch({ cpus })} />
+            <Num id="wiz-mem" label="RAM (GB)" placeholder="any" optional value={w.memory} onChange={(memory) => patch({ memory })} />
+          </div>
+        </div>
+        <div>
+          <div className="cap">How many nodes</div>
+          <div style={TRIO}>
+            <Num id="wiz-min" label="Floor" placeholder={String(w.initial)} optional value={w.min} onChange={(min) => patch({ min })} />
+            <Num id="wiz-max" label="Ceiling" placeholder="none" optional value={w.max} onChange={(max) => patch({ max })} />
+            <Num id="wiz-initial" label="Start at" value={w.initial} onChange={(initial) => patch({ initial })} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 'auto' }}>
+        <Machine shelf={shelf} choice={m.choice} tone={tone} />
+      </div>
+    </div>
+  )
+}
+
+function Runs({ w, patch, m }: StepProps) {
+  const kinds = [...new Set(m.buys.map((b) => b.offer.kind))]
+  const containers = kinds.filter((k) => CONTAINERS.has(k))
+  return (
+    <div style={{ ...STACK, gap: 14 }}>
+      <div className="r2" style={{ ...DUO, gap: 10 }}>
+        {containers.length ? (
+          <div className="field">
+            <label htmlFor="wiz-base">
+              Base image{containers.length < kinds.length ? <span className="faint"> · {containers.join(', ')} only</span> : null}
+            </label>
+            <input id="wiz-base" value={w.base} placeholder="provider default" onChange={(e) => patch({ base: e.target.value })} />
+          </div>
+        ) : null}
         <div className="field">
           <label htmlFor="wiz-python">Python</label>
           <input id="wiz-python" value={w.python} onChange={(e) => patch({ python: e.target.value })} />
         </div>
       </div>
-      <div className="field">
-        <label htmlFor="wiz-pip">Packages</label>
-        <input id="wiz-pip" value={w.pip} onChange={(e) => patch({ pip: e.target.value })} />
-      </div>
+      <Packages pip={w.pip} onChange={(pip) => patch({ pip })} />
       <div>
-        <div className="cap">Plugins — each shapes the image, the bootstrap and every task</div>
+        <div className="cap">Plugins</div>
         <div className="chips" style={{ marginTop: 7 }}>
           {PLUGINS.map((k) => (
-            <button key={k} className="chip" aria-pressed={w.plugins.includes(k)} onClick={() => togglePlugin(k)}>
+            <Chip key={k} pressed={w.plugins.includes(k)} onClick={() => patch({ plugins: toggled(w.plugins, k) })}>
               {k}
               {COLLECTIVE.has(k) ? (
-                <>
-                  {' '}
-                  <span className="faint" style={{ fontSize: 9.5 }}>
-                    collective
-                  </span>
-                </>
+                <span className="faint" style={{ fontSize: 9.5 }}>
+                  collective
+                </span>
               ) : null}
-            </button>
+            </Chip>
           ))}
         </div>
-        {w.plugins.some((k) => COLLECTIVE.has(k)) ? (
-          <div className="sub" style={{ marginTop: 6 }}>
-            A collective plugin freezes the world: the reconciler refuses to resize a compute holding one.
-          </div>
-        ) : null}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, alignItems: 'end' }} className="r2">
+      <div className="r2" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, alignItems: 'end' }}>
         <div>
           <div className="cap">Executor</div>
-          <div className="pick" style={{ marginTop: 6 }}>
-            {(['thread', 'process', 'loky'] as const).map((v) => (
-              <button key={v} aria-selected={w.executor === v} onClick={() => patch({ executor: v })}>
-                {v}
-              </button>
-            ))}
+          <div style={{ marginTop: 6 }}>
+            <Pick
+              value={w.executor}
+              options={(['thread', 'process', 'loky'] as const).map((v) => [v, v] as const)}
+              onChange={(executor) => patch({ executor })}
+            />
           </div>
         </div>
-        <div className="field">
-          <label htmlFor="wiz-conc">Workers per node</label>
-          <input id="wiz-conc" type="number" min={1} value={w.concurrency} onChange={(e) => patch({ concurrency: Number(e.target.value) })} />
+        <Num id="wiz-conc" label="Workers per node" value={w.concurrency} onChange={(concurrency) => patch({ concurrency })} />
+        <Num id="wiz-ttl" label="Dead-switch TTL (s)" value={w.ttl} onChange={(ttl) => patch({ ttl })} />
+        {w.executor === 'process' ? (
+          <label className="row" style={{ gap: 7, cursor: 'pointer', height: 36 }}>
+            <input type="checkbox" checked={w.reuse} onChange={(e) => patch({ reuse: e.target.checked })} />
+            <span>Reuse processes</span>
+          </label>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function Review({ w, m, shelf, tone }: Omit<StepProps, 'patch'> & { shelf: Shelf; tone: (providerId: string) => string }) {
+  const containers = m.buys.some((b) => CONTAINERS.has(b.offer.kind))
+  const none = <span className="faint">none</span>
+  const any = <span className="faint">any</span>
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div className="row wrap" style={{ gap: 26 }}>
+        <div className="gauge-r">
+          <b>
+            {w.initial}
+            <small>{w.count ? `× ${w.count}× ${labelOf(m.accel)}` : '× no accelerator'}</small>
+          </b>
+          <span>shape</span>
         </div>
-        <div className="field">
-          <label htmlFor="wiz-name">Name</label>
-          <input id="wiz-name" value={w.name} placeholder="llama-3-sft" onChange={(e) => patch({ name: e.target.value })} />
-        </div>
-        <div className="field">
-          <label htmlFor="wiz-ttl">Dead-switch TTL (s)</label>
-          <input id="wiz-ttl" type="number" value={w.ttl} onChange={(e) => patch({ ttl: Number(e.target.value) })} />
+        <Meter value={m.choice ? money(m.choice.price) : '—'} label="per node" />
+        <Meter value={m.choice ? money(m.choice.price * w.initial) : '—'} label="per hour" />
+      </div>
+      <Machine shelf={shelf} choice={m.choice} tone={tone} />
+      <div>
+        <div className="cap">Spec</div>
+        <div className="specgrid" style={{ gridAutoFlow: 'dense' }}>
+          <Item label="floor">{w.min ?? w.initial}</Item>
+          <Item label="ceiling">{w.max ?? none}</Item>
+          <Item label="start at">{w.initial}</Item>
+          <Item label="vcpus">{w.cpus ?? any}</Item>
+          <Item label="ram">{w.memory ? `${w.memory} GB` : any}</Item>
+          <Item label="price to take">{ALLOCS.find(([v]) => v === w.allocation)?.[1]}</Item>
+          {containers ? (
+            <Item label="container" wide={w.base.length > 28 ? 'wide3' : 'wide'}>
+              {w.base || <span className="faint">provider default</span>}
+            </Item>
+          ) : null}
+          <Item label="python">{w.python || none}</Item>
+          <Item label="pip" wide="wide">
+            {w.pip.length ? <Tick text={w.pip.join(', ')} /> : none}
+          </Item>
+          <Item label="plugins" wide="wide3">
+            {w.plugins.length ? <Tick text={w.plugins.join(', ')} /> : none}
+          </Item>
+          <Item label="executor" wide="wide">
+            {`${w.executor} × ${w.concurrency}${w.executor === 'process' && !w.reuse ? ', one process per task' : ''}`}
+          </Item>
+          {w.name ? <Item label="name">{w.name}</Item> : null}
+          <Item label="dead-switch">{`${w.ttl}s`}</Item>
         </div>
       </div>
-      <label className="row" style={{ gap: 7, cursor: 'pointer' }}>
-        <input type="checkbox" checked={w.deleteOnExit} onChange={(e) => patch({ deleteOnExit: e.target.checked })} />
-        <span>
-          Delete the machines when the block exits
-          <span className="sub"> — off keeps the compute for another process to attach to</span>
-        </span>
-      </label>
     </div>
+  )
+}
+
+/** The offer the daemon would buy for what is asked so far. */
+function Machine({ shelf, choice, tone }: { shelf: Shelf; choice: Buy | null; tone: (providerId: string) => string }) {
+  const strip = (children: ReactNode) => (
+    <div className="strip" style={{ background: 'var(--sunk)', flexWrap: 'wrap', gap: 9, minHeight: 44 }}>
+      {children}
+    </div>
+  )
+  if (shelf.state === 'loading') return strip(<span className="sub">Reading the market…</span>)
+  if (shelf.state === 'failed') return strip(<span className="sub">{shelf.message}</span>)
+  if (!choice) return strip(<span className="sub">No machine matches. Change the accelerator count, the vCPU and RAM floors, or the accounts.</span>)
+  const o = choice.offer
+  const size = [
+    o.accelerator && o.accelerator_count ? `${o.accelerator_count}× ${labelOf(o.accelerator)}` : '',
+    o.cpus ? `${o.cpus} vCPU` : '',
+    o.memory_gb ? `${Math.round(o.memory_gb)} GB` : '',
+  ]
+  return strip(
+    <>
+      <i className="dot" style={{ background: tone(o.provider_id) }} />
+      <b style={{ fontWeight: 600 }}>{o.kind}</b>
+      <span className="mono">{o.instance_type}</span>
+      <span className="mono faint">{[...size, o.region].filter(Boolean).join(' · ')}</span>
+      <span className="mono" style={{ marginLeft: 'auto' }}>
+        {money(choice.price)}/h {choice.market === 'spot' ? 'spot' : 'on demand'}
+      </span>
+    </>,
   )
 }
 
@@ -493,67 +580,124 @@ const Meter = ({ value, label }: { value: string; label: string }) => (
   </div>
 )
 
-function snippet(w: Draft, picked: readonly Offer[]): string {
-  const nodes = w.mode === 'fixed' ? String(w.initial) : w.mode === 'elastic' ? `(${w.min}, ${w.max})` : `sky.Nodes(initial=${w.initial}, min=${w.min})`
-  const pip = w.pip.split(',').map((s) => s.trim()).filter(Boolean)
-  return [
-    'with sky.Compute(',
-    ...picked.map(
-      (o) =>
-        `    sky.Spec(provider=sky.${PROVIDER_NAMES[o.kind] ?? o.kind}(), accelerator=sky.accelerators.${w.accel.toUpperCase()}(${w.count > 1 ? w.count : ''}), region="${o.region}"),`,
-    ),
-    `    nodes=${nodes},`,
-    `    allocation="${w.allocation}",`,
-    picked.length > 1 ? `    selection="${w.selection}",` : null,
-    `    image=sky.Image(base="${w.base}", python="${w.python}"${pip.length ? `, pip=${JSON.stringify(pip)}` : ''}),`,
-    w.plugins.length ? `    plugins=[${w.plugins.map((k) => `sky.plugins.${k[0]!.toUpperCase() + k.slice(1)}()`).join(', ')}],` : null,
-    `    executor=sky.Executor(type="${w.executor}", concurrency=${w.concurrency}),`,
-    w.name ? `    name="${w.name}",` : null,
-    `    delete_on_exit=${w.deleteOnExit ? 'True' : 'False'},`,
-    ') as pool:',
-    '    result = train(data) @ pool',
-  ]
-    .filter((line): line is string => line !== null)
-    .join('\n')
+const Item = ({ label, wide, children }: { label: string; wide?: 'wide' | 'wide3'; children: ReactNode }) => (
+  <div className={wide ? `spec-i ${wide}` : 'spec-i'}>
+    <span>{label}</span>
+    <span className="mono">{children}</span>
+  </div>
+)
+
+type NumProps = { id: string; label: string; min?: number; placeholder?: string } & (
+  | { optional?: false; value: number; onChange: (value: number) => void }
+  | { optional: true; value: number | null; onChange: (value: number | null) => void }
+)
+
+/**
+ * A number field that can be emptied while it is retyped. An emptied required field writes nothing, rather than a
+ * zero or a default that would turn "0" into "10", and shows its value again once it loses focus.
+ */
+function Num(props: NumProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>{props.label}</label>
+      <input
+        id={props.id}
+        type="number"
+        min={props.min ?? 1}
+        placeholder={props.placeholder}
+        value={draft !== null && (draft === '' || Number(draft) === props.value) ? draft : (props.value ?? '')}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          if (e.target.value !== '') props.onChange(Number(e.target.value))
+          else if (props.optional) props.onChange(null)
+        }}
+        onBlur={() => setDraft(null)}
+      />
+    </div>
+  )
 }
 
-function Step4({ w, picked, price }: { w: Draft; picked: readonly Offer[]; price: { node: number; total: number } | null }) {
+/** A tag field: a comma or Enter turns what was typed into a package, and Backspace on an empty field takes the last one back. */
+function Packages({ pip, onChange }: { pip: readonly string[]; onChange: (pip: readonly string[]) => void }) {
+  const [text, setText] = useState('')
+  const box = useRef<HTMLDivElement>(null)
+  const input = useRef<HTMLInputElement>(null)
+
+  useLayoutEffect(() => {
+    if (box.current) box.current.scrollLeft = box.current.scrollWidth
+  }, [pip])
+
+  /* pip names are case-insensitive, so `NumPy` after `numpy` adds nothing */
+  const add = (names: readonly string[]) =>
+    onChange(names.map((t) => t.trim()).reduce((list, t) => (t && !list.some((p) => p.toLowerCase() === t.toLowerCase()) ? [...list, t] : list), pip))
+
   return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      <div className="row wrap" style={{ gap: 26 }}>
-        <div className="gauge-r">
-          <b>
-            {w.initial}
-            <small>
-              × {w.count}× {w.accel.toUpperCase()}
-            </small>
-          </b>
-          <span>shape</span>
-        </div>
-        <Meter value={price ? money(price.node) : '—'} label="per node" />
-        <Meter value={price ? money(price.total) : '—'} label="per hour" />
-        <Meter value={price ? money(price.total * 8, 0) : '—'} label="eight-hour run" />
-      </div>
-      <div className="strip" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 5 }}>
-        {picked.map((o, i) => (
-          <div className="row" style={{ gap: 9 }} key={o.id}>
-            <span className="mono faint">{i + 1}</span>
-            <b style={{ fontWeight: 600 }}>{o.kind}</b>
-            <span className="mono faint">
-              {o.instance_type} · {o.region}
-            </span>
-            <span className="mono" style={{ marginLeft: 'auto' }}>
-              {money(w.allocation === 'on_demand' ? ondemandOf(o) : (o.spot_price ?? ondemandOf(o)))}/h
-            </span>
-          </div>
+    <div className="field" style={{ minWidth: 0 }}>
+      <label htmlFor="wiz-pip">
+        Packages{pip.length ? <span className="faint"> · {pip.length}</span> : null}
+      </label>
+      <div className="pkgs" ref={box} onClick={() => input.current?.focus()}>
+        {pip.map((p, i) => (
+          <span className="pkg mono" key={p}>
+            {p}
+            <button aria-label={`Remove ${p}`} onMouseDown={(e) => e.preventDefault()} onClick={() => onChange(pip.filter((_, j) => j !== i))}>
+              <Icon name="close" />
+            </button>
+          </span>
         ))}
-      </div>
-      <div>
-        <div className="cap">The same compute, written by hand</div>
-        <pre className="term" style={{ margin: '8px 0 0', padding: '13px 15px', overflow: 'auto' }}>
-          <code>{snippet(w, picked)}</code>
-        </pre>
+        <input
+          id="wiz-pip"
+          ref={input}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={pip.length ? '' : 'add a package'}
+          value={text}
+          onChange={(e) => {
+            const parts = e.target.value.split(',')
+            const rest = parts.pop() ?? ''
+            if (parts.length) add(parts)
+            setText(parts.length ? rest.trimStart() : rest)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add([text])
+              setText('')
+            } else if (e.key === 'Backspace' && !text && pip.length) onChange(pip.slice(0, -1))
+          }}
+          onBlur={() => {
+            if (!text.trim()) return
+            add([text])
+            setText('')
+          }}
+        />
       </div>
     </div>
+  )
+}
+
+/**
+ * A list longer than its cell scrolls on a loop, which is what says there is more of it. The loop runs over two
+ * copies, so moving by half is one lap, at the same speed whatever the length.
+ */
+function Tick({ text }: { text: string }) {
+  const box = useRef<HTMLSpanElement>(null)
+  const track = useRef<HTMLSpanElement>(null)
+  const [moving, setMoving] = useState(false)
+
+  useLayoutEffect(() => {
+    if (!box.current || !track.current) return
+    if (!moving) setMoving(box.current.scrollWidth > box.current.clientWidth)
+    else box.current.style.setProperty('--lap', `${track.current.offsetWidth / 2 / 30}s`)
+  }, [moving])
+
+  return (
+    <span className={moving ? 'tick moving' : 'tick'} ref={box}>
+      <span ref={track}>
+        <span>{text}</span>
+        {moving ? <span aria-hidden="true">{text}</span> : null}
+      </span>
+    </span>
   )
 }

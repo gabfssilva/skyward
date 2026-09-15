@@ -222,9 +222,17 @@ tasks:
   # ── Build ────────────────────────────────────────────────
 
   build:
-    desc: Build wheel + sdist
+    desc: Build wheel + sdist, with the browser console the daemon serves
     cmds:
+      - task: web:build
       - uv build
+
+  web:build:
+    desc: Build the browser console into skyward/server/http/console
+    dir: web
+    cmds:
+      - npm ci
+      - npm run build
 
   # ── Dev ──────────────────────────────────────────────────
 

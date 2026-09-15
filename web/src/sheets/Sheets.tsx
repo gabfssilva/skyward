@@ -8,7 +8,7 @@ import { AddProvider } from './AddProvider'
 import { Confirm } from './Confirm'
 import { Palette } from './Palette'
 
-/** Open the four-step wizard, optionally on an offer the market view picked. */
+/** Open the wizard, optionally on an offer the market view picked. */
 export const openWizard = (offer?: Offer): void => {
   seedWizard(offer)
   useStore.getState().openSheet({ kind: 'wizard' })
@@ -42,7 +42,6 @@ export function Sheets() {
       if (e.key === 'Escape') {
         const state = useStore.getState()
         if (state.sheet) state.closeSheet()
-        else if (state.sel) state.pick(null)
       }
     }
     document.addEventListener('keydown', keydown)

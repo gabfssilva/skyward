@@ -86,8 +86,6 @@ export function TaskStage() {
   const navigate = useNavigate()
   const { found, looking } = useTask(id)
   const state = useStore((s) => s)
-  const sel = useStore((s) => s.sel)
-  const pick = useStore((s) => s.pick)
   if (!found) return looking ? null : <TasksStage />
   const { t, computeId, c } = found
   const nodes = nodesOf(state, computeId)
@@ -98,6 +96,7 @@ export function TaskStage() {
   const sorted = ex.slice().sort((a, b) => b.ms - a.ms)
   const slowest = sorted[0]
   const fastest = sorted[sorted.length - 1]
+  const open = (rank: number) => navigate(`/computes/${computeId}/nodes/${rank}`)
   return (
     <>
       <section className="card">
@@ -122,8 +121,7 @@ export function TaskStage() {
           computeId={computeId}
           name={c.name ?? undefined}
           only={ranks}
-          selected={sel && sel.computeId === computeId ? sel.rank : null}
-          onPick={(rank) => pick({ computeId, rank })}
+          onPick={open}
         />
         <div style={{ marginTop: 14 }} className="legend">
           <span>
@@ -154,7 +152,7 @@ export function TaskStage() {
               key={`${e.rank}/${e.ordinal}`}
               className="barrow"
               style={{ cursor: 'pointer', gridTemplateColumns: '64px 1fr 64px' }}
-              onClick={() => pick({ computeId, rank: e.rank })}
+              onClick={() => open(e.rank)}
             >
               <span className="mono faint">
                 rank {e.rank}

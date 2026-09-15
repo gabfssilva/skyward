@@ -57,7 +57,7 @@ sky server status
 sky server status --url http://host:17590
 ```
 
-`start` waits for `/v1/health/live`. `--foreground` keeps the daemon attached to the terminal and does not create a PID file. `stop` only stops a process started by this CLI. `restart` is `stop` then `start`, and starts one even when there was nothing to stop; the machines are unaffected, since they belong to the daemon rather than to the process.
+`start` waits for `/v1/health/live`. The address it prints also serves the browser console, at `/`, when the package carries a built one (`task web:build` in a checkout). `--foreground` keeps the daemon attached to the terminal and does not create a PID file. `stop` only stops a process started by this CLI. `restart` is `stop` then `start`, and starts one even when there was nothing to stop; the machines are unaffected, since they belong to the daemon rather than to the process.
 
 ## `sky compute`
 
