@@ -86,6 +86,10 @@ INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS computes_name_live ON computes (name) WHERE status_state != 'deleted'",
     "CREATE INDEX IF NOT EXISTS tasks_compute_submitted ON tasks (compute_id, submitted_at)",
     "CREATE INDEX IF NOT EXISTS tasks_compute_state ON tasks (compute_id, state)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS metric_samples_reading ON metric_samples (compute_id, node_id, name, at)",
+    "CREATE INDEX IF NOT EXISTS metric_samples_at ON metric_samples (at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS metric_chunks_window ON metric_chunks (compute_id, node_id, since)",
+    "CREATE INDEX IF NOT EXISTS metric_chunks_last_id ON metric_chunks (last_id)",
 )
 """What the models cannot say.
 
@@ -101,6 +105,14 @@ sorts them to keep the newest; on the pair it is read off the end of the index.
 The queue queries filter a compute's tasks by state — the pending, the waiting —
 and on ``compute_id`` alone each of them reads the compute's whole history to
 find the handful still in flight; on ``(compute_id, state)`` it reads only those.
+
+A metric sample is unique by the node that took it, its name and its moment, which
+is what lets a node's log be read again without recording anything twice; every
+read is one compute's, and the same index serves it. Compaction asks for the rows
+older than a boundary, a range on ``at`` rather than a walk through the table. A
+chunk is unique by its window, so a window sealed again folds into the same row,
+and a cursor is checked against the chunks compacted after it through
+``last_id`` — a range of a few rows, not every chunk the compute ever had.
 """
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from skyward.server.http.controllers.files import FileController
 from skyward.server.http.controllers.forward import ForwardController
 from skyward.server.http.controllers.functions import FunctionController
 from skyward.server.http.controllers.health import HealthController
+from skyward.server.http.controllers.metrics import MetricController
 from skyward.server.http.controllers.nodes import NodeController
 from skyward.server.http.controllers.offers import AcceleratorController, OfferController
 from skyward.server.http.controllers.providers import ProviderController, ProviderKindController
@@ -41,6 +43,7 @@ from skyward.server.persistence.computes import ComputeStore, GenerationStore
 from skyward.server.persistence.db import DEFAULT_PATH, connect
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore, FunctionStore
+from skyward.server.persistence.metrics import MetricStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
@@ -49,8 +52,8 @@ from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared.errors import SkywardError
 from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
-from skyward.shared.schemas import PhaseMark
-from skyward.worker.journal import Console
+from skyward.shared.schemas import MetricSample, PhaseMark
+from skyward.worker.journal import Console, Metric
 
 logger = logger.bind(component="daemon")
 
@@ -59,6 +62,9 @@ CONSOLE = Path(__file__).resolve().parent / "console"
 
 TICK_SECONDS = 5
 METER_SECONDS = 10
+FLUSH_SECONDS = 2
+"""How long a node's reading waits in memory before it is written: the delay a reader polling the metrics sees."""
+COMPACT_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +77,7 @@ class Services:
     tasks: ports.Tasks
     executions: ports.Executions
     events: ports.Events
+    metrics: ports.Metrics
     providers: ports.Providers
     offers: ports.Offers
     health: ports.Health
@@ -96,6 +103,7 @@ def mock_services() -> Services:
         tasks=mock.MockTasks(),
         executions=mock.MockExecutions(),
         events=mock.MockEvents(),
+        metrics=mock.MockMetrics(),
         providers=mock.MockProviders(),
         offers=mock.MockOffers(),
         health=mock.MockHealth(),
@@ -120,6 +128,7 @@ def services() -> Services:
     wake = Wakeup()
 
     events = EventStore()
+    metrics = MetricStore()
     nodes = NodeStore()
     computes = ComputeStore(events, nodes)
     blobs = BlobStore()
@@ -133,9 +142,10 @@ def services() -> Services:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
         await events.record(PhaseEvent(compute=compute, node=node, event=event, phase=phase, at=now(), error=error))
 
-    async def sampled(compute: str, node: str, name: str, value: float) -> None:
-        """A gauge reading goes out to whoever is watching, and is not written down."""
-        await events.publish(MetricEvent(compute=compute, node=node, name=name, value=value))
+    async def sampled(compute: str, node: str, reading: Metric) -> None:
+        """A gauge reading goes out to whoever is watching, and is held for the metric store's next write."""
+        metrics.add(compute, (MetricSample(node=node, name=reading.name, at=reading.at, value=reading.value),))
+        await events.publish(MetricEvent(compute=compute, node=node, name=reading.name, value=reading.value))
 
     runtimes = Runtimes(
         listener=lambda compute, node, state, error: wake(
@@ -159,6 +169,7 @@ def services() -> Services:
         tasks=tasks,
         executions=ExecutionStore(tasks),
         events=events,
+        metrics=metrics,
         providers=providers,
         offers=offers,
         health=Health(providers),
@@ -232,21 +243,37 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             await asyncio.sleep(METER_SECONDS)
             await meter.sample()
 
+    async def every(seconds: float, work: Callable[[], Awaitable[None]], what: str) -> None:
+        """Do ``work`` on a period, and keep doing it after a pass that failed.
+
+        A metric write that meets a locked database costs a couple of seconds of
+        samples; a loop that died of it would cost every sample after them.
+        """
+        while True:
+            await asyncio.sleep(seconds)
+            try:
+                await work()
+            except Exception:
+                logger.exception("could not {}", what)
+
     async def on_startup(app: Litestar) -> None:
         if database is not None:
             await connect(database)
         app.state.tick = asyncio.create_task(tick())
         app.state.rechunk = asyncio.create_task(svc.blobs.rechunk())
+        app.state.flush = asyncio.create_task(every(FLUSH_SECONDS, svc.metrics.flush, "write metrics"))
+        app.state.compact = asyncio.create_task(every(COMPACT_SECONDS, svc.metrics.compact, "compact metrics"))
         if svc.meter:
             app.state.meter = asyncio.create_task(metered(svc.meter))
 
     async def on_shutdown(app: Litestar) -> None:
-        for name in ("tick", "rechunk", "meter"):
+        for name in ("tick", "rechunk", "meter", "flush", "compact"):
             task: asyncio.Task[None] | None = getattr(app.state, name, None)
             if task:
                 task.cancel()
         if svc.runtimes:
             await svc.runtimes.shutdown()
+        await svc.metrics.flush()
 
     forwarding = [ForwardController] if svc.forwarder else []
     shells = [ShellController] if svc.shell else []
@@ -261,6 +288,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             BlobController,
             TaskController,
             EventController,
+            MetricController,
             ProviderController,
             ProviderKindController,
             OfferController,
@@ -283,6 +311,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             "tasks": Provide(lambda: svc.tasks, sync_to_thread=False),
             "executions": Provide(lambda: svc.executions, sync_to_thread=False),
             "events": Provide(lambda: svc.events, sync_to_thread=False),
+            "metrics": Provide(lambda: svc.metrics, sync_to_thread=False),
             "providers": Provide(lambda: svc.providers, sync_to_thread=False),
             "offers": Provide(lambda: svc.offers, sync_to_thread=False),
             "health": Provide(lambda: svc.health, sync_to_thread=False),

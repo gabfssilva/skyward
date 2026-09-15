@@ -21,7 +21,7 @@ from skyward.server.application.source import Source
 from skyward.server.application.ssh import Result, Ssh, SshUnavailableError
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Image, NodeState, Options
-from skyward.worker.journal import LOCK, Console
+from skyward.worker.journal import LOCK, Console, Metric
 
 pytestmark = pytest.mark.local
 
@@ -175,7 +175,7 @@ def describe_what_the_log_says() -> None:
             '{"type":"console","content":"Reading package lists..."}',
             '{"type":"phase","event":"completed","phase":"apt"}',
             '{"type":"phase","event":"started","phase":"uv"}',
-            '{"type":"metric","name":"cpu","value":3.5}',
+            '{"type":"metric","name":"cpu","value":3.5,"at":1757887200000}',
             '{"type":"phase","event":"completed","phase":"uv"}',
             '{"type":"phase","event":"started","phase":"venv"}',
             '{"type":"phase","event":"completed","phase":"venv"}',
@@ -191,8 +191,11 @@ def describe_what_the_log_says() -> None:
             await asyncio.sleep(random.uniform(0, 0.01))
             said.extend(line.content for line in lines)
 
+        async def sampled(reading: Metric) -> None:
+            await slowly(reading.name, reading.value, reading.at)
+
         node._output = printed
-        node._sample = slowly
+        node._sample = sampled
         node._phase = slowly
 
         async with asyncio.timeout(5):
@@ -203,7 +206,7 @@ def describe_what_the_log_says() -> None:
             "Reading package lists...",
             "completed apt",
             "started uv",
-            "cpu 3.5",
+            "cpu 3.5 1757887200000",
             "completed uv",
             "started venv",
             "completed venv",

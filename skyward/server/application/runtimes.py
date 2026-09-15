@@ -33,7 +33,7 @@ from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef, SkywardSource
 from skyward.shared.tls import Authority, identity
 from skyward.worker import worker
-from skyward.worker.journal import Console
+from skyward.worker.journal import Console, Metric
 
 logger = logger.bind(component="runtimes")
 
@@ -43,8 +43,8 @@ type Listener = Callable[[str, str, NodeState, str | None], None]
 type Output = Callable[[str, str, tuple[Console, ...]], Awaitable[None]]
 """(compute, node, lines)"""
 
-type Sample = Callable[[str, str, str, float], Awaitable[None]]
-"""(compute, node, name, value)"""
+type Sample = Callable[[str, str, Metric], Awaitable[None]]
+"""(compute, node, reading)"""
 
 type Phased = Callable[[str, str, PhaseMark, str, str | None], Awaitable[None]]
 """(compute, node, event, phase, error)"""
@@ -545,7 +545,7 @@ class Runtimes:
             tls=identity(runtime.authority, node_id) if runtime.authority else None,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda lines: self._output(runtime.compute, node_id, lines),
-            sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),
+            sample=lambda reading: self._sample(runtime.compute, node_id, reading),
             phase=lambda event, name, error: self._phase(runtime.compute, node_id, event, name, error),
         )
         runtime.track(node_id, node)

@@ -304,6 +304,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/computes/{compute_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a compute's metrics
+         * @description Every metric of every node, as one series per node and name: `at` in milliseconds since the epoch on the node's clock, and the value measured then. Ask with exactly one of `since` and `after`.
+         *
+         *     **A range** — `since`, and optionally `until` (open when left out, so a node whose clock runs ahead is not cut off). Without `step` the samples come as they were taken, over at most an hour; with `step`, as one value per step of that many milliseconds, starting on a multiple of it, `agg` saying which: `avg`, `min`, `max` or `last`, over at most 2000 steps.
+         *
+         *     **A cursor** — `after`, the `cursor` a previous answer handed out. It answers with what was recorded since that answer, whenever it was measured: a node whose link dropped delivers its backlog late, and the backlog is still new. `reset: true` means some of it has already been compacted out of reach of a cursor — read the range again.
+         *
+         *     Samples reach this a couple of seconds after the node takes them. `node` and `name` narrow it, each repeatable.
+         */
+        get: operations["V1ComputesComputeIdMetricsHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/computes/{compute_id}/metrics/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the newest value of each metric
+         * @description One item per node and metric: the newest sample the daemon holds. A node that has been quiet for longer than a compaction window is answered from its compacted history, so a compute that is gone still says where its nodes were when they stopped. `node` and `name` narrow it, each repeatable.
+         */
+        get: operations["V1ComputesComputeIdMetricsLatestLatest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/computes/{compute_id}/nodes": {
         parameters: {
             query?: never;
@@ -1223,7 +1269,7 @@ export interface components {
             /** @default [] */
             includes: string[];
             includes_sha256?: string | null;
-            metrics?: components["schemas"]["MetricSpec"][] | null;
+            metrics?: (("cpu" | "mem_used_mb" | "mem_total_mb" | "gpu_util" | "gpu_mem_mb" | "gpu_mem_total_mb" | "gpu_temp_c" | "gpu_power_w" | "net_rx_kbps" | "net_tx_kbps" | "disk_used_pct") | components["schemas"]["MetricSpec"])[] | null;
             /** @default [] */
             pip: string[];
             /** @default [] */
@@ -1315,6 +1361,46 @@ export interface components {
              */
             type: "node.metrics";
             value: number;
+        };
+        /**
+         * MetricHistory
+         * @description A compute's metrics over a range, or since a cursor, and the cursor that continues them.
+         *
+         *     ``cursor`` is opaque. Handed back as ``after``, it answers with what was recorded
+         *     since this answer was read — including samples measured earlier and delivered late —
+         *     and nothing this answer already held. ``reset`` says that some of what was recorded
+         *     since has already been folded into the compacted history, where a cursor cannot
+         *     reach: read the range again.
+         */
+        MetricHistory: {
+            cursor: string;
+            /** @default false */
+            reset: boolean;
+            series: components["schemas"]["MetricSeries"][];
+        };
+        /**
+         * MetricSample
+         * @description One reading off one node: what it measured, when, and the number.
+         *
+         *     ``at`` is milliseconds since the epoch on the node's own clock — the moment the
+         *     sample was taken, not the moment it reached the daemon, which a dropped link can
+         *     put minutes later.
+         */
+        MetricSample: {
+            at: number;
+            name: string;
+            node: string;
+            value: number;
+        };
+        /**
+         * MetricSeries
+         * @description One metric of one node over time, as two columns of the same length.
+         */
+        MetricSeries: {
+            at: number[];
+            name: string;
+            node: string;
+            values: number[];
         };
         /**
          * MetricSpec
@@ -1570,6 +1656,23 @@ export interface components {
          */
         "Page_skyward.shared.schemas.Generation_": {
             items: components["schemas"]["Generation"][];
+            next_cursor?: string | null;
+            total?: number | null;
+        };
+        /**
+         * Page[MetricSample]
+         * @description A slice of a listing, and the cursor that continues it.
+         *
+         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
+         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
+         *
+         *     ``total`` is how many rows the filters match, counted for the listings where
+         *     counting is one more read of an index: fifty of fifty is a different answer
+         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
+         *     It is null where nothing counted.
+         */
+        "Page_skyward.shared.schemas.MetricSample_": {
+            items: components["schemas"]["MetricSample"][];
             next_cursor?: string | null;
             total?: number | null;
         };
@@ -3110,6 +3213,118 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    V1ComputesComputeIdMetricsHistory: {
+        parameters: {
+            query?: {
+                /** @description Milliseconds since the epoch the range starts at. */
+                since?: number | null;
+                /** @description Milliseconds since the epoch the range stops before. */
+                until?: number | null;
+                /** @description The `cursor` of a previous answer. */
+                after?: string | null;
+                /** @description Milliseconds each value of a range stands for. */
+                step?: number | null;
+                /** @description How the samples of one step become its value. */
+                agg?: "avg" | "min" | "max" | "last";
+                /** @description Keeps the nodes named. */
+                node?: string[] | null;
+                /** @description Keeps the metrics named. */
+                name?: string[] | null;
+            };
+            header?: never;
+            path: {
+                compute_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricHistory"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    V1ComputesComputeIdMetricsLatestLatest: {
+        parameters: {
+            query?: {
+                /** @description Keeps the nodes named. */
+                node?: string[] | null;
+                /** @description Keeps the metrics named. */
+                name?: string[] | null;
+            };
+            header?: never;
+            path: {
+                compute_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_skyward.shared.schemas.MetricSample_"];
+                };
             };
             /** @description Bad request syntax or unsupported method */
             400: {

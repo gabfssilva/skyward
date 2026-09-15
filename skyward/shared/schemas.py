@@ -182,6 +182,50 @@ class PipIndex(Struct, frozen=True):
         force_setattr(self, "packages", (self.packages,) if isinstance(self.packages, str) else tuple(self.packages))
 
 
+type Reading = Literal[
+    "cpu",
+    "mem_used_mb",
+    "mem_total_mb",
+    "gpu_util",
+    "gpu_mem_mb",
+    "gpu_mem_total_mb",
+    "gpu_temp_c",
+    "gpu_power_w",
+    "net_rx_kbps",
+    "net_tx_kbps",
+    "disk_used_pct",
+]
+"""A gauge the node's own collector reads, named in ``Image.metrics`` by its name alone.
+
+One loop serves whichever are named, reading ``/proc`` with shell builtins; only the
+GPU readings cost an ``nvidia-smi`` and the disk a ``df``:
+
+- ``cpu`` — percent busy since the previous reading, every 2s.
+- ``mem_used_mb`` every 2s, ``mem_total_mb`` every 60s.
+- ``gpu_util`` (percent, averaged across GPUs), ``gpu_mem_mb`` (summed), ``gpu_temp_c``
+  (the hottest), ``gpu_power_w`` (summed) every 3s, ``gpu_mem_total_mb`` every 60s; none
+  of them on a machine without ``nvidia-smi``.
+- ``net_rx_kbps`` and ``net_tx_kbps`` — kilobits per second across every interface but
+  ``lo``, every 2s.
+- ``disk_used_pct`` — percent of ``/`` in use, every 30s.
+"""
+
+READINGS: tuple[Reading, ...] = (
+    "cpu",
+    "mem_used_mb",
+    "mem_total_mb",
+    "gpu_util",
+    "gpu_mem_mb",
+    "gpu_mem_total_mb",
+    "gpu_temp_c",
+    "gpu_power_w",
+    "net_rx_kbps",
+    "net_tx_kbps",
+    "disk_used_pct",
+)
+"""Every :data:`Reading`: what a node reports when its image names no metrics."""
+
+
 class MetricSpec(Struct, frozen=True):
     """One reading a node takes about itself: a shell command, sampled on a period.
 
@@ -216,8 +260,11 @@ class Image(Struct, frozen=True):
     """The user-code tarball, once the client has built it and put it in the blob
     store. ``includes``/``excludes`` are the client's inputs; this is what the node
     reads."""
-    metrics: Sequence[MetricSpec] | None = None
-    """``None`` leaves the built-in collectors in place; a list replaces them."""
+    metrics: Sequence[Reading | MetricSpec] | None = None
+    """What the node measures about itself: :data:`READINGS` when ``None``, exactly the list otherwise.
+
+    A :data:`Reading` is served by the node's own collector, a :class:`MetricSpec` by a
+    loop of its own. A name may appear once, whichever kind it is."""
     bootstrap_timeout: int = 900
     skyward: SkywardSource = "auto"
     warm: bool = False
@@ -236,6 +283,9 @@ class Image(Struct, frozen=True):
             force_setattr(self, name, (value,) if isinstance(value, str) else tuple(value))
         if self.metrics is not None:
             force_setattr(self, "metrics", tuple(self.metrics))
+            names = [metric if isinstance(metric, str) else metric.name for metric in self.metrics]
+            if repeated := sorted({name for name in names if names.count(name) > 1}):
+                raise ValueError(f"metrics named more than once: {', '.join(repeated)}")
 
     def content_hash(self, source: str) -> str:
         """Name the environment a bootstrapped machine ends up in.
@@ -587,6 +637,48 @@ class Node(Struct, frozen=True):
     launched_at: datetime | None = None
     last_error: Error | None = None
     terminated_at: datetime | None = None
+
+
+type Aggregate = Literal["avg", "min", "max", "last"]
+"""How the samples that fall in one step become its one value."""
+
+
+class MetricSample(Struct, frozen=True):
+    """One reading off one node: what it measured, when, and the number.
+
+    ``at`` is milliseconds since the epoch on the node's own clock — the moment the
+    sample was taken, not the moment it reached the daemon, which a dropped link can
+    put minutes later.
+    """
+
+    node: str
+    name: str
+    at: int
+    value: float
+
+
+class MetricSeries(Struct, frozen=True):
+    """One metric of one node over time, as two columns of the same length."""
+
+    node: str
+    name: str
+    at: tuple[int, ...]
+    values: tuple[float, ...]
+
+
+class MetricHistory(Struct, frozen=True):
+    """A compute's metrics over a range, or since a cursor, and the cursor that continues them.
+
+    ``cursor`` is opaque. Handed back as ``after``, it answers with what was recorded
+    since this answer was read — including samples measured earlier and delivered late —
+    and nothing this answer already held. ``reset`` says that some of what was recorded
+    since has already been folded into the compacted history, where a cursor cannot
+    reach: read the range again.
+    """
+
+    series: tuple[MetricSeries, ...]
+    cursor: str
+    reset: bool = False
 
 
 class Function(Struct, frozen=True):

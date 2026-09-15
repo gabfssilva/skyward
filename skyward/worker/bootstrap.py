@@ -6,7 +6,7 @@ import shlex
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from skyward.shared.schemas import Endpoint, Image, MetricSpec, Volume
+from skyward.shared.schemas import READINGS, Endpoint, Image, MetricSpec, Reading, Volume
 from skyward.worker.journal import SKYWARD_DIR
 
 if TYPE_CHECKING:
@@ -84,87 +84,173 @@ UV = "command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh"
 
 _BUILTIN = r'''_collect_builtin() {
     set +e
-    local tick=0 gpu=0 lines line pct busy total prev_busy=0 prev_total=0
+    local wants=" $* "
+    local tick=0 gpu=0 now lines line pct busy total prev_busy=0 prev_total=0
     local cpu user nice system idle iowait irq softirq steal rest
     local key value unit mem_total mem_available
-    local util used capacity count util_sum used_sum capacity_sum
+    local util used capacity temp power count util_sum used_sum capacity_sum temp_max power_sum powered cents
+    local iface counters rx_sum tx_sum prev_rx=0 prev_tx=0 prev_net=0 elapsed rate
+    local filesystem blocks used_blocks available capacity_pct mount
     command -v nvidia-smi >/dev/null 2>&1 && gpu=1
     while _current_metrics; do
+        _now_ms now
         lines=""
         if [ $((tick % 2)) -eq 0 ]; then
-            read -r cpu user nice system idle iowait irq softirq steal rest < /proc/stat
-            busy=$((user + nice + system + irq + softirq + steal))
-            total=$((busy + idle + iowait))
-            if [ "$prev_total" -gt 0 ] && [ "$total" -gt "$prev_total" ]; then
-                pct=$((1000 * (busy - prev_busy) / (total - prev_total)))
-                printf -v line '{"type":"metric","name":"cpu","value":%d.%d}' $((pct / 10)) $((pct % 10))
-                lines+="$line"$'\n'
-            fi
-            prev_busy=$busy
-            prev_total=$total
-            mem_total=0
-            mem_available=0
-            while read -r key value unit; do
-                case "$key" in
-                    MemTotal:) mem_total=$value ;;
-                    MemAvailable:) mem_available=$value ;;
-                esac
-            done < /proc/meminfo
-            if [ "$mem_total" -gt 0 ]; then
-                printf -v line '{"type":"metric","name":"mem_used_mb","value":%d}' $(((mem_total - mem_available) / 1024))
-                lines+="$line"$'\n'
-                if [ $((tick % 60)) -eq 0 ]; then
-                    printf -v line '{"type":"metric","name":"mem_total_mb","value":%d}' $((mem_total / 1024))
+            if [[ $wants == *" cpu "* ]]; then
+                read -r cpu user nice system idle iowait irq softirq steal rest < /proc/stat
+                busy=$((user + nice + system + irq + softirq + steal))
+                total=$((busy + idle + iowait))
+                if [ "$prev_total" -gt 0 ] && [ "$total" -gt "$prev_total" ]; then
+                    pct=$((1000 * (busy - prev_busy) / (total - prev_total)))
+                    printf -v line '{"type":"metric","name":"cpu","value":%d.%d,"at":%d}' $((pct / 10)) $((pct % 10)) "$now"
                     lines+="$line"$'\n'
                 fi
+                prev_busy=$busy
+                prev_total=$total
+            fi
+            if [[ $wants == *" mem_used_mb "* || $wants == *" mem_total_mb "* ]]; then
+                mem_total=0
+                mem_available=0
+                while read -r key value unit; do
+                    case "$key" in
+                        MemTotal:) mem_total=$value ;;
+                        MemAvailable:) mem_available=$value ;;
+                    esac
+                done < /proc/meminfo
+                if [ "$mem_total" -gt 0 ]; then
+                    if [[ $wants == *" mem_used_mb "* ]]; then
+                        printf -v line '{"type":"metric","name":"mem_used_mb","value":%d,"at":%d}' $(((mem_total - mem_available) / 1024)) "$now"
+                        lines+="$line"$'\n'
+                    fi
+                    if [[ $wants == *" mem_total_mb "* ]] && [ $((tick % 60)) -eq 0 ]; then
+                        printf -v line '{"type":"metric","name":"mem_total_mb","value":%d,"at":%d}' $((mem_total / 1024)) "$now"
+                        lines+="$line"$'\n'
+                    fi
+                fi
+            fi
+            if [[ $wants == *" net_rx_kbps "* || $wants == *" net_tx_kbps "* ]]; then
+                rx_sum=0
+                tx_sum=0
+                while IFS=: read -r iface counters; do
+                    iface=${iface//[[:space:]]/}
+                    if [ -z "$counters" ] || [ "$iface" = lo ]; then
+                        continue
+                    fi
+                    set -- $counters
+                    rx_sum=$((rx_sum + $1))
+                    tx_sum=$((tx_sum + $9))
+                done < /proc/net/dev
+                if [ "$prev_net" -gt 0 ] && [ "$now" -gt "$prev_net" ] && [ "$rx_sum" -ge "$prev_rx" ] && [ "$tx_sum" -ge "$prev_tx" ]; then
+                    elapsed=$((now - prev_net))
+                    if [[ $wants == *" net_rx_kbps "* ]]; then
+                        rate=$(((rx_sum - prev_rx) * 80 / elapsed))
+                        printf -v line '{"type":"metric","name":"net_rx_kbps","value":%d.%d,"at":%d}' $((rate / 10)) $((rate % 10)) "$now"
+                        lines+="$line"$'\n'
+                    fi
+                    if [[ $wants == *" net_tx_kbps "* ]]; then
+                        rate=$(((tx_sum - prev_tx) * 80 / elapsed))
+                        printf -v line '{"type":"metric","name":"net_tx_kbps","value":%d.%d,"at":%d}' $((rate / 10)) $((rate % 10)) "$now"
+                        lines+="$line"$'\n'
+                    fi
+                fi
+                prev_rx=$rx_sum
+                prev_tx=$tx_sum
+                prev_net=$now
             fi
         fi
-        if [ "$gpu" -eq 1 ] && [ $((tick % 3)) -eq 0 ]; then
+        if [ "$gpu" -eq 1 ] && [ $((tick % 3)) -eq 0 ] && [[ $wants == *" gpu_"* ]]; then
             count=0
             util_sum=0
             used_sum=0
             capacity_sum=0
-            while IFS=', ' read -r util used capacity; do
+            temp_max=-1
+            power_sum=0
+            powered=1
+            while IFS=', ' read -r util used capacity temp power; do
                 [[ "$util" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && "$capacity" =~ ^[0-9]+$ ]] || continue
                 count=$((count + 1))
                 util_sum=$((util_sum + util))
                 used_sum=$((used_sum + used))
                 capacity_sum=$((capacity_sum + capacity))
-            done < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
+                if [[ "$temp" =~ ^[0-9]+$ ]] && [ "$temp" -gt "$temp_max" ]; then
+                    temp_max=$temp
+                fi
+                if [[ "$power" =~ ^([0-9]+)(\.([0-9]+))?$ ]]; then
+                    cents=${BASH_REMATCH[3]}00
+                    power_sum=$((power_sum + 10#${BASH_REMATCH[1]} * 100 + 10#${cents:0:2}))
+                else
+                    powered=0
+                fi
+            done < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null)
             if [ "$count" -gt 0 ]; then
-                pct=$((10 * util_sum / count))
-                printf -v line '{"type":"metric","name":"gpu_util","value":%d.%d}' $((pct / 10)) $((pct % 10))
-                lines+="$line"$'\n'
-                printf -v line '{"type":"metric","name":"gpu_mem_mb","value":%d}' "$used_sum"
-                lines+="$line"$'\n'
-                if [ $((tick % 60)) -eq 0 ]; then
-                    printf -v line '{"type":"metric","name":"gpu_mem_total_mb","value":%d}' "$capacity_sum"
+                if [[ $wants == *" gpu_util "* ]]; then
+                    pct=$((10 * util_sum / count))
+                    printf -v line '{"type":"metric","name":"gpu_util","value":%d.%d,"at":%d}' $((pct / 10)) $((pct % 10)) "$now"
+                    lines+="$line"$'\n'
+                fi
+                if [[ $wants == *" gpu_mem_mb "* ]]; then
+                    printf -v line '{"type":"metric","name":"gpu_mem_mb","value":%d,"at":%d}' "$used_sum" "$now"
+                    lines+="$line"$'\n'
+                fi
+                if [[ $wants == *" gpu_mem_total_mb "* ]] && [ $((tick % 60)) -eq 0 ]; then
+                    printf -v line '{"type":"metric","name":"gpu_mem_total_mb","value":%d,"at":%d}' "$capacity_sum" "$now"
+                    lines+="$line"$'\n'
+                fi
+                if [[ $wants == *" gpu_temp_c "* ]] && [ "$temp_max" -ge 0 ]; then
+                    printf -v line '{"type":"metric","name":"gpu_temp_c","value":%d,"at":%d}' "$temp_max" "$now"
+                    lines+="$line"$'\n'
+                fi
+                if [[ $wants == *" gpu_power_w "* ]] && [ "$powered" -eq 1 ]; then
+                    printf -v line '{"type":"metric","name":"gpu_power_w","value":%d.%02d,"at":%d}' $((power_sum / 100)) $((power_sum % 100)) "$now"
                     lines+="$line"$'\n'
                 fi
             fi
+        fi
+        if [[ $wants == *" disk_used_pct "* ]] && [ $((tick % 30)) -eq 0 ]; then
+            while read -r filesystem blocks used_blocks available capacity_pct mount; do
+                [[ "$used_blocks" =~ ^[0-9]+$ && "$available" =~ ^[0-9]+$ ]] || continue
+                [ $((used_blocks + available)) -gt 0 ] || continue
+                pct=$((1000 * used_blocks / (used_blocks + available)))
+                printf -v line '{"type":"metric","name":"disk_used_pct","value":%d.%d,"at":%d}' $((pct / 10)) $((pct % 10)) "$now"
+                lines+="$line"$'\n'
+            done < <(df -Pk / 2>/dev/null)
         fi
         [ -n "$lines" ] && emit "${lines%$'\n'}"
         tick=$((tick + 1))
         sleep 1
     done
 }'''
-"""What each node reports about itself when the image names no metrics of its own.
+"""The node's own collector: every :data:`~skyward.shared.schemas.Reading`, named in its arguments.
 
-One background loop reads ``/proc/stat`` and ``/proc/meminfo`` with shell builtins
-and asks ``nvidia-smi`` about every GPU in a single query, so a sample forks nothing
-but its ``sleep`` and, every third second, that ``nvidia-smi``. What one tick read
-is appended as one locked write.
+One background loop reads ``/proc/stat``, ``/proc/meminfo`` and ``/proc/net/dev``
+with shell builtins and asks ``nvidia-smi`` about every GPU in a single query, so a
+tick forks nothing but its ``sleep``, every third second that ``nvidia-smi``, and
+every thirtieth a ``df``. What one tick read is appended as one locked write, every
+reading stamped with the moment the tick began.
 
 - ``cpu`` (%, every 2s): busy over total jiffies since the previous reading, so the
   first arrives one interval after the loop starts.
 - ``mem_used_mb`` (every 2s): ``MemTotal`` minus ``MemAvailable``; ``mem_total_mb``
   every 60s.
-- ``gpu_util`` (%, every 3s) averaged across GPUs, ``gpu_mem_mb`` summed across them,
-  ``gpu_mem_total_mb`` summed every 60s. A machine without ``nvidia-smi``, or one
-  that answers with no numeric line, emits none of the three.
+- ``net_rx_kbps``, ``net_tx_kbps`` (every 2s): bytes counted on every interface but
+  ``lo`` since the previous reading, as kilobits a second — bytes times eight over
+  milliseconds is exactly that — so these too arrive one interval late.
+- ``gpu_util`` (%, averaged across GPUs), ``gpu_mem_mb`` (summed), ``gpu_temp_c`` (the
+  hottest), ``gpu_power_w`` (summed, and only when every GPU reports a draw) every 3s;
+  ``gpu_mem_total_mb`` summed every 60s. A machine without ``nvidia-smi``, or one that
+  answers with no numeric line, emits none of them.
+- ``disk_used_pct`` (every 30s): used over used plus available on ``/``."""
 
-The four the console shows — gpu, vram, cpu, mem — come out of these six: vram and
-mem as used/total pairs, gpu and cpu as their own percentages."""
+_NOW = """if [ -n "${EPOCHREALTIME:-}" ]; then
+    _now_ms() { local micros=${EPOCHREALTIME//[^0-9]/}; printf -v "$1" '%d' $((10#$micros / 1000)); }
+else
+    _now_ms() { printf -v "$1" '%s' "$(date +%s%3N)"; }
+fi"""
+"""``_now_ms name`` sets ``name`` to milliseconds since the epoch.
+
+``EPOCHREALTIME`` (bash 5) reads the clock without a fork; its decimal separator
+follows the locale, so every non-digit is dropped rather than a ``.``. An older bash
+pays a ``date`` per reading."""
 
 _GENERATION = """_metrics_generation="$$.$RANDOM"
 printf '%s\\n' "$_metrics_generation" > /opt/skyward/metrics.generation
@@ -189,9 +275,11 @@ def _collector(name: str, command: str, interval: float) -> str:
         (
             f"_collect_{name}() {{",
             "    set +e",
+            "    local v now",
             "    while _current_metrics; do",
             f"        v=$({command})",
-            f'        [[ "$v" =~ ^-?[0-9]*\\.?[0-9]+$ ]] && emit_metric {name} "$v"',
+            "        _now_ms now",
+            f'        [[ "$v" =~ ^-?[0-9]*\\.?[0-9]+$ ]] && emit_metric {name} "$v" "$now"',
             f"        sleep {interval}",
             "    done",
             "}",
@@ -199,31 +287,39 @@ def _collector(name: str, command: str, interval: float) -> str:
     )
 
 
-def metrics(specs: Sequence[MetricSpec] | None = None) -> str:
+def metrics(specs: Sequence[Reading | MetricSpec] | None = None) -> str:
     """The collectors, and the one call that sets them going.
 
     Started before the bootstrap phases and left running as background jobs: the
     script is ``nohup``-ed and non-interactive, so the loops outlive it and keep
     reporting while the worker runs — and still report if the worker never does.
 
-    ``specs`` replaces the built-in loop outright; ``None`` leaves it in place. Either
-    way the output first claims the generation, so the collectors of an earlier run on
-    the same machine stop.
+    The readings named go to the one built-in loop, each :class:`MetricSpec` to a loop
+    of its own; ``None`` names every reading. Either way the output first claims the
+    generation, so the collectors of an earlier run on the same machine stop.
     """
-    emit_metric = 'emit_metric() { emit "{\\"type\\":\\"metric\\",\\"name\\":\\"$1\\",\\"value\\":$2}"; }'
-    if specs is None:
-        collectors: tuple[str, ...] = (_BUILTIN,)
-        starts: tuple[str, ...] = ("    _collect_builtin &",)
-    else:
-        collectors = tuple(_collector(spec.name, spec.command, spec.interval) for spec in specs)
-        starts = tuple(f"    _collect_{spec.name} &" for spec in specs)
+    readings: list[Reading] = []
+    commands: list[MetricSpec] = []
+    for metric in READINGS if specs is None else specs:
+        match metric:
+            case MetricSpec():
+                commands.append(metric)
+            case reading:
+                readings.append(reading)
+
+    emit_metric = 'emit_metric() { emit "{\\"type\\":\\"metric\\",\\"name\\":\\"$1\\",\\"value\\":$2,\\"at\\":$3}"; }'
+    builtin = ((_BUILTIN, f"    _collect_builtin {' '.join(readings)} &"),) if readings else ()
+    loops = ((_collector(spec.name, spec.command, spec.interval), f"    _collect_{spec.name} &") for spec in commands)
+    collectors, starts = zip(*builtin, *loops, strict=True) if readings or commands else ((), ())
     return "\n".join(
         (
             _GENERATION,
+            _NOW,
             emit_metric,
             *collectors,
             "start_metrics_daemon() {",
             *starts,
+            "    :",
             "}",
             "start_metrics_daemon",
         ),

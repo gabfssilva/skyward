@@ -53,14 +53,19 @@ class Console(Struct, frozen=True, tag="console", tag_field="type"):
 class Metric(Struct, frozen=True, tag="metric", tag_field="type"):
     """One reading of one gauge, sampled on the machine and named for what it is.
 
-    A gauge, not a log line: ``cpu`` at ``72.4`` replaces the last ``cpu``, it does
-    not add to a history. The bootstrap's collectors write these on their own
-    interval, independent of the worker, so a machine keeps saying how it is even
-    while it is still coming up, or long after it has gone quiet.
+    The bootstrap's collectors write these on their own interval, independent of the
+    worker, so a machine keeps saying how it is even while it is still coming up, or
+    long after it has gone quiet.
+
+    ``at`` is when the machine took the reading, in milliseconds since the epoch on
+    its own clock. The daemon reads the log late whenever the link drops, and again
+    from the start after it restarts; a reading stamped on arrival would land every
+    backlog in the same instant, and a re-read one twice.
     """
 
     name: str
     value: float
+    at: int
 
 
 class Health(Struct, frozen=True, tag="health", tag_field="type"):

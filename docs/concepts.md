@@ -218,7 +218,7 @@ Each field maps to a phase of the bootstrap:
 - `env` — environment variables set before your function executes.
 - `includes` — local directories synced to the nodes. This is how your own code reaches remote machines without being published as a package. It's packed client-side into a blob, and the spec carries only its hash, so the same code is uploaded once no matter how many nodes read it.
 - `excludes` — glob patterns skipped during that sync (`["__pycache__", "*.pyc"]`).
-- `metrics` — which `sky.metrics.*` samplers the node runs in the background.
+- `metrics` — what the node measures about itself in the background. Left out, it is `sky.metrics.Default()`: CPU, memory, network, disk, and GPU utilisation, memory, temperature and power where there is a GPU. A list is exactly what it names, so `[*sky.metrics.Default(), sky.metrics.Custom("loss", "cat /tmp/loss")]` keeps the defaults beside your own.
 
 Because `Image` is frozen, two computes built from the same image produce the same environment — same Python version, same packages, same system dependencies. This is reproducibility without writing a Dockerfile: the environment specification lives in your Python code, versioned alongside your experiments.
 

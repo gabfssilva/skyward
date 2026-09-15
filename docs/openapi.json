@@ -1039,7 +1039,27 @@
             "oneOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/MetricSpec"
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "cpu",
+                        "mem_used_mb",
+                        "mem_total_mb",
+                        "gpu_util",
+                        "gpu_mem_mb",
+                        "gpu_mem_total_mb",
+                        "gpu_temp_c",
+                        "gpu_power_w",
+                        "net_rx_kbps",
+                        "net_tx_kbps",
+                        "disk_used_pct"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MetricSpec"
+                    }
+                  ]
                 },
                 "type": "array"
               },
@@ -1317,6 +1337,86 @@
           "value"
         ],
         "title": "MetricEvent",
+        "type": "object"
+      },
+      "MetricHistory": {
+        "description": "A compute's metrics over a range, or since a cursor, and the cursor that continues them.\n\n``cursor`` is opaque. Handed back as ``after``, it answers with what was recorded\nsince this answer was read \u2014 including samples measured earlier and delivered late \u2014\nand nothing this answer already held. ``reset`` says that some of what was recorded\nsince has already been folded into the compacted history, where a cursor cannot\nreach: read the range again.",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "reset": {
+            "default": false,
+            "type": "boolean"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeries"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "series"
+        ],
+        "title": "MetricHistory",
+        "type": "object"
+      },
+      "MetricSample": {
+        "description": "One reading off one node: what it measured, when, and the number.\n\n``at`` is milliseconds since the epoch on the node's own clock \u2014 the moment the\nsample was taken, not the moment it reached the daemon, which a dropped link can\nput minutes later.",
+        "properties": {
+          "at": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "at",
+          "name",
+          "node",
+          "value"
+        ],
+        "title": "MetricSample",
+        "type": "object"
+      },
+      "MetricSeries": {
+        "description": "One metric of one node over time, as two columns of the same length.",
+        "properties": {
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "at",
+          "name",
+          "node",
+          "values"
+        ],
+        "title": "MetricSeries",
         "type": "object"
       },
       "MetricSpec": {
@@ -2019,6 +2119,42 @@
           "items"
         ],
         "title": "Page[Generation]",
+        "type": "object"
+      },
+      "Page_skyward.shared.schemas.MetricSample_": {
+        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSample"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[MetricSample]",
         "type": "object"
       },
       "Page_skyward.shared.schemas.Node_": {
@@ -5147,6 +5283,365 @@
         ]
       }
     },
+    "/v1/computes/{compute_id}/metrics": {
+      "get": {
+        "deprecated": false,
+        "description": "Every metric of every node, as one series per node and name: `at` in milliseconds since the epoch on the node's clock, and the value measured then. Ask with exactly one of `since` and `after`.\n\n**A range** \u2014 `since`, and optionally `until` (open when left out, so a node whose clock runs ahead is not cut off). Without `step` the samples come as they were taken, over at most an hour; with `step`, as one value per step of that many milliseconds, starting on a multiple of it, `agg` saying which: `avg`, `min`, `max` or `last`, over at most 2000 steps.\n\n**A cursor** \u2014 `after`, the `cursor` a previous answer handed out. It answers with what was recorded since that answer, whenever it was measured: a node whose link dropped delivers its backlog late, and the backlog is still new. `reset: true` means some of it has already been compacted out of reach of a cursor \u2014 read the range again.\n\nSamples reach this a couple of seconds after the node takes them. `node` and `name` narrow it, each repeatable.",
+        "operationId": "V1ComputesComputeIdMetricsHistory",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the range starts at.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the range starts at.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the range stops before.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the range stops before.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The `cursor` of a previous answer.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "description": "The `cursor` of a previous answer.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds each value of a range stands for.",
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds each value of a range stands for.",
+              "minimum": 1,
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "How the samples of one step become its value.",
+            "in": "query",
+            "name": "agg",
+            "required": false,
+            "schema": {
+              "default": "avg",
+              "description": "How the samples of one step become its value.",
+              "enum": [
+                "avg",
+                "min",
+                "max",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the nodes named.",
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "description": "Keeps the nodes named.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the metrics named.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "description": "Keeps the metrics named.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricHistory"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Read a compute's metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/metrics/latest": {
+      "get": {
+        "deprecated": false,
+        "description": "One item per node and metric: the newest sample the daemon holds. A node that has been quiet for longer than a compaction window is answered from its compacted history, so a compute that is gone still says where its nodes were when they stopped. `node` and `name` narrow it, each repeatable.",
+        "operationId": "V1ComputesComputeIdMetricsLatestLatest",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the nodes named.",
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "description": "Keeps the nodes named.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the metrics named.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "description": "Keeps the metrics named.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.MetricSample_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Read the newest value of each metric",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
     "/v1/computes/{compute_id}/nodes": {
       "get": {
         "deprecated": false,
@@ -8236,6 +8731,10 @@
     {
       "description": "One log per compute, and the only place anything observable is written: node output, bootstrap phases, lifecycle transitions and task outcomes all go here. There is no `logs` resource holding a second copy.\n\nIt is a stream rather than a status to poll, and it replays from any cursor that was ever valid \u2014 nothing garbage-collects it, which is what lets a client reconnect and print a bootstrap it was not around to watch.",
       "name": "events"
+    },
+    {
+      "description": "What each node measures about itself \u2014 CPU, memory, GPU, network, disk, and whatever the image adds \u2014 kept as history. The stream's `node.metrics` frames are the same readings live, and never replay; this is where they can be read back.\n\nRecent samples are kept as they came, and a closed window is compacted into one compressed chunk per node. A read joins the two, so compaction never shows through it, except to a cursor that fell behind it.",
+      "name": "metrics"
     },
     {
       "description": "Whether the daemon works, and whether what it leans on does. Liveness is about the process; readiness is about being able to serve; dependencies are informational.\n\nA provider being down degrades the computes on it and never fails liveness \u2014 killing a daemon over one marketplace having an afternoon would take every other compute with it.",

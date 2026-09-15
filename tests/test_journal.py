@@ -126,3 +126,10 @@ def describe_journal() -> None:
 
             assert [event["content"] for event in consoles(before)] == ["one"]
             assert [event["content"] for event in consoles(after)] == ["two"]
+
+    def describe_parse() -> None:
+        def a_metric_says_when_the_node_measured_it() -> None:
+            assert journal.parse('{"type":"metric","name":"cpu","value":41.3,"at":1757887200123}') == journal.Metric(name="cpu", value=41.3, at=1757887200123)
+
+        def a_metric_that_does_not_say_when_is_not_one() -> None:
+            assert journal.parse('{"type":"metric","name":"cpu","value":41.3}') is None

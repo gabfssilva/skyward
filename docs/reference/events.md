@@ -90,7 +90,7 @@ Three more come from the node itself rather than from the reconciler:
 |-------|---------|-------|
 | `node.console` | `node`, `content`, and `task` when the line belongs to one | A node's stdout/stderr. Recorded |
 | `node.phase` | `node`, `event`, `phase`, `at`, `error` | A bootstrap phase turning over, so a late subscriber replays the checklist. Recorded |
-| `node.metrics` | `node`, `name`, `value` | *Published.* One gauge reading |
+| `node.metrics` | `node`, `name`, `value` | *Published.* One gauge reading. Its history is kept apart from the log: `GET /v1/computes/{id}/metrics` |
 
 Console output goes straight to the log rather than through the daemon's internal wakeup bus: that bus coalesces identical payloads, and two identical lines of a user's `print` are two lines, not a duplicate.
 

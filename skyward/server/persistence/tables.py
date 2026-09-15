@@ -276,6 +276,45 @@ class EventRow(Table, tablename="events"):
     created_at = Timestamptz()
 
 
+class MetricSampleRow(Table, tablename="metric_samples"):
+    """A node's readings not yet folded into a chunk, one row each.
+
+    Only the recent past lives here: compaction moves every window that has closed
+    into :class:`MetricChunkRow` and deletes its rows, so the table holds the open
+    window, the grace behind it, and whatever arrived too late for either.
+
+    ``id`` is the order samples were recorded in, which is not the order they were
+    measured in — a node whose link dropped delivers its backlog late. That is what
+    a reader following along keeps as its cursor. ``at`` is milliseconds since the
+    epoch on the node's clock. A sample is unique by where it came from and when,
+    so reading a node's log again does not record it twice.
+    """
+
+    id = Serial(primary_key=True)
+    compute_id = Varchar()
+    node_id = Varchar()
+    name = Varchar()
+    at = Integer()
+    value = Float()
+
+
+class MetricChunkRow(Table, tablename="metric_chunks"):
+    """One node's samples over one closed window, compressed into a single blob.
+
+    ``since`` and ``until`` bound the window in milliseconds. ``last_id`` is the
+    highest :class:`MetricSampleRow` id folded in, which is how a reader holding a
+    cursor learns that rows it had not read yet were compacted away from under it.
+    """
+
+    id = Serial(primary_key=True)
+    compute_id = Varchar()
+    node_id = Varchar()
+    since = Integer()
+    until = Integer()
+    last_id = Integer()
+    data = Bytea()
+
+
 class IdempotencyRow(Table, tablename="idempotency"):
     """What a key has already been used to do.
 
@@ -303,5 +342,7 @@ TABLES = (
     TaskRow,
     ExecutionRow,
     EventRow,
+    MetricSampleRow,
+    MetricChunkRow,
     IdempotencyRow,
 )

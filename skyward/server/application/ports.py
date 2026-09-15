@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Sequence
 from typing import Literal, Protocol, runtime_checkable
 
 from skyward.server.application.ssh import Result
 from skyward.shared.events import LogEntry
 from skyward.shared.schemas import (
+    Aggregate,
     Compute,
     ComputeCreate,
     ComputeSpecPatch,
@@ -19,6 +20,8 @@ from skyward.shared.schemas import (
     GenerationCreate,
     Lease,
     LeaseClaim,
+    MetricHistory,
+    MetricSample,
     Node,
     NodeState,
     Offer,
@@ -175,6 +178,42 @@ class Events(Protocol):
         ``contains`` matches the line a node printed, any one of the strings, so a
         search is a query over the whole log rather than a filter over the page in hand.
         """
+        ...
+
+
+@runtime_checkable
+class Metrics(Protocol):
+    def add(self, compute: str, samples: Iterable[MetricSample]) -> None:
+        """Hold samples for the next :meth:`flush`."""
+        ...
+
+    async def flush(self) -> None:
+        """Write every sample held; one already recorded is kept once."""
+        ...
+
+    async def compact(self, now: int | None = None) -> None:
+        """Fold every window closed for longer than the grace into its node's chunk."""
+        ...
+
+    async def series(
+        self,
+        compute: str,
+        since: int,
+        until: int | None = None,
+        step: int | None = None,
+        aggregate: Aggregate = "avg",
+        nodes: Sequence[str] | None = None,
+        names: Sequence[str] | None = None,
+    ) -> MetricHistory:
+        """Samples measured from ``since`` up to ``until`` (open when not given), or one value per ``step`` milliseconds."""
+        ...
+
+    async def after(self, compute: str, cursor: str, nodes: Sequence[str] | None = None, names: Sequence[str] | None = None) -> MetricHistory:
+        """What was recorded after ``cursor``, whenever it was measured; ``reset`` when some of it was compacted first."""
+        ...
+
+    async def latest(self, compute: str, nodes: Sequence[str] | None = None, names: Sequence[str] | None = None) -> tuple[MetricSample, ...]:
+        """The newest sample of each node and name."""
         ...
 
 

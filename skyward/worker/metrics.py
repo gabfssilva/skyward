@@ -1,15 +1,16 @@
-"""Metric builders — a shell command a node samples on a period, as a ``MetricSpec``.
+"""Metric builders — what a node measures about itself, for ``Image(metrics=...)``.
 
-Each function returns one ``MetricSpec`` (or a tuple, for ``Default``) that the
-node turns into a background collector: run the command, emit the value if it is a
-bare number, sleep, repeat. Pass a selection to ``ComputePool(metrics=...)``.
-
-Usage::
+``Default()`` names every reading the node's own collector takes, all of them served
+by the one loop that reads them together. Every other builder returns one
+``MetricSpec`` — a shell command the node runs on its own period: run it, emit the
+value if it is a bare number, sleep, repeat. An image that names no metrics gets
+``Default()``; one that names any gets exactly those, so keeping the defaults beside
+a metric of one's own is saying so::
 
     import skyward as sky
 
-    pool = ComputePool(metrics=sky.metrics.Default())
-    pool = ComputePool(metrics=[sky.metrics.CPU(interval=0.5), sky.metrics.GPU()])
+    image = sky.Image(metrics=[*sky.metrics.Default(), sky.metrics.Custom("loss", "cat /tmp/loss")])
+    image = sky.Image(metrics=[sky.metrics.GPU(index=0), sky.metrics.GPU(index=1)])
 
 GPU builders read every device at once and report a single aggregate per node —
 utilisation and temperature averaged, memory summed — because a collector reads one
@@ -18,7 +19,7 @@ and emit nothing. Pass ``index`` to read one device instead. Per-device series
 (``gpu_util_0``, ``gpu_util_1``, …) without an explicit index are not emitted.
 """
 
-from skyward.shared.schemas import MetricSpec
+from skyward.shared.schemas import READINGS, MetricSpec, Reading
 
 _AVG = "awk '{s+=$1;n++} END{if(n)printf \"%.1f\",s/n}'"
 _SUM = "awk '{s+=$1} END{if(NR)printf \"%d\",s}'"
@@ -137,23 +138,14 @@ def Custom(name: str, command: str, interval: float = 3) -> MetricSpec:
     return MetricSpec(name=name, command=command, interval=interval)
 
 
-def Default(
-    *,
-    cpu_interval: float = 2,
-    memory_interval: float = 2,
-    gpu_interval: float = 3,
-) -> tuple[MetricSpec, ...]:
-    """CPU, memory, and GPU — the set the console reads, GPU ignored where absent."""
-    return (
-        CPU(cpu_interval),
-        Memory(memory_interval),
-        MemoryUsed(memory_interval),
-        MemoryTotal(),
-        GPU(interval=gpu_interval),
-        GPUMemory(interval=gpu_interval),
-        GPUMemoryTotal(),
-        GPUTemp(interval=gpu_interval),
-    )
+def Default() -> tuple[Reading, ...]:
+    """Every reading the node's own collector takes — what an image that names no metrics gets.
+
+    CPU, memory, network and disk everywhere; GPU utilisation, memory, temperature and
+    power where ``nvidia-smi`` answers. See :data:`skyward.shared.schemas.Reading` for
+    what each one measures and how often.
+    """
+    return READINGS
 
 
 __all__ = [

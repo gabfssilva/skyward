@@ -125,6 +125,16 @@ TAGS: tuple[Tag, ...] = (
         ),
     ),
     Tag(
+        name="metrics",
+        description=(
+            "What each node measures about itself — CPU, memory, GPU, network, disk, and whatever the image adds — "
+            "kept as history. The stream's `node.metrics` frames are the same readings live, and never replay; this is "
+            "where they can be read back.\n\n"
+            "Recent samples are kept as they came, and a closed window is compacted into one compressed chunk per node. "
+            "A read joins the two, so compaction never shows through it, except to a cursor that fell behind it."
+        ),
+    ),
+    Tag(
         name="health",
         description=(
             "Whether the daemon works, and whether what it leans on does. Liveness is about the process; readiness is "

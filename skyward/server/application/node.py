@@ -27,7 +27,7 @@ BATCH = 256
 
 type Listener = Callable[[NodeState, str | None], None]
 type Output = Callable[[tuple[Console, ...]], Awaitable[None]]
-type Sample = Callable[[str, float], Awaitable[None]]
+type Sample = Callable[[Metric], Awaitable[None]]
 type Phased = Callable[[PhaseMark, str, str | None], Awaitable[None]]
 
 
@@ -478,8 +478,8 @@ class Node:
                     match run:
                         case tuple():
                             await self._output(run)
-                        case Metric(name=name, value=value):
-                            await self._sample(name, value)
+                        case Metric() as reading:
+                            await self._sample(reading)
                         case Phase(event=mark, phase=phase, error=error):
                             await self._phase(mark, phase, error)
                 except Exception:

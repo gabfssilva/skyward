@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Sequence
 from datetime import UTC, datetime
 
 from skyward.shared.errors import NotFoundError
 from skyward.shared.events import ComputeProvisioning, LogEntry
 from skyward.shared.schemas import (
+    Aggregate,
     Compute,
     ComputeCreate,
     ComputeSpec,
@@ -22,6 +23,9 @@ from skyward.shared.schemas import (
     Image,
     Lease,
     LeaseClaim,
+    MetricHistory,
+    MetricSample,
+    MetricSeries,
     Node,
     NodeBounds,
     Offer,
@@ -295,6 +299,38 @@ class MockEvents:
     ) -> Page[LogEntry]:
         provisioning = ComputeProvisioning(compute=COMPUTE.id, nodes_ready=0, nodes_total=4, generation=COMPUTE.generation)
         return Page(items=(LogEntry(sequence=1, type="compute.provisioning", at=COMPUTE.created_at, data=provisioning),))
+
+
+SAMPLE = MetricSample(node="nod_c19e40", name="gpu_util", at=1_783_944_000_000, value=97.5)
+
+
+class MockMetrics:
+    def add(self, compute: str, samples: Iterable[MetricSample]) -> None:
+        pass
+
+    async def flush(self) -> None:
+        pass
+
+    async def compact(self, now: int | None = None) -> None:
+        pass
+
+    async def series(
+        self,
+        compute: str,
+        since: int,
+        until: int | None = None,
+        step: int | None = None,
+        aggregate: Aggregate = "avg",
+        nodes: Sequence[str] | None = None,
+        names: Sequence[str] | None = None,
+    ) -> MetricHistory:
+        return MetricHistory(series=(MetricSeries(node=SAMPLE.node, name=SAMPLE.name, at=(SAMPLE.at,), values=(SAMPLE.value,)),), cursor="1")
+
+    async def after(self, compute: str, cursor: str, nodes: Sequence[str] | None = None, names: Sequence[str] | None = None) -> MetricHistory:
+        return MetricHistory(series=(), cursor=cursor)
+
+    async def latest(self, compute: str, nodes: Sequence[str] | None = None, names: Sequence[str] | None = None) -> tuple[MetricSample, ...]:
+        return (SAMPLE,)
 
 
 class MockProviders:
