@@ -37,8 +37,9 @@ tasks:
       - uv run lint-imports
 
   plugin:check:
-    desc: Type check the skyward plugin and validate both manifests
+    desc: Generate the plugin's type declarations, type check it, and validate both manifests
     cmds:
+      - cd plugins/skyward && CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "/plugin-types types" < /dev/null
       - npx -y -p typescript@5 tsc -p plugins/skyward
       - claude plugin validate --strict plugins/skyward
       - claude plugin validate --strict .
