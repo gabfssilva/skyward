@@ -1,7 +1,7 @@
 {
-  "name": "skyward-cli",
+  "name": "skyward",
   "version": "0.1.0",
-  "description": "Drive the `sky` CLI: provision GPU computes, browse offers, register providers, run code on nodes, and read a compute's event log.",
+  "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, and a skill that drives the `sky` CLI.",
   "author": {
     "name": "Gabriel Francisco",
     "email": "gabfssilva@gmail.com"

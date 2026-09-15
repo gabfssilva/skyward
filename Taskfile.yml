@@ -36,6 +36,13 @@ tasks:
     cmds:
       - uv run lint-imports
 
+  plugin:check:
+    desc: Type check the skyward plugin and validate both manifests
+    cmds:
+      - npx -y -p typescript@5 tsc -p plugins/skyward
+      - claude plugin validate --strict plugins/skyward
+      - claude plugin validate --strict .
+
   check:
     desc: Run lint + typecheck + layer contracts
     cmds:

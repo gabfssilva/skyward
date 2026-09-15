@@ -8,9 +8,9 @@
   },
   "plugins": [
     {
-      "name": "skyward-cli",
-      "source": "./plugins/skyward-cli",
-      "description": "Drive the `sky` CLI: provision GPU computes, browse offers, register providers, run code on nodes, and read a compute's event log.",
+      "name": "skyward",
+      "source": "./plugins/skyward",
+      "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, and a skill that drives the `sky` CLI.",
       "category": "devops",
       "homepage": "https://github.com/gabfssilva/skyward"
     }
