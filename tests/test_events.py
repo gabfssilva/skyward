@@ -11,7 +11,7 @@ from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import BACKLOG, PAGE, EventStore, Live, Record
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
-from skyward.shared.events import ConsoleEvent, LogEntry, MetricEvent, NodeEvent
+from skyward.shared.events import ConsoleEvent, LogEntry, MetricEvent, NodeEvent, TaskEvent
 from skyward.shared.schemas import Page
 
 pytestmark = pytest.mark.local
@@ -257,6 +257,18 @@ def describe_reading_the_log() -> None:
         page = await events.log(None, 10, node="n1")
 
         assert said(page) == ["from one"]
+
+    async def it_reads_one_tasks_lifecycle_and_every_line_its_attempts_printed(events: EventStore) -> None:
+        await events.record(TaskEvent(compute="cmp_a", task="tsk_1", state="started", attempt=1))
+        await events.record_all([ConsoleEvent(compute="cmp_a", node="n0", content="first try", task="tsk_1", execution="exe_1")])
+        await events.record(TaskEvent(compute="cmp_a", task="tsk_1", state="retrying", attempt=1))
+        await events.record_all([ConsoleEvent(compute="cmp_a", node="n1", content="second try", task="tsk_1", execution="exe_2")])
+        await events.record_all([ConsoleEvent(compute="cmp_a", node="n0", content="someone else", task="tsk_2", execution="exe_3")])
+
+        page = await events.log(None, 10, task="tsk_1")
+
+        assert [entry.type for entry in page.items] == ["node.console", "task.retrying", "node.console", "task.started"]
+        assert said(page) == ["second try", "first try"]
 
     async def it_reads_only_the_lines_that_said_one_of_the_words(events: EventStore) -> None:
         await events.record_all([line("cmp_a", "CUDA out of memory"), line("cmp_a", "epoch 3 done"), line("cmp_a", "Traceback (most recent call last)")])

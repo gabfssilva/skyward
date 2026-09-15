@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
+import httpx
 import msgspec
 from msgspec import UNSET, UnsetType
 
@@ -598,9 +599,17 @@ class Compute:
         )
 
     async def _renew(self) -> None:
+        """Renew the lease a third of its life apart, for as long as the pool is open.
+
+        A renewal that found no daemon — one being restarted for longer than a request
+        waits for it — is tried again at the next beat. A loop that ended with it would
+        stop renewing for good, and the daemon, once back, would find a compute nobody
+        holds and tear it down with its machines and whatever they were running.
+        """
         while True:
             await asyncio.sleep(LEASE_SECONDS / 3)
-            await self._claim()
+            with suppress(httpx.TransportError):
+                await self._claim()
 
     def _teardown(self) -> None:
         """Tear down, and stay torn down even when a ``Ctrl-C`` lands mid-teardown.

@@ -42,6 +42,8 @@ type TaskState = Literal[
     "indeterminate",
 ]
 
+type TaskOrder = Literal["submitted", "state", "finished"]
+
 type ExecutionState = Literal[
     "created",
     "assigned",
@@ -370,11 +372,9 @@ class Worker(Struct, frozen=True):
     """How many tasks the worker accepts beyond ``concurrency``.
 
     ``concurrency`` is the executor's width — how many tasks run at once. ``buffer``
-    is the slack casty admits on top of it: the extra tasks arrive, are unpickled and
-    wait at the executor's door, so a slot that frees has the next task in hand rather
-    than a round trip away. It is also the depth the daemon reads as backpressure —
-    the mailbox only fills once the buffer is full, which is the point at which
-    another node would actually help.
+    is the slack the worker admits on top of it: the extra tasks arrive and wait at
+    the executor's door, so a slot that frees has the next task in hand rather than a
+    round trip away.
     """
 
 

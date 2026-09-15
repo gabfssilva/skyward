@@ -136,7 +136,14 @@ def services() -> Services:
     tasks = TaskStore(computes, nodes, blobs)
 
     async def console(compute: str, node: str, lines: tuple[Console, ...]) -> None:
-        await events.record_all(tuple(ConsoleEvent(compute=compute, node=node, content=line.content, task=line.task) for line in lines))
+        """A node names the execution it was running; the line is recorded under that execution's task too."""
+        owners = await tasks.owners({line.task for line in lines if line.task})
+        await events.record_all(
+            tuple(
+                ConsoleEvent(compute=compute, node=node, content=line.content, task=owners.get(line.task) if line.task else None, execution=line.task)
+                for line in lines
+            )
+        )
 
     async def phased(compute: str, node: str, event: PhaseMark, phase: str, error: str | None) -> None:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
@@ -350,8 +357,16 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     return app
 
 
-def daemon() -> Litestar:
-    """The app a standalone daemon serves, as uvicorn's factory.
+@dataclass(frozen=True, slots=True)
+class Standalone:
+    """The app a standalone daemon serves, and what its server says to it before cutting its connections."""
+
+    app: Litestar
+    closing: Callable[[], None]
+
+
+def daemon() -> Standalone:
+    """The app a standalone daemon serves.
 
     The one deployment that owns its process is also the only one allowed to say where
     logs go: ``create_app`` is imported into the user's process by the embedded client,
@@ -363,4 +378,5 @@ def daemon() -> Litestar:
     """
     setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL")), console=sys.stdout.isatty()))
     database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
-    return create_app(services(), database=database, console_at=CONSOLE if (CONSOLE / "index.html").is_file() else None)
+    svc = services()
+    return Standalone(create_app(svc, database=database, console_at=CONSOLE if (CONSOLE / "index.html").is_file() else None), svc.tasks.close)

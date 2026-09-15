@@ -3,11 +3,16 @@
 import importlib
 import logging
 import logging.handlers
-import subprocess
+import os
+import signal
+import socket
 import threading
+import time
 from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
+import httpx
 import pytest
 
 from skyward.server import daemon
@@ -79,21 +84,31 @@ def describe_without_sinks() -> None:
 
 
 def describe_spawn() -> None:
-    def it_starts_the_daemon_without_an_access_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands: list[list[str]] = []
-
-        class Process:
-            pid = 4242
-
-        def popen(command: list[str], **_: object) -> Process:
-            commands.append(command)
-            return Process()
-
+    @pytest.mark.timeout(60)
+    def it_starts_a_daemon_that_answers_and_writes_no_access_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
         monkeypatch.setattr(daemon, "RUNTIME_DIR", tmp_path)
         monkeypatch.setattr(daemon, "LOG_FILE", tmp_path / "server.log")
-        monkeypatch.setattr(daemon, "installed", lambda: True)
-        monkeypatch.setattr(subprocess, "Popen", popen)
+        monkeypatch.setenv("HOME", str(tmp_path))
 
-        assert daemon.spawn("127.0.0.1", 17999) == 4242
-        assert len(commands) == 1
-        assert "--no-access-log" in commands[0]
+        process = daemon.spawn("127.0.0.1", port, tmp_path / "skyward.sqlite")
+        try:
+            assert _answered(f"http://127.0.0.1:{port}/v1/health/live"), "the detached daemon came up"
+        finally:
+            os.kill(process, signal.SIGTERM)
+            with suppress(ChildProcessError):
+                os.waitpid(process, 0)
+
+        assert "GET /v1/health/live" not in (tmp_path / "server.log").read_text(), "a line per request is noise in a file nothing rotates"
+
+
+def _answered(url: str) -> bool:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        with suppress(httpx.HTTPError):
+            if httpx.get(url, timeout=1).status_code == 200:
+                return True
+        time.sleep(0.2)
+    return False

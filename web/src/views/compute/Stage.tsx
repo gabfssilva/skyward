@@ -175,20 +175,21 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
   const lastErr = failures[failures.length - 1]
   const fnName = (sha: string) => state.functions[sha]?.name ?? sha.slice(0, 8)
   const ranksOf = (t: Task) => new Set(execsOf(t, nodes).map((e) => e.rank)).size
+  const cells = combNodes(id, nodes, metrics, state.progress)
 
   return (
     <>
       <div className="cmp-comb">
         <Comb
           layout="hive"
-          nodes={combNodes(id, nodes, metrics, state.progress)}
+          nodes={cells}
           computeId={id}
           name={c.name ?? c.id}
-          size={Math.min(60, hiveSize(nodes.length, 500, 460))}
+          size={Math.min(60, hiveSize(cells.length, 500, 460))}
           onPick={(rank) => navigate(`/computes/${id}/nodes/${rank}`)}
         />
         <div className="row wrap" style={{ gap: 14 }}>
-          <Legend states={nodes.map((n) => n.state)} />
+          <Legend states={cells.map((n) => n.state)} />
           <span className="mono faint">
             {sl > 1 ? `${busy} of ${ready.length * sl} slots busy · ${c.spec.worker?.executor ?? 'thread'} × ${sl}` : `${busy} of ${ready.length} busy`}
           </span>

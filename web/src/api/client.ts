@@ -44,6 +44,9 @@ export type Page<T> = { items: T[]; next_cursor?: string | null; total?: number 
 /** How the daemon orders a page of the catalog. */
 export type OfferSort = NonNullable<NonNullable<paths['/v1/offers']['get']['parameters']['query']>['sort']>
 
+/** How the daemon orders a page of tasks. */
+export type TaskOrder = NonNullable<NonNullable<paths['/v1/tasks']['get']['parameters']['query']>['order']>
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -128,7 +131,7 @@ async function conditional<T>(id: string, init: RequestInit & { headers?: Record
 
 export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause'] }
 export type NodeQuery = { include_terminal?: boolean; generation?: number }
-export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string }
+export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string; order?: TaskOrder }
 export type LogQuery = { cursor?: string; limit?: number; compute?: string; task?: string; node?: string; types?: readonly string[]; contains?: readonly string[] }
 export type OfferQuery = {
   provider?: string

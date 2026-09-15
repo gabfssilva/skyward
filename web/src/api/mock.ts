@@ -243,7 +243,7 @@ type FleetOptions = {
 }
 
 /** The live gauge behind one node, exactly the prototype's `n.m`. */
-type Live = { gpu: number; vram: number; cpu: number; temp: number; net: number }
+type Live = { gpu: number; vram: number; cpu: number; temp: number; rx: number; tx: number }
 
 const live = new Map<string, Live>()
 
@@ -277,7 +277,8 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
       vram: jitter(base - 6, 8),
       cpu: jitter(34, 16),
       temp: 58 + rnd() * 22,
-      net: rnd() * 90,
+      rx: rnd() * 90,
+      tx: rnd() * 90,
     })
   }
   return node
@@ -643,6 +644,12 @@ const paged = <T extends { id: string }>(matched: T[], moment: (item: T) => numb
   return { items, next_cursor: last && items.length === limit ? last.id : null, total: matched.length }
 }
 
+/** The daemon's ``state`` order as one moment, largest first: running newest first, then queued oldest first, then the finished latest first. */
+const byState = (t: Task): number => {
+  const submitted = Date.parse(t.submitted_at)
+  return t.state === 'running' ? 3e13 + submitted : t.state === 'queued' ? 2e13 - submitted : 1e13 + Date.parse(t.finished_at ?? t.submitted_at)
+}
+
 /** The states a compute still owes something in: what ``live=true`` lists, and ``live=false`` the rest of. */
 const LIVE = new Set<Compute['status']['state']>(['requested', 'provisioning', 'ready', 'degraded', 'deleting'])
 
@@ -755,7 +762,8 @@ function route(path: string, init: RequestInit | undefined): Response {
       const compute = query.get('compute')
       const state = query.get('state')
       const matched = (compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()).filter((t) => !state || t.state === state)
-      return json(paged(matched, (t) => Date.parse(t.submitted_at), query.get('cursor'), Number(query.get('limit') ?? 50)))
+      const moment = query.get('order') === 'state' ? byState : (t: Task) => Date.parse(t.submitted_at)
+      return json(paged(matched, moment, query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
     const t = Object.values(tasks)
       .flat()
@@ -872,7 +880,9 @@ const nodeId = (computeId: string, rank: number): string => `nd_${computeId.slic
 
 const gauges = (computeId: string, rank: number, m: Live): void => {
   emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_util', value: Math.round(m.gpu) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_temp', value: Math.round(m.temp) })
+  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_temp_c', value: Math.round(m.temp) })
+  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'net_rx_kbps', value: Math.round(m.rx * 8000) })
+  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'net_tx_kbps', value: Math.round(m.tx * 8000) })
   emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'cpu', value: Math.round(m.cpu) })
   emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_mem_total_mb', value: 81920 })
   emit('node.metrics', {
@@ -899,7 +909,8 @@ function tick(): void {
       m.vram = clamp(m.vram + (rnd() - 0.5) * 3, 2, 100)
       m.cpu = clamp(m.cpu + (rnd() - 0.5) * 7, 1, 100)
       m.temp = clamp(m.temp + (rnd() - 0.5) * 2.5, 34, 92)
-      m.net = clamp(m.net + (rnd() - 0.5) * 14, 0, 120)
+      m.rx = clamp(m.rx + (rnd() - 0.5) * 14, 0, 120)
+      m.tx = clamp(m.tx + (rnd() - 0.5) * 14, 0, 120)
     }
     const start = cursors[c.id] ?? 0
     const slice = list.slice(start, start + SLICE)
@@ -952,6 +963,21 @@ function history(): void {
   emit('task.failed', { type: 'task.state', compute: C1, task: 'tk_9d1a02', state: 'failed', attempt: 1, at: iso(t - 1.24e6) })
   emit('task.succeeded', { type: 'task.state', compute: C1, task: 'tk_9d1a02', state: 'succeeded', attempt: 2, at: iso(t - 1.1e6) })
   emit('node.bootstrapping', { type: 'node.state', compute: C1, node: nodeId(C1, 37), state: 'bootstrapping', error: null, at: iso(t - 2.2e5) })
+  const marks: readonly (readonly [string, string])[] = [
+    ['started', 'bootstrap'],
+    ['started', 'apt'],
+    ['completed', 'apt'],
+    ['started', 'uv'],
+    ['completed', 'uv'],
+    ['started', 'venv'],
+    ['completed', 'venv'],
+    ['started', 'skyward'],
+    ['completed', 'skyward'],
+    ['started', 'deps'],
+  ]
+  marks.forEach(([event, phase], i) =>
+    emit('node.phase', { type: 'node.phase', compute: C1, node: nodeId(C1, 37), event, phase, error: null, at: iso(t - 2.1e5 + i * 4000) }),
+  )
   emit('compute.ready', { type: 'compute.ready', compute: C2, nodes_ready: 284, nodes_total: 284, generation: 1, at: iso(t - 3.9e6) })
   emit('node.failed', { type: 'node.state', compute: C2, node: nodeId(C2, 19), state: 'failed', error: 'interrupted by the provider', at: iso(t - 3.6e5) })
   emit('node.lost', { type: 'node.state', compute: C2, node: nodeId(C2, 140), state: 'lost', error: 'the worker stopped answering', at: iso(t - 1.8e5) })

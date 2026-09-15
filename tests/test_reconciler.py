@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from skyward.server.application.connector import Connector
 from skyward.server.application.dispatcher import Dispatcher
 from skyward.server.application.machines import Machines
 from skyward.server.application.mock import SPEC
-from skyward.server.application.reconciler import Reconciler, Wakeup
+from skyward.server.application.reconciler import ABANDON_SECONDS, Reconciler, Wakeup
 from skyward.server.application.runtimes import Runtimes
 from skyward.server.http.emitter import ReconcilingEventEmitter
 from skyward.server.http.listeners import build_listeners
@@ -20,7 +21,8 @@ from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
-from skyward.server.persistence.tables import EventRow
+from skyward.server.persistence.store import now
+from skyward.server.persistence.tables import ComputeRow, EventRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import TaskFailedError
 from skyward.shared.events import ComputeDeleted
@@ -123,6 +125,50 @@ def describe_a_deleted_compute() -> None:
 
         assert broadcast.executions == (), "a broadcast admitted while no node was ready is given no attempt"
         assert await daemon.reconciler.unsettled() == ((), ()), "its deletion has nothing to answer, so there is nothing to offer it for on every tick"
+
+
+def describe_a_daemon_going_away() -> None:
+    async def it_answers_a_result_being_waited_on_with_no_outcome_yet(tmp_path: Path) -> None:
+        daemon = await _daemon(tmp_path)
+        task = await daemon.submit()
+        waiting = asyncio.create_task(daemon.tasks.result(task.id, wait_seconds=30))
+        await asyncio.sleep(0.05)
+        assert not waiting.done()
+
+        daemon.tasks.close()
+
+        async with asyncio.timeout(1):
+            assert await waiting is None, "not a verdict: the caller asks again, of whichever daemon is there by then"
+
+
+def describe_a_compute_whose_lease_ran_out() -> None:
+    async def while_the_daemon_was_down_its_owner_gets_the_minute_to_renew_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        await _unrenewed(compute, seconds=300)
+
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired != "deleted", "an owner cannot renew through a daemon that was not there"
+
+    async def once_this_daemon_has_been_up_that_long_nobody_is_coming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        await _unrenewed(compute, seconds=300)
+        monkeypatch.setattr(reconciler, "_up_since", now() - timedelta(seconds=ABANDON_SECONDS + 1))
+
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired == "deleted"
+
+
+async def _unrenewed(compute: str, seconds: float) -> None:
+    """Make the compute older than the newborn grace, with a lease its owner last renewed ``seconds`` ago."""
+    await ComputeRow.update(
+        {
+            ComputeRow.created_at: now() - timedelta(seconds=seconds + ABANDON_SECONDS),
+            ComputeRow.lease_owner: "sdk_gone",
+            ComputeRow.lease_expires_at: now() - timedelta(seconds=seconds),
+        }
+    ).where(ComputeRow.id == compute).run()
 
 
 async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ComputeStore, str, CountingNodes, Reconciler]:

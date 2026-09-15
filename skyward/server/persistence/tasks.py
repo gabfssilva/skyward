@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import timedelta
 from itertools import batched
 from typing import Any, NamedTuple
 
 import msgspec
 from msgspec import UNSET
-from piccolo.custom_types import Combinable
+from piccolo.querystring import QueryString
 
 from skyward.server.persistence.computes import LIVE, ComputeStore
+from skyward.server.persistence.db import POSITIONS
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
-from skyward.server.persistence.store import after, ident, now, once, packed, unpacked
+from skyward.server.persistence.store import ident, now, once, packed, unpacked
 from skyward.server.persistence.tables import ComputeRow, ExecutionRow, TaskRow
 from skyward.shared.errors import (
     ComputeNotAcceptingError,
@@ -33,6 +35,7 @@ from skyward.shared.schemas import (
     Page,
     Task,
     TaskCreate,
+    TaskOrder,
     TaskState,
 )
 
@@ -115,32 +118,55 @@ class TaskStore:
         (task,) = await _tasks([await self._row(task_id)])
         return task
 
-    async def list(self, cursor: str | None, limit: int, compute: str | None, state: TaskState | None, correlation_id: str | None) -> Page[Task]:
-        """Newest first.
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        compute: str | None = None,
+        states: Sequence[TaskState] = (),
+        correlation_id: str | None = None,
+        function: str | None = None,
+        order: TaskOrder = "submitted",
+    ) -> Page[Task]:
+        """A page of the tasks the filters match, in ``order``, and how many they match.
 
-        A compute that keeps working keeps adding tasks, so what it has the most of
-        is what it has already done: paged from the oldest end, the first page is the
-        first tasks the compute ever ran, and the ones it is running now are the last
-        page anybody reaches.
+        ``submitted`` is newest first. A compute that keeps working keeps adding tasks,
+        so what it has the most of is what it has already done: paged from the oldest
+        end, the first page is the first tasks the compute ever ran. ``state`` puts
+        what is running first, newest submitted first, then the queue in the order it
+        is served, then the finished, latest to finish first. ``finished`` is latest to
+        finish first, and then what has not finished, newest submitted first.
+
+        ``function`` is a name, and every upload of code under it: a function edited
+        and sent again is another digest and the same function.
+
+        The cursor is the position the page ended on, not a task: a task that changes
+        state moves in the ``state`` and ``finished`` orders, and a walk resumed from
+        where that task went would skip or repeat whatever it passed over.
         """
-        narrowed: list[Combinable] = []
+        position = POSITIONS[order]
+        narrowed = [
+            *([QueryString("compute_id = {}", compute)] if compute else []),
+            *([QueryString(f"state IN ({', '.join('{}' for _ in states)})", *states)] if states else []),
+            *([QueryString("correlation_id = {}", correlation_id)] if correlation_id else []),
+            *([QueryString("function IN (SELECT sha256 FROM functions WHERE name = {})", function)] if function else []),
+        ]
+        matched = QueryString(" AND ".join("{}" for _ in narrowed) or "1", *narrowed)
 
-        if compute:
-            narrowed.append(TaskRow.compute_id == compute)
-        if state:
-            narrowed.append(TaskRow.state == state)
-        if correlation_id:
-            narrowed.append(TaskRow.correlation_id == correlation_id)
+        seek = QueryString("1")
+        if cursor:
+            at, past = _position(cursor, order)
+            seek = QueryString(f"({position}) >= {{}} AND (({position}), id) > ({{}}, {{}})", at, at, past)
 
-        query = TaskRow.objects().where(*narrowed)
-        if pivot := await after(cursor, TaskRow.id, TaskRow.submitted_at):
-            query = query.where(TaskRow.submitted_at < pivot)
+        page = f"SELECT id, {position} AS position FROM tasks WHERE {{}} AND {{}} ORDER BY position, id LIMIT {{}}"
+        rows = await TaskRow.raw(page, matched, seek, limit).run()
+        found = {row.id: row for row in await TaskRow.objects().where(TaskRow.id.is_in([row["id"] for row in rows]))} if rows else {}
+        (counted,) = await TaskRow.raw("SELECT count(*) AS total FROM tasks WHERE {}", matched).run()
 
-        items = await _tasks(await query.order_by(TaskRow.submitted_at, ascending=False).limit(limit))
         return Page(
-            items=items,
-            next_cursor=items[-1].id if items and len(items) == limit else None,
-            total=await TaskRow.count().where(*narrowed),
+            items=await _tasks([found[row["id"]] for row in rows]),
+            next_cursor=_cursor(order, rows[-1]["position"], rows[-1]["id"]) if len(rows) == limit else None,
+            total=counted["total"],
         )
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
@@ -162,6 +188,19 @@ class TaskStore:
 
         await once("task.cancel", idempotency_key, None, request)
         return await self.get(task_id)
+
+    def close(self) -> None:
+        """Answer every result being waited on, now, with what there is.
+
+        The daemon is going away, and its server cuts whatever is still open once it
+        has waited a moment. A long poll cut before it answered is answered for it with
+        a 500, which the caller can only read as the daemon's verdict on the task, and
+        gives up. Woken here instead, each wait reads its task as it stands and says
+        there is no outcome yet — the answer that sends the caller back to ask again,
+        of whichever daemon is there by then.
+        """
+        for settled in self._settled.values():
+            settled.set()
 
     async def result(self, task_id: str, wait_seconds: int) -> bytes | None:
         task = await self.get(task_id)
@@ -269,6 +308,13 @@ class TaskStore:
 
     async def attempts(self, task_id: str) -> list[ExecutionRow]:
         return await ExecutionRow.objects().where(ExecutionRow.task_id == task_id).order_by(ExecutionRow.ordinal)
+
+    async def owners(self, executions: Collection[str]) -> dict[str, str]:
+        """The task each of these executions is an attempt at, leaving out any the store never wrote."""
+        if not executions:
+            return {}
+        rows = await ExecutionRow.select(ExecutionRow.id, ExecutionRow.task_id).where(ExecutionRow.id.is_in(list(executions)))
+        return {row["id"]: row["task_id"] for row in rows}
 
     async def unsettled(self) -> tuple[str, ...]:
         """Tasks that have not reached a verdict and still have a compute to reach one on — what the sweep re-offers.
@@ -523,6 +569,21 @@ async def _to_task(row: TaskRow, attempts: Sequence[ExecutionRow]) -> Task:
         result_sha256=row.result_sha256,
         finished_at=row.finished_at,
     )
+
+
+def _cursor(order: TaskOrder, position: int, task: str) -> str:
+    return base64.urlsafe_b64encode(msgspec.json.encode((order, position, task))).decode()
+
+
+def _position(cursor: str, order: TaskOrder) -> tuple[int, str]:
+    """Where a page picks up: the position and the task the page before it ended on."""
+    try:
+        paged, position, task = msgspec.json.decode(base64.urlsafe_b64decode(cursor), type=tuple[TaskOrder, int, str])
+    except (ValueError, msgspec.DecodeError) as exc:
+        raise NotFoundError(f"no such cursor: {cursor}") from exc
+    if paged != order:
+        raise NotFoundError(f"cursor {cursor} pages the {paged} order, not {order}")
+    return position, task
 
 
 async def _to_execution(row: ExecutionRow) -> Execution:

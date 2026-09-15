@@ -207,17 +207,24 @@ def bind_distributed(system: casty.ActorSystem) -> None:
         distributed.bind(system, asyncio.get_running_loop())
 
 
-@casty.service(name="skyward.Worker", concurrency=CONCURRENCY + BUFFER)
+@casty.service(name="skyward.Worker")
 class Worker:
     """The tasks.
 
-    The service admits ``concurrency + buffer`` calls; the executor runs
-    ``concurrency`` of them. The gap is the buffer: those calls arrive and their
-    payloads are unpickled, then wait at the executor's door, so a slot that frees
-    finds the next task in hand. A call that finds even the buffer full sits in the
-    mailbox, and that is the backpressure the daemon reads when it decides whether
-    the compute needs another node.
+    The worker admits ``concurrency + buffer`` calls at once; the executor runs
+    ``concurrency`` of them. The gap is the buffer: those calls wait at the
+    executor's door, so a slot that frees finds the next task in hand.
+
+    The admission is the worker's and not casty's. A call casty held back would
+    wait in the service's mailbox, where :meth:`Control.result` cannot see it: the
+    worker would answer that it never had an attempt it is about to run, and a
+    daemon that lost the call would run it a second time on the strength of that.
+    A call admitted here is known from the moment it arrives, and waits for a slot
+    as an attempt the worker owes.
     """
+
+    def __init__(self) -> None:
+        self._admission = asyncio.Semaphore(CONCURRENCY + BUFFER)
 
     async def run(
         self,
@@ -245,7 +252,8 @@ class Worker:
         outcomes[id] = promise
         promise.add_done_callback(lambda _: loop.call_later(KEEP_SECONDS, _forget, id, promise))
         try:
-            outcome = await execute(id, code, args, decision, attempt)
+            async with self._admission:
+                outcome = await execute(id, code, args, decision, attempt)
         except BaseException as exc:
             promise.set_result(Lost(error=f"the attempt ended without an outcome: {exc!r}"))
             raise
@@ -259,10 +267,11 @@ class Worker:
         opening separable from the pulling — and the pulling is what the caller
         paces.
         """
-        fn = await generator.decode(code)
-        positional, keyword = await arguments.decode(args)
-        wrapped = plugins.chain(installed, partial(fn, *positional, **keyword), instance_info())
-        generators[id] = await asyncio.get_running_loop().run_in_executor(thread_pool, contextvars.copy_context().run, partial(_flushing, wrapped))
+        async with self._admission:
+            fn = await generator.decode(code)
+            positional, keyword = await arguments.decode(args)
+            wrapped = plugins.chain(installed, partial(fn, *positional, **keyword), instance_info())
+            generators[id] = await asyncio.get_running_loop().run_in_executor(thread_pool, contextvars.copy_context().run, partial(_flushing, wrapped))
 
     async def step(self, id: str) -> bytes:
         """One item, because somebody asked for one.
@@ -276,7 +285,8 @@ class Worker:
         ``open`` — a generator that yields a million items would otherwise ship the
         user's function a million times.
         """
-        return await _encoded(await advance(id))
+        async with self._admission:
+            return await _encoded(await advance(id))
 
     async def close(self, id: str) -> None:
         """Let go of a generator whose caller went away.
@@ -289,9 +299,10 @@ class Worker:
         ``finally`` — the user's code, which may reach for a collection that blocks on
         this very loop. One being pulled right now is left to the pull to close.
         """
-        iterator = generators.pop(id, None)
-        if iterator is not None and id not in pulling:
-            await _finish(iterator)
+        async with self._admission:
+            iterator = generators.pop(id, None)
+            if iterator is not None and id not in pulling:
+                await _finish(iterator)
 
 
 @casty.service(name="skyward.Control")

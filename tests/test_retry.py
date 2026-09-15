@@ -191,6 +191,38 @@ def describe_the_worker() -> None:
             finished.set()
             await system.close()
 
+    async def it_answers_a_wait_for_an_attempt_that_arrived_and_waits_for_a_slot(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        monkeypatch.setattr(worker, "CONCURRENCY", 1)
+        monkeypatch.setattr(worker, "BUFFER", 0)
+        arguments = codec.dumps(((), {}))
+        finished.clear()
+
+        system = casty.local()
+        try:
+            tasks = system.service(worker.Worker)
+            running = asyncio.create_task(tasks.run("exe_holding_the_slot", codec.dumps(unfinished), arguments, b"", 1, ()))
+            async with asyncio.timeout(5):
+                while "exe_holding_the_slot" not in worker.outcomes:
+                    await asyncio.sleep(0.01)
+            behind = asyncio.create_task(tasks.run("exe_behind_it", codec.dumps(answer), arguments, b"", 1, ()))
+            await asyncio.sleep(0.1)
+
+            waiting = asyncio.create_task(system.service(worker.Control).result("exe_behind_it"))
+            await asyncio.sleep(0.1)
+            assert not waiting.done(), "an attempt waiting for a slot is not one the worker never had"
+
+            finished.set()
+            async with asyncio.timeout(5):
+                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
+                await asyncio.gather(running, behind)
+
+            assert isinstance(answered, Done)
+        finally:
+            finished.set()
+            await system.close()
+
     async def it_answers_a_wait_with_a_loss_when_the_attempt_ends_without_an_outcome(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -398,6 +430,19 @@ def describe_the_daemon() -> None:
 
             task = await plane.tasks.get(task.id)
             assert [(e.ordinal, e.state) for e in task.executions] == [(1, "started")], "the node is ready, and its worker still owes the outcome"
+            assert await plane.said(task.id) == []
+
+        async def it_waits_for_a_node_it_is_taking_hold_of_again(tmp_path: Path) -> None:
+            plane = await _plane(tmp_path / "skyward.sqlite")
+            task = await plane.submit(retry.default)
+            plane.runtimes.open(plane.compute, "pypi", "a private key")
+
+            for state in ("connecting", "bootstrapping"):
+                await plane.nodes.observe(plane.node_ids[0], state)
+                await plane.dispatcher.task(task.id)
+
+            task = await plane.tasks.get(task.id)
+            assert [(e.ordinal, e.state) for e in task.executions] == [(1, "started")], "a node coming back after a restart has not gone away"
             assert await plane.said(task.id) == []
 
         async def it_calls_the_attempt_lost_once_the_node_is(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from skyward.shared.schemas import (
     Page,
     Task,
     TaskCreate,
+    TaskOrder,
     TaskState,
 )
 
@@ -41,8 +42,12 @@ class TaskController(Controller):
     @get(
         summary="List tasks",
         description=(
-            "Every call this daemon has been asked to make, newest first. `correlation_id` is how the tasks of one "
-            "`&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own."
+            "Every call this daemon has been asked to make, a page at a time. `correlation_id` is how the tasks of one "
+            "`&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own.\n\n"
+            "`order` is `submitted` (newest first), `state` (running, newest submitted first; then queued, oldest "
+            "submitted first; then finished, latest to finish first) or `finished` (latest to finish first, then the "
+            "unfinished, newest submitted first). `total` counts what every filter matches, and `next_cursor` pages "
+            "the order it came from, from where the page ended: a task submitted or moved mid-walk does not shift it."
         ),
     )
     async def list(
@@ -51,10 +56,12 @@ class TaskController(Controller):
         cursor: str | None = None,
         limit: int = Parameter(default=50, ge=1),
         compute: str | None = None,
-        task_state: TaskState | None = Parameter(query="state", default=None),
+        task_states: list[TaskState] | None = Parameter(query="state", default=None, description="Any of these; repeat it for more than one."),
         correlation_id: str | None = Parameter(default=None, description="Groups the tasks of an `&`/`gather`/`map`. A field, not a resource."),
+        function: str | None = Parameter(default=None, description="A function's name, which takes in every upload of its code."),
+        order: TaskOrder = "submitted",
     ) -> Page[Task]:
-        return await tasks.list(cursor, limit, compute, task_state, correlation_id)
+        return await tasks.list(cursor, limit, compute, tuple(task_states or ()), correlation_id, function, order)
 
     @post(
         status_code=201,

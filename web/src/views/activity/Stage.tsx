@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { SkyEvent } from '../../api/events'
-import { HOUR } from '../../state/model'
+import { HOUR, holderOf } from '../../state/model'
 import { computeById, isLive, useEvents, useLogs, useStore, type ActivityFilters, type LogLine, type LogScope } from '../../state/store'
 import { Icon } from '../../ui/icons'
 import { EvLineRow, LogLineRow } from '../../ui/lines'
@@ -54,7 +54,7 @@ export function Stage() {
 
   const scope: LogScope = {
     compute: act.compute === 'all' ? undefined : act.compute,
-    node: act.rank === 'all' ? undefined : nodes.find((n) => n.rank === act.rank)?.id,
+    node: act.rank === 'all' ? undefined : holderOf(nodes, act.rank)?.id,
     contains: act.q ? [act.q] : LEVEL_WORDS[act.level],
   }
   const feed = useLogs(scope)

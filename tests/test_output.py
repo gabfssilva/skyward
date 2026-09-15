@@ -11,9 +11,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import cloudpickle
+import httpx
+import msgspec
 import pytest
 
 import skyward as sky
+from skyward.shared.events import ConsoleEvent, LogEntry
+from skyward.shared.schemas import Page
 from skyward.worker import journal
 
 cloudpickle.register_pickle_by_value(sys.modules[__name__])
@@ -62,6 +66,16 @@ def waited(read: Callable[[], str], marker: str, seconds: float = 20.0) -> str:
     return seen
 
 
+def logged(daemon: str, seconds: float = 20.0, **query: str) -> tuple[LogEntry, ...]:
+    """The daemon's log under these filters, as soon as it holds anything, or empty when the wait runs out."""
+    deadline = time.monotonic() + seconds
+    while True:
+        page = msgspec.json.decode(httpx.get(f"{daemon}/v1/events/log", params=query).content, type=Page[LogEntry])
+        if page.items or time.monotonic() >= deadline:
+            return page.items
+        time.sleep(0.1)
+
+
 @pytest.mark.compute
 @pytest.mark.xdist_group("pool")
 def describe_what_a_node_prints() -> None:
@@ -78,6 +92,19 @@ def describe_what_a_node_prints() -> None:
             seen = waited(lambda: capsys.readouterr().err, "<<after-quiet>>")
 
             assert "<<quiet>>" not in seen, "a later line arrived, so the silenced one had its chance"
+
+    def describe_when_it_is_read_back_from_the_log() -> None:
+        def it_is_found_under_the_task_whose_attempt_printed_it(pool: sky.Compute, daemon: str) -> None:
+            mark = f"logged {time.time_ns()}"
+            assert talkative(mark) >> pool == 1
+
+            (entry,) = logged(daemon, contains=f"<<{mark}>>")
+            assert isinstance(entry.data, ConsoleEvent) and entry.data.task and entry.data.execution
+            history = logged(daemon, task=entry.data.task)
+
+            assert entry.data.task.startswith("tsk_") and entry.data.execution.startswith("exe_")
+            assert entry in history
+            assert "task.started" in {event.type for event in history}
 
     def describe_when_only_the_head_may_speak() -> None:
         def the_other_ranks_are_dropped_on_the_node(pool: sky.Compute, capsys: pytest.CaptureFixture[str]) -> None:

@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 RUNTIME_DIR = Path.home() / ".skyward"
 PID_FILE = RUNTIME_DIR / "server.pid"
 LOG_FILE = RUNTIME_DIR / "server.log"
 
-TARGET = "skyward.server.http.app:daemon"
 MISSING = "the daemon needs an ASGI server: pip install 'skyward[server]'"
+STARTUP_FAILURE = 3
+"""The exit status of a daemon that never came up — uvicorn's own, for a server that failed to start."""
 
 GRACEFUL_SECONDS = 5
 """How long a stopping daemon waits for its open connections.
@@ -88,12 +91,31 @@ def environment(database: Path | None, log_level: str | None = None) -> dict[str
     }
 
 
-def serve(host: str, port: int, database: Path | None = None, log_level: str | None = None) -> None:
-    """Run the daemon here, ending with whoever started it."""
+def serve(host: str, port: int, database: Path | None = None, log_level: str | None = None, access_log: bool = True) -> None:
+    """Run the daemon here, ending with whoever started it.
+
+    A daemon being stopped hears it before its server starts cutting connections, so
+    the results being long-polled are answered — no outcome yet, ask again — instead
+    of being cut with a 500 their callers would take for the task's verdict. See
+    :meth:`skyward.server.persistence.tasks.TaskStore.close`.
+    """
     import uvicorn
 
+    from skyward.server.http.app import daemon
+
     os.environ.update(environment(database, log_level))
-    uvicorn.run(TARGET, host=host, port=port, factory=True, timeout_graceful_shutdown=GRACEFUL_SECONDS)
+    standalone = daemon()
+
+    class Server(uvicorn.Server):
+        async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+            standalone.closing()
+            await super().shutdown(sockets)
+
+    server = Server(uvicorn.Config(standalone.app, host=host, port=port, timeout_graceful_shutdown=GRACEFUL_SECONDS, access_log=access_log))
+    with suppress(KeyboardInterrupt):
+        server.run()
+    if not server.started:
+        raise SystemExit(STARTUP_FAILURE)
 
 
 def spawn(host: str, port: int, database: Path | None = None, log_level: str | None = None) -> int:
@@ -110,22 +132,8 @@ def spawn(host: str, port: int, database: Path | None = None, log_level: str | N
 
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     log = LOG_FILE.open("ab")  # noqa: SIM115
-    command = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        TARGET,
-        "--factory",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--timeout-graceful-shutdown",
-        str(GRACEFUL_SECONDS),
-        "--no-access-log",
-    ]
     process = subprocess.Popen(
-        command,
+        [sys.executable, "-m", "skyward.server.daemon", host, str(port)],
         stdout=log,
         stderr=log,
         stdin=subprocess.DEVNULL,
@@ -136,4 +144,8 @@ def spawn(host: str, port: int, database: Path | None = None, log_level: str | N
     return process.pid
 
 
-__all__ = ["LOG_FILE", "MISSING", "PID_FILE", "RUNTIME_DIR", "TARGET", "alive", "forget", "installed", "pid", "record", "serve", "spawn"]
+__all__ = ["LOG_FILE", "MISSING", "PID_FILE", "RUNTIME_DIR", "alive", "forget", "installed", "pid", "record", "serve", "spawn"]
+
+
+if __name__ == "__main__":
+    serve(sys.argv[1], int(sys.argv[2]), access_log=False)

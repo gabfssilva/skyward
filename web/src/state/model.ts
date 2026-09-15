@@ -1,6 +1,6 @@
 export type Kind = 'ready' | 'boot' | 'req' | 'gone' | 'off'
 
-export type MetricKey = 'gpu' | 'vram' | 'cpu' | 'temp' | 'net'
+export type MetricKey = 'gpu' | 'vram' | 'cpu' | 'temp' | 'rx' | 'tx'
 
 export type NodeMetrics = Record<MetricKey, number>
 
@@ -9,19 +9,19 @@ export const METRICS: readonly (readonly [MetricKey, string])[] = [
   ['vram', 'VRAM'],
   ['temp', 'Temp'],
   ['cpu', 'CPU'],
-  ['net', 'Net'],
+  ['rx', 'Net ↓'],
+  ['tx', 'Net ↑'],
 ]
 
-export const UNIT: Record<MetricKey, string> = { gpu: '%', vram: '%', cpu: '%', temp: '°C', net: ' MB/s' }
+export const UNIT: Record<MetricKey, string> = { gpu: '%', vram: '%', cpu: '%', temp: '°C', rx: ' MB/s', tx: ' MB/s' }
 export const SCALE: Record<MetricKey, readonly [number, number]> = {
   gpu: [0, 100],
   vram: [0, 100],
   cpu: [0, 100],
   temp: [30, 92],
-  net: [0, 120],
+  rx: [0, 120],
+  tx: [0, 120],
 }
-
-export const PHASES: readonly string[] = ['ssh', 'set env', 'apt install', 'setup uv', 'create venv', 'install deps', 'install skyward', 'start worker']
 
 export const clamp = (v: number, a: number, b: number): number => Math.max(a, Math.min(b, v))
 export const last = (a: readonly number[]): number => (a.length ? a[a.length - 1]! : 0)
@@ -114,6 +114,25 @@ export type ComputeState = Compute['status']['state']
 export const ms = (iso: string | null | undefined): number => (iso ? Date.parse(iso) : 0)
 
 export const nodeLive = (n: Node): boolean => !['failed', 'lost', 'deleted'].includes(n.state)
+
+/**
+ * One node per rank, the one holding it now.
+ *
+ * The daemon gives a replacement the rank of the node it replaced, and the list keeps
+ * the dead one as history, so a rank is its live node when there is one and its newest
+ * otherwise. Anything that names a node by its rank reads it from here.
+ */
+export const holdersOf = (nodes: readonly Node[]): Node[] => {
+  const holds = (a: Node, b: Node): boolean => (nodeLive(a) === nodeLive(b) ? ms(a.created_at) > ms(b.created_at) : nodeLive(a))
+  const byRank = new Map<number, Node>()
+  for (const n of nodes) {
+    const held = byRank.get(n.rank)
+    if (!held || holds(n, held)) byRank.set(n.rank, n)
+  }
+  return [...byRank.values()].sort((a, b) => a.rank - b.rank)
+}
+
+export const holderOf = (nodes: readonly Node[], rank: number): Node | undefined => holdersOf(nodes).find((n) => n.rank === rank)
 export const readyOf = (nodes: readonly Node[]): Node[] => nodes.filter((n) => n.state === 'ready')
 export const rateOf = (nodes: readonly Node[]): number => nodes.filter(nodeLive).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
 export const targetOf = (c: Compute): number => c.spec.nodes.max ?? c.spec.nodes.initial

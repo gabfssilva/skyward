@@ -17,12 +17,14 @@ from typing import Any
 
 import msgspec
 import pytest
+from litestar.testing import AsyncTestClient
 
 from skyward.server.application.machines import Machines
 from skyward.server.application.mock import OFFER, SPEC
 from skyward.server.application.node import Node as ApplicationNode
 from skyward.server.application.runtimes import Files, Runtime, Runtimes
 from skyward.server.application.source import Source
+from skyward.server.http.app import create_app, services
 from skyward.server.persistence.computes import ComputeStore, Infrastructure
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
@@ -31,12 +33,12 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
-from skyward.server.persistence.tables import ComputeRow, EventRow, NodeRow, TaskRow
+from skyward.server.persistence.tables import ComputeRow, EventRow, FunctionRow, NodeRow, TaskRow
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared.errors import ComputeNotConnectedError, NameTakenError
+from skyward.shared.errors import ComputeNotConnectedError, NameTakenError, NotFoundError
 from skyward.shared.events import ComputeAbandoned, ComputeDeleted
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCreate
+from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCreate, TaskOrder
 
 pytestmark = pytest.mark.local
 
@@ -252,7 +254,7 @@ def describe_listing_a_computes_tasks() -> None:
         submitted = [await _submit(tasks, compute) for _ in range(3)]
         await tasks.observe(submitted[1].executions[0].id, "failed", again=True)
 
-        page = await tasks.list(None, 2, compute, None, None)
+        page = await tasks.list(None, 2, compute)
 
         assert page.items == (await tasks.get(submitted[2].id), await tasks.get(submitted[1].id)), "the latest two, not the first two"
         assert [len(task.executions) for task in page.items] == [1, 2]
@@ -261,8 +263,8 @@ def describe_listing_a_computes_tasks() -> None:
         tasks, compute = await _tasks(tmp_path)
         submitted = [await _submit(tasks, compute) for _ in range(4)]
 
-        first = await tasks.list(None, 2, compute, None, None)
-        second = await tasks.list(first.next_cursor, 2, compute, None, None)
+        first = await tasks.list(None, 2, compute)
+        second = await tasks.list(first.next_cursor, 2, compute)
 
         assert [task.id for task in first.items] == [submitted[3].id, submitted[2].id]
         assert [task.id for task in second.items] == [submitted[1].id, submitted[0].id]
@@ -272,9 +274,86 @@ def describe_listing_a_computes_tasks() -> None:
         for _ in range(3):
             await _submit(tasks, compute)
 
-        page = await tasks.list(None, 2, compute, None, None)
+        page = await tasks.list(None, 2, compute)
 
         assert len(page.items) == 2 and page.total == 3
+
+    async def it_keeps_the_tasks_in_any_of_the_states_asked_for(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        queued, running, failed = [await _submit(tasks, compute) for _ in range(3)]
+        await tasks.observe(running.executions[0].id, "started")
+        await tasks.observe(failed.executions[0].id, "failed")
+
+        page = await tasks.list(None, 10, compute, states=("running", "failed"))
+
+        assert {task.id for task in page.items} == {running.id, failed.id} and page.total == 2
+        assert queued.id not in {task.id for task in page.items}
+
+    async def a_function_is_asked_for_by_name_whatever_code_was_uploaded_under_it(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        for sha256, name in (("a" * 64, "fill"), ("b" * 64, "fill"), ("c" * 64, "ping")):
+            await FunctionRow(sha256=sha256, size_bytes=1, codec="cloudpickle", name=name, created_at=now()).save().run()
+        first, second, _ = [await _submit(tasks, compute, function) for function in ("a" * 64, "b" * 64, "c" * 64)]
+
+        page = await tasks.list(None, 10, compute, function="fill")
+
+        assert {task.id for task in page.items} == {first.id, second.id} and page.total == 2
+
+    async def by_state_it_runs_running_then_queued_next_to_run_first_then_the_latest_to_finish(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        board = await _board(tasks, compute)
+
+        page = await tasks.list(None, 10, compute, order="state")
+
+        expected = ("running late", "running early", "queued early", "queued late", "finished late", "finished early")
+        assert [task.id for task in page.items] == [board[name] for name in expected]
+
+    async def by_finished_it_puts_the_latest_to_finish_first_and_the_unfinished_last(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        board = await _board(tasks, compute)
+
+        page = await tasks.list(None, 10, compute, order="finished")
+
+        expected = ("finished late", "finished early", "queued late", "running late", "queued early", "running early")
+        assert [task.id for task in page.items] == [board[name] for name in expected]
+
+    @pytest.mark.parametrize("order", ["submitted", "state", "finished"])
+    async def a_walk_a_page_at_a_time_meets_every_task_once_in_order(tmp_path: Path, order: TaskOrder) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        await _board(tasks, compute)
+        whole = [task.id for task in (await tasks.list(None, 50, compute, order=order)).items]
+
+        walked: list[str] = []
+        page = await tasks.list(None, 2, compute, order=order)
+        walked += [task.id for task in page.items]
+        await _submit(tasks, compute)
+        while page.next_cursor:
+            page = await tasks.list(page.next_cursor, 2, compute, order=order)
+            walked += [task.id for task in page.items]
+
+        assert len(walked) == len(set(walked)), "no task twice"
+        assert [task for task in walked if task in whole] == whole, "a task submitted mid-walk does not shift where a held cursor picks up"
+
+    async def a_cursor_is_only_good_for_the_order_it_came_from(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        await _board(tasks, compute)
+        page = await tasks.list(None, 2, compute, order="state")
+
+        with pytest.raises(NotFoundError):
+            await tasks.list(page.next_cursor, 2, compute, order="finished")
+
+    async def the_endpoint_takes_state_more_than_once_and_an_order(tmp_path: Path) -> None:
+        _, compute = await _tasks(tmp_path)
+        svc = services()
+        async with AsyncTestClient(app=create_app(svc, logging=False)) as http:
+            assert isinstance(svc.tasks, TaskStore)
+            board = await _board(svc.tasks, compute)
+
+            answer = await http.get("/v1/tasks", params=[("compute", compute), ("state", "queued"), ("state", "running"), ("order", "state")])
+
+        assert answer.status_code == 200, answer.text
+        assert [task["id"] for task in answer.json()["items"]] == [board[name] for name in ("running late", "running early", "queued early", "queued late")]
+        assert answer.json()["total"] == 4
 
 
 def describe_reaching_a_compute_this_daemon_is_not_holding() -> None:
@@ -528,9 +607,27 @@ async def _tasks(tmp_path: Path) -> tuple[TaskStore, str]:
     return TaskStore(store, NodeStore(), BlobStore()), compute.id
 
 
-async def _submit(tasks: TaskStore, compute: str) -> Task:
-    task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
+async def _submit(tasks: TaskStore, compute: str, function: str = "f" * 64) -> Task:
+    task, _ = await tasks.submit(TaskCreate(compute=compute, function=function, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
     return task
+
+
+async def _board(tasks: TaskStore, compute: str) -> dict[str, str]:
+    """Two tasks running, two queued and two finished, submitted a minute apart in shuffled order, each finished one a minute apart."""
+    start = now() - timedelta(hours=1)
+    board: dict[str, str] = {}
+    for name in ("queued late", "finished early", "running early", "queued early", "running late", "finished late"):
+        board[name] = (await _submit(tasks, compute)).id
+    for minute, name in enumerate(("finished early", "running early", "queued early", "finished late", "running late", "queued late")):
+        await TaskRow.update({TaskRow.submitted_at: start + timedelta(minutes=minute)}).where(TaskRow.id == board[name]).run()
+    for name in ("running early", "running late", "finished early", "finished late"):
+        (execution,) = (await tasks.get(board[name])).executions
+        await tasks.observe(execution.id, "started")
+    for minute, name in enumerate(("finished early", "finished late"), start=10):
+        (execution,) = (await tasks.get(board[name])).executions
+        await tasks.observe(execution.id, "succeeded")
+        await TaskRow.update({TaskRow.finished_at: start + timedelta(minutes=minute)}).where(TaskRow.id == board[name]).run()
+    return board
 
 
 def _runtime(cluster: bool = True) -> Runtime:

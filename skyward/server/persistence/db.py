@@ -9,6 +9,7 @@ from piccolo.engine.sqlite import SQLiteEngine, SQLiteTransaction, TransactionTy
 from piccolo.table import Table
 
 from skyward.server.persistence.tables import TABLES
+from skyward.shared.schemas import TaskOrder
 
 
 def _integer(value: bytes) -> int:
@@ -65,6 +66,9 @@ MENDS = (
     "WHERE status_state IN ('deleting', 'deleted') AND deletion_cause IS NULL",
     "UPDATE events SET node_id = json_extract(payload, '$.node') "
     "WHERE node_id IS NULL AND json_extract(payload, '$.node') IS NOT NULL",
+    "UPDATE events SET task_id = executions.task_id, "
+    "payload = json_set(events.payload, '$.task', executions.task_id, '$.execution', events.task_id) "
+    "FROM executions WHERE events.type = 'node.console' AND events.task_id = executions.id",
 )
 """Rewrites for rows written under an older vocabulary.
 
@@ -77,14 +81,54 @@ A compute that was deleted before its row kept when and why is given both from
 the event log, which has said them all along: the moment ``compute.deleted`` was
 recorded, and ``abandoned`` where ``compute.abandoned`` was said first. An event
 recorded before the log kept the node it came off is given it from its own
-payload, which has named it all along.
+payload, which has named it all along. A line recorded while its ``task`` named the
+execution is given the task that execution is an attempt at, and keeps the
+execution under its own name.
 Each statement matches only rows still carrying the old shape, so running the
 list on every start is a no-op after the first.
+"""
+
+def _microseconds(column: str) -> str:
+    """A timestamp column as microseconds since the epoch, exactly.
+
+    SQLite's date functions stop at the millisecond, and a burst of submissions lands
+    several tasks in one. Piccolo writes ``str(datetime)`` in UTC, so the fraction is
+    the six digits after the seconds — and absent on a whole second.
+    """
+    return f"(CAST(strftime('%s', {column}) AS INTEGER) * 1000000 + CASE instr({column}, '.') WHEN 0 THEN 0 ELSE CAST(substr({column}, 21, 6) AS INTEGER) END)"
+
+
+BAND = 10**18
+
+POSITIONS: dict[TaskOrder, str] = {
+    "submitted": f"{BAND} - {_microseconds('submitted_at')}",
+    "state": (
+        f"CASE state WHEN 'running' THEN {BAND} - {_microseconds('submitted_at')} "
+        f"WHEN 'queued' THEN {BAND} + {_microseconds('submitted_at')} "
+        f"ELSE {3 * BAND} - {_microseconds('finished_at')} END"
+    ),
+    "finished": f"CASE WHEN finished_at IS NULL THEN {2 * BAND} - {_microseconds('submitted_at')} ELSE {BAND} - {_microseconds('finished_at')} END",
+}
+"""Where a task sits in each order a listing can ask for, as one integer read ascending.
+
+One number, and not a group followed by a moment, because a page picks up past a
+position and a task id, and SQLite seeks an index only on the first expression of
+such a range: with the group first, a page deep into the finished tasks would read
+every finished task before it. So each group is a band :data:`BAND` microseconds
+wide, and a task sits at its band's floor plus its moment when the group reads oldest
+first, or at the band's ceiling minus it when the group reads newest first — no
+moment before the year 30000 reaches the next band. By state, running (newest
+submitted first) is the first band, queued (oldest submitted first, the order it is
+served in) the second, and finished (latest to finish first) the third; by finish,
+the finished and then the unfinished, newest submitted first.
+
+Each is indexed, and the index must spell the expression the query does.
 """
 
 INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS computes_name_live ON computes (name) WHERE status_state != 'deleted'",
     "CREATE INDEX IF NOT EXISTS tasks_compute_submitted ON tasks (compute_id, submitted_at)",
+    *(f"CREATE INDEX IF NOT EXISTS tasks_compute_by_{order} ON tasks (compute_id, ({position}), id)" for order, position in POSITIONS.items()),
     "CREATE INDEX IF NOT EXISTS tasks_compute_state ON tasks (compute_id, state)",
     "CREATE UNIQUE INDEX IF NOT EXISTS metric_samples_reading ON metric_samples (compute_id, node_id, name, at)",
     "CREATE INDEX IF NOT EXISTS metric_samples_at ON metric_samples (at)",
@@ -98,9 +142,10 @@ outlives no compute: the next one may take it. Piccolo has no partial index, and
 ``unique=True`` on the column would hold the name for every row the table ever
 held, so the index is written here in SQL.
 
-A compute's tasks are paged newest first, and piccolo indexes one column at a
-time. On ``compute_id`` alone a page reads every task the compute ever ran and
-sorts them to keep the newest; on the pair it is read off the end of the index.
+A compute's queue is read oldest first, and piccolo indexes one column at a time.
+On ``compute_id`` alone that reads every task the compute ever ran and sorts them;
+on the pair it is read off the index. A listing of a compute's tasks is read off
+the index of its order's :data:`POSITIONS` the same way.
 
 The queue queries filter a compute's tasks by state — the pending, the waiting —
 and on ``compute_id`` alone each of them reads the compute's whole history to

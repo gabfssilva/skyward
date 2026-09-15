@@ -5,14 +5,19 @@ is the whole point of these: one process leaves, another one picks the compute u
 and the work carries on.
 """
 
+import socket
 import sys
 import time
+from contextlib import ExitStack
+from pathlib import Path
+from typing import Any
 
 import cloudpickle
+import httpx
 import pytest
 
 import skyward as sky
-from tests.conftest import Build, cli, rows
+from tests.conftest import IMAGE, Build, cli, rows, serving
 
 pytestmark = [pytest.mark.compute, pytest.mark.xdist_group("lifecycle")]
 
@@ -27,6 +32,12 @@ def double(x: int) -> int:
 @sky.function
 def world() -> int:
     return sky.instance_info().nodes
+
+
+@sky.function
+def outlasting(seconds: float) -> float:
+    time.sleep(seconds)
+    return seconds
 
 
 def describe_a_pool_watched_through_callbacks() -> None:
@@ -53,6 +64,42 @@ def describe_a_compute_that_outlives_the_process_that_made_it() -> None:
         with sky.Compute.attached("picked-up", url=daemon, delete_on_exit=True) as rejoined:
             assert rejoined.id == left_behind, "the same compute, not a new one"
             assert double(3) >> rejoined == 6, "and its machines were still there"
+
+
+def describe_a_daemon_restarted_under_a_task_in_flight() -> None:
+    @pytest.mark.timeout(900)
+    def the_machine_and_the_attempt_carry_on_and_the_caller_gets_its_answer(tmp_path: Path) -> None:
+        database = tmp_path / "skyward.sqlite"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        with ExitStack() as daemon:
+            url = daemon.enter_context(serving(database, tmp_path / "before.log", port))
+            with sky.Compute(provider=sky.Container(), nodes=1, cpus=1, memory_gb=1, image=IMAGE, url=url) as pool:
+                answer = outlasting(45) > pool
+                before = _in_flight(url, pool.id)
+
+                daemon.close()
+                daemon.enter_context(serving(database, tmp_path / "after.log", port))
+
+                assert answer.result(timeout=600) == 45, "the caller that was waiting through the restart gets its answer"
+                task = httpx.get(f"{url}/v1/tasks/{before['id']}", timeout=10).json()
+                nodes = httpx.get(f"{url}/v1/computes/{pool.id}/nodes", timeout=10).json()["items"]
+
+        assert [(e["ordinal"], e["state"]) for e in task["executions"]] == [(1, "succeeded")], "the attempt was waited on, not run again"
+        assert [node["id"] for node in nodes] == [before["executions"][0]["node_id"]], "the machine was adopted, not replaced"
+
+
+def _in_flight(url: str, compute: str) -> dict[str, Any]:
+    """The compute's one task, once its attempt is running on a node."""
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        for task in httpx.get(f"{url}/v1/tasks", params={"compute": compute, "state": "running"}, timeout=10).json()["items"]:
+            if any(execution["state"] == "started" for execution in task["executions"]):
+                return task
+        time.sleep(1)
+    raise TimeoutError(f"no task of {compute} started running")
 
 
 def describe_a_pool_that_may_start_before_it_is_whole() -> None:

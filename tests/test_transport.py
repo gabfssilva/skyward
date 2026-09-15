@@ -250,44 +250,68 @@ def describe_an_urgent_call() -> None:
 
 def describe_the_lease_of_a_pool() -> None:
     def it_is_renewed_and_released_over_the_control_connections(monkeypatch: pytest.MonkeyPatch) -> None:
-        ordinary: list[tuple[str, str]] = []
-        control: list[tuple[str, str]] = []
-        resource = ComputeResource(
-            id="c1",
-            name="attached",
-            revision=1,
-            generation=1,
-            spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
-            status=ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1),
-            lease=Lease(),
-            created_at=datetime.now(UTC),
-        )
-
-        def main(request: httpx.Request) -> httpx.Response:
-            ordinary.append((request.method, request.url.path))
-            match request.url.path:
-                case "/v1/events":
-                    return httpx.Response(200, text=f"id: 1\nevent: {MOVES[0]}\ndata: {{}}\n\n")
-                case "/v1/computes/c1":
-                    return httpx.Response(200, content=msgspec.json.encode(resource))
-                case _:
-                    return httpx.Response(200, content=b"{}")
-
-        def lease(request: httpx.Request) -> httpx.Response:
-            control.append((request.method, request.url.path))
-            return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(Lease()))
-
-        async def fake_connect(url: str | None, database: Path | None) -> Client:
-            http = httpx.AsyncClient(transport=httpx.MockTransport(main), base_url="http://skyward")
-            kept = httpx.AsyncClient(transport=httpx.MockTransport(lease), base_url="http://skyward")
-            return Client(http, kept, AsyncExitStack())
-
-        monkeypatch.setattr("skyward.core.compute.connect", fake_connect)
-        monkeypatch.setattr("skyward.core.compute.LEASE_SECONDS", 1)
-
-        with sky.Compute.attached("c1", console=False):
-            time.sleep(0.8)
+        ordinary, control = _held(monkeypatch, seconds=0.8)
 
         assert not [call for call in ordinary if call[1].endswith("/lease")], "a lease request went over the ordinary connections"
         assert control.count(("PUT", "/v1/computes/c1/lease")) >= 2, "the claim and at least one renewal must go over the control connections"
         assert control[-1] == ("DELETE", "/v1/computes/c1/lease"), "the release must go over the control connections"
+
+    def it_goes_on_renewing_after_a_renewal_found_no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+        claim = sky.Compute._claim
+        claims = 0
+
+        async def away_once(pool: sky.Compute) -> None:
+            nonlocal claims
+            claims += 1
+            if claims == 2:
+                raise httpx.ConnectError("the daemon is being restarted")
+            await claim(pool)
+
+        monkeypatch.setattr(sky.Compute, "_claim", away_once)
+
+        _, control = _held(monkeypatch, seconds=1.2)
+
+        assert control.count(("PUT", "/v1/computes/c1/lease")) >= 3, "a daemon away for longer than a request's patience must not end the renewals"
+
+
+def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Hold an attached pool for ``seconds``, renewing every third of a second; the calls on the ordinary and the control connections."""
+    ordinary: list[tuple[str, str]] = []
+    control: list[tuple[str, str]] = []
+    resource = ComputeResource(
+        id="c1",
+        name="attached",
+        revision=1,
+        generation=1,
+        spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
+        status=ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1),
+        lease=Lease(),
+        created_at=datetime.now(UTC),
+    )
+
+    def main(request: httpx.Request) -> httpx.Response:
+        ordinary.append((request.method, request.url.path))
+        match request.url.path:
+            case "/v1/events":
+                return httpx.Response(200, text=f"id: 1\nevent: {MOVES[0]}\ndata: {{}}\n\n")
+            case "/v1/computes/c1":
+                return httpx.Response(200, content=msgspec.json.encode(resource))
+            case _:
+                return httpx.Response(200, content=b"{}")
+
+    def lease(request: httpx.Request) -> httpx.Response:
+        control.append((request.method, request.url.path))
+        return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(Lease()))
+
+    async def fake_connect(url: str | None, database: Path | None) -> Client:
+        http = httpx.AsyncClient(transport=httpx.MockTransport(main), base_url="http://skyward")
+        kept = httpx.AsyncClient(transport=httpx.MockTransport(lease), base_url="http://skyward")
+        return Client(http, kept, AsyncExitStack())
+
+    monkeypatch.setattr("skyward.core.compute.connect", fake_connect)
+    monkeypatch.setattr("skyward.core.compute.LEASE_SECONDS", 1)
+
+    with sky.Compute.attached("c1", console=False):
+        time.sleep(seconds)
+
+    return ordinary, control

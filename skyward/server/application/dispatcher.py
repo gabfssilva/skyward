@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Callable
 
 from casty.errors import ActorUnavailableError, ConnectionLostError
 
+from skyward.server.application.connector import HELD
 from skyward.server.application.runtimes import Runtime, Runtimes
 from skyward.server.application.ssh import SshUnavailableError
 from skyward.server.persistence.computes import ComputeStore
@@ -371,17 +372,19 @@ class Dispatcher:
         run it twice. The wait is held in the background and marked dispatched, like
         any call in flight, so the passes that follow leave the attempt alone.
 
-        Whether the node went away is the store's to say. A node the store still
-        calls ready and this process does not hold ready yet is one the connector
-        has not finished picking up — after a restart that is every node, for as
-        long as a local wheel takes to build and each link takes to come up — so
-        the attempt is left to a later pass, not called lost and run a second time.
+        Whether the node went away is the store's to say, and a node the connector
+        holds has not. After a restart the connector takes hold of every node again,
+        writing it ``connecting`` and ``bootstrapping`` on the way back to ``ready``,
+        for as long as a local wheel takes to build and each link takes to come up.
+        A node in any of those, or one this process does not hold ready yet, is
+        left to a later pass — not called lost, and the attempt run a second time
+        on a worker that is still running the first.
         """
         if execution.node_id is None:
             return
 
         node = await self._nodes.get(task.compute_id, execution.node_id)
-        if node.state != "ready":
+        if node.state not in HELD:
             await self._lost(
                 task,
                 execution,
@@ -389,7 +392,7 @@ class Dispatcher:
                 retry.Lost("node_gone", execution.node_id),
             )
             return
-        if execution.node_id not in runtime.ready:
+        if node.state != "ready" or execution.node_id not in runtime.ready:
             return
 
         async def rejoin(node_id: str) -> None:

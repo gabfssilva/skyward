@@ -31,6 +31,7 @@ from skyward.shared.schemas import (
     ProviderCreate,
     Task,
     TaskCreate,
+    TaskOrder,
     TaskState,
 )
 
@@ -126,12 +127,25 @@ class Tasks(Protocol):
 
     async def get(self, task_id: str) -> Task: ...
 
-    async def list(self, cursor: str | None, limit: int, compute: str | None, state: TaskState | None, correlation_id: str | None) -> Page[Task]: ...
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        compute: str | None = None,
+        states: Sequence[TaskState] = (),
+        correlation_id: str | None = None,
+        function: str | None = None,
+        order: TaskOrder = "submitted",
+    ) -> Page[Task]: ...
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task: ...
 
     async def result(self, task_id: str, wait_seconds: int) -> bytes | None:
         """None means no terminal outcome yet. Raises on non-success terminal outcomes."""
+        ...
+
+    def close(self) -> None:
+        """End every wait in :meth:`result` now: the daemon is going away."""
         ...
 
     async def expire(self) -> tuple[str, ...]:

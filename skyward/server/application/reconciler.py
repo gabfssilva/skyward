@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Callable, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from math import ceil
 from time import monotonic
 
@@ -104,6 +104,8 @@ class Reconciler:
         self._locks: dict[str, asyncio.Lock] = {}
         self._idle: dict[str, float] = {}
         """When each node last had nothing to do. Absent means it is doing something."""
+        self._up_since = now()
+        """When this daemon started watching leases. See :func:`abandoned`."""
 
     async def compute(self, compute_id: str) -> None:
         """One pass, and what a pass that broke does to the row.
@@ -177,7 +179,7 @@ class Reconciler:
 
         log = logger.bind(compute_id=compute.id)
 
-        if abandoned(compute) and compute.spec.delete_on_exit:
+        if abandoned(compute, self._up_since) and compute.spec.delete_on_exit:
             log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
             await self._computes.apply(ComputeAbandoned(compute=compute.id))
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
@@ -377,13 +379,19 @@ def census(nodes: Sequence[Node]) -> str:
     return ", ".join(f"{count} {state}" for state, count in sorted(counted.items())) or "none"
 
 
-def abandoned(compute: Compute) -> bool:
+def abandoned(compute: Compute, up_since: datetime) -> bool:
     """Whether nobody owns this compute and nobody is coming back for it.
 
     The lease is the only sign of life a client gives: it is claimed at birth and
     renewed for as long as the process holding the SSH connections is alive. A
     compute past the newborn grace with no live lease belongs to a process that is
     gone — a ``Ctrl-C``, a crash, a laptop closed.
+
+    Unless the daemon is what was gone. A lease that ran out while no daemon was
+    there to renew it says nothing about its owner, who has been knocking on a
+    closed port; so the grace counts from ``up_since``, when this daemon came up,
+    as well as from the compute's birth — whichever is later. A restart that
+    outlasts the lease does not tear down the computes it came back to.
 
     What follows is spelled out on the lease endpoint: ``delete_on_exit`` tears it
     down, anything else sits ownerless until something attaches. Sitting ownerless
@@ -396,7 +404,7 @@ def abandoned(compute: Compute) -> bool:
         return False
     if compute.lease.owner is not None and compute.lease.expires_at is not None and compute.lease.expires_at > now():
         return False
-    return now() - compute.created_at > timedelta(seconds=ABANDON_SECONDS)
+    return now() - max(compute.created_at, up_since) > timedelta(seconds=ABANDON_SECONDS)
 
 
 def leavable(node: Node, holding: Counter[str], owed: frozenset[int]) -> bool:

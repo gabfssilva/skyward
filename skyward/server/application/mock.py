@@ -37,6 +37,7 @@ from skyward.shared.schemas import (
     Spec,
     Task,
     TaskCreate,
+    TaskOrder,
     TaskState,
     Worker,
 )
@@ -246,7 +247,16 @@ class MockTasks:
     async def get(self, task_id: str) -> Task:
         return TASK
 
-    async def list(self, cursor: str | None, limit: int, compute: str | None, state: TaskState | None, correlation_id: str | None) -> Page[Task]:
+    async def list(
+        self,
+        cursor: str | None,
+        limit: int,
+        compute: str | None = None,
+        states: Sequence[TaskState] = (),
+        correlation_id: str | None = None,
+        function: str | None = None,
+        order: TaskOrder = "submitted",
+    ) -> Page[Task]:
         return Page(items=(TASK,), total=1)
 
     async def cancel(self, task_id: str, idempotency_key: str) -> Task:
@@ -254,6 +264,9 @@ class MockTasks:
 
     async def result(self, task_id: str, wait_seconds: int) -> bytes | None:
         return b"\x00mock-result"
+
+    def close(self) -> None:
+        return None
 
     async def expire(self) -> tuple[str, ...]:
         return ()

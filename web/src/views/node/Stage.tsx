@@ -4,8 +4,9 @@ import { api } from '../../api/client'
 import type { Compute, Node, Task } from '../../api/client'
 import { useStore, historyOf, computeById, isLive, useLogs } from '../../state/store'
 import type { Store } from '../../state/store'
-import { METRICS, PHASES, UNIT, busyOf, dur, execsOf, hexPts, hive, money, ms, slotsOf } from '../../state/model'
+import { METRICS, UNIT, busyOf, dur, execsOf, hexPts, hive, holderOf, money, ms, slotsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
+import type { PhaseMark } from '../../state/nodes'
 import { Fn, Pill } from '../../ui/primitives'
 import { Spark } from '../../ui/charts'
 import { Icon } from '../../ui/icons'
@@ -22,30 +23,37 @@ export function useNode(): { c: Compute; n: Node; live: boolean; nodes: readonly
   const live = useStore((s) => isLive(s, id))
   const nodes = useStore((s) => s.nodes[id]) ?? NONE
   const tasks = useStore((s) => s.tasks[id]) ?? NONE
-  const n = nodes.find((x) => x.rank === Number(rank))
+  const n = holderOf(nodes, Number(rank))
   return c && n ? { c, n, live, nodes, tasks } : null
 }
 
-/** What the phase and the progress of a node coming up read as. */
+const CHIP: Record<PhaseMark['state'], CSSProperties> = {
+  completed: { color: 'var(--ok)', background: 'var(--ok-soft)' },
+  started: { color: 'var(--boot)', background: 'var(--boot-soft)' },
+  failed: { color: 'var(--bad)', background: 'var(--bad-soft)' },
+}
+
+/** What the phase and the progress of a node coming up read as: a fraction while the provider reports one, then the phases the machine has reached. */
 export function PhaseProgress({ nodeId, maxWidth }: { nodeId: string; maxWidth?: number }) {
   const p = useStore((s) => s.progress[nodeId])
-  const done = p?.phases_done ?? 0
-  const chipStyle = (i: number): CSSProperties =>
-    i < done ? { color: 'var(--ok)', background: 'var(--ok-soft)' } : i === done ? { color: 'var(--boot)', background: 'var(--boot-soft)' } : { opacity: 0.45 }
   return (
     <>
       <div className="cap">{p?.phase ?? 'waiting'}</div>
-      <div className="track" style={{ marginTop: 6, maxWidth }}>
-        <i style={{ width: `${(p?.completion ?? 0) * 100}%`, background: 'var(--boot)' }} />
-      </div>
-      <div className="chips" style={{ marginTop: 9 }}>
-        {PHASES.map((ph, i) => (
-          <span key={ph} className="chip" style={{ height: 20, fontSize: 10, ...chipStyle(i) }}>
-            {i < done ? '✓ ' : ''}
-            {ph}
-          </span>
-        ))}
-      </div>
+      {p?.completion != null ? (
+        <div className="track" style={{ marginTop: 6, maxWidth }}>
+          <i style={{ width: `${p.completion * 100}%`, background: 'var(--boot)' }} />
+        </div>
+      ) : null}
+      {p?.phases.length ? (
+        <div className="chips" style={{ marginTop: 9 }}>
+          {p.phases.map((ph) => (
+            <span key={ph.name} className="chip" style={{ height: 20, fontSize: 10, ...CHIP[ph.state] }}>
+              {ph.state === 'completed' ? '✓ ' : ''}
+              {ph.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </>
   )
 }

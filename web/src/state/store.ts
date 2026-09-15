@@ -4,9 +4,9 @@ import type { Compute, Ending, FunctionRef, LogEntry, LogQuery, Node, Offer, Off
 import { CONSOLE_FRAMES, HEAD, STATE_FRAMES, recorded, subscribe } from '../api/events'
 import type { SkyEvent, Subscription } from '../api/events'
 import { useEffect, useMemo } from 'react'
-import { clamp, endedAt, median, ms, PHASES } from './model'
+import { clamp, endedAt, median, ms } from './model'
 import type { MetricKey, NodeMetrics } from './model'
-import type { NodeProgress } from './nodes'
+import type { NodeProgress, PhaseMark } from './nodes'
 
 /** One printed line: ``sequence`` and ``part`` place it in the daemon's order, and ``rank`` is ``null`` until the store has the row of the node that printed it. */
 export type LogLine = { compute: string; sequence: number; part: number; node: string; rank: number | null; at: number; level: 'info' | 'warn' | 'err'; text: string }
@@ -157,7 +157,7 @@ const EVENTS_MAX = 200
 const HISTORY_PAGE = 50
 const OFFERS_PAGE = 200
 
-const EMPTY: NodeMetrics = { gpu: 0, vram: 0, cpu: 0, temp: 0, net: 0 }
+const EMPTY: NodeMetrics = { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 }
 
 const page = <T,>(p: { items: T[] }): T[] => p.items
 
@@ -228,7 +228,7 @@ export const useStore = create<Store>((set, get) => ({
       const tasks: Record<string, Task[]> = {}
       await Promise.all(
         computes.map(async (c) => {
-          const [ns, ts] = await Promise.all([api.nodes(c.id).then(page), api.tasks({ compute: c.id }).then(page)])
+          const [ns, ts] = await Promise.all([api.nodes(c.id).then(page), current(c.id, get().tasks[c.id] ?? [])])
           nodes[c.id] = ns.sort((a, b) => a.rank - b.rank)
           tasks[c.id] = ts
         }),
@@ -254,7 +254,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const compute = await api.compute(computeId)
       if (compute.status.state === 'deleted') return set((s) => retire(s, compute))
-      const [ns, ts] = await Promise.all([api.nodes(computeId).then(page), api.tasks({ compute: computeId }).then(page)])
+      const [ns, ts] = await Promise.all([api.nodes(computeId).then(page), current(computeId, get().tasks[computeId] ?? [])])
       set((s) => ({
         computes: s.computes.some((c) => c.id === computeId) ? s.computes.map((c) => (c.id === computeId ? compute : c)) : [...s.computes, compute],
         nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) },
@@ -550,17 +550,21 @@ function fold(s: Store, event: SkyEvent): Patch | null {
           [payload.node]: {
             phase: s.progress[payload.node]?.phase ?? null,
             completion: payload.completion ?? s.progress[payload.node]?.completion ?? null,
-            phases_done: s.progress[payload.node]?.phases_done ?? 0,
+            phases: s.progress[payload.node]?.phases ?? [],
           },
         },
       }
     case 'node.phase': {
-      const index = PHASES.indexOf(payload.phase)
-      const done = payload.event === 'completed' && index >= 0 ? index + 1 : (s.progress[payload.node]?.phases_done ?? 0)
+      if (payload.phase === 'bootstrap') {
+        return payload.event === 'started' ? { progress: { ...s.progress, [payload.node]: { phase: null, completion: null, phases: [] } } } : null
+      }
+      const phases = s.progress[payload.node]?.phases ?? []
+      const mark: PhaseMark = { name: payload.phase, state: payload.event }
+      const seen = phases.some((p) => p.name === mark.name)
       return {
         progress: {
           ...s.progress,
-          [payload.node]: { phase: payload.phase, completion: PHASES.length ? done / PHASES.length : null, phases_done: done },
+          [payload.node]: { phase: mark.name, completion: null, phases: seen ? phases.map((p) => (p.name === mark.name ? mark : p)) : [...phases, mark] },
         },
       }
     }
@@ -659,6 +663,28 @@ function merged(known: readonly Task[], latest: readonly Task[], max = TASKS_MAX
   for (const t of latest) byId.set(t.id, t)
   return [...byId.values()].sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at)).slice(0, max)
 }
+
+/**
+ * A live compute's tasks as the daemon has them now: a page read running first, and the known tasks that page says moved on.
+ *
+ * The page is read in the ``state`` order — running, then queued, then finished — so it carries every
+ * task of the groups before the one it ends in, and every task when it is the last page. A task the
+ * store holds in one of those groups that the page does not carry has moved on, and is read again:
+ * kept as last seen, it would count as in flight long after it finished.
+ */
+async function current(computeId: string, known: readonly Task[]): Promise<Task[]> {
+  const read = await api.tasks({ compute: computeId, order: 'state' })
+  const last = read.items[read.items.length - 1]
+  const reached = read.next_cursor && last ? groupOf(last) : FINISHED
+  const carried = new Set(read.items.map((t) => t.id))
+  const moved = known.filter((t) => groupOf(t) < reached && !carried.has(t.id))
+  return [...read.items, ...(await Promise.all(moved.map((t) => api.task(t.id))))]
+}
+
+const FINISHED = 2
+
+/** Where a task falls in the ``state`` order. */
+const groupOf = (t: Task): number => (t.state === 'running' ? 0 : t.state === 'queued' ? 1 : FINISHED)
 
 /** A page of tasks from every compute, each laid over what its own compute already has. */
 function filed(known: Record<string, Task[]>, listed: readonly Task[]): Record<string, Task[]> {
@@ -861,12 +887,14 @@ export function useOffers(): Catalog | null {
 /* ---------- metric folding ---------- */
 
 /**
- * Fold one raw gauge into the five the prototype draws.
+ * Fold one raw gauge into the six the console draws.
  *
- * The daemon reports what ``skyward/worker/metrics.py`` names — ``gpu_util``,
- * ``gpu_mem_mb``, ``gpu_temp``, ``cpu``, ``net_rx_*``/``net_tx_*`` — and the UI
- * wants percentages and a rate, so VRAM is a ratio of two gauges and the network
- * is the delta of a cumulative counter.
+ * The daemon passes on what the node reads: the collector's own readings
+ * (``gpu_util``, ``gpu_mem_mb``, ``gpu_temp_c``, ``cpu``, ``net_rx_kbps``/``net_tx_kbps``)
+ * or what a ``skyward/worker/metrics.py`` builder names (``gpu_temp``,
+ * ``net_rx_<iface>``/``net_tx_<iface>``). The UI wants percentages and MB/s, so
+ * VRAM is a ratio of two gauges, a kbit/s reading is divided by 8000, and a
+ * builder's byte counter is the delta between two samples.
  */
 function gauge(s: Store, computeId: string, nodeId: string, name: string, value: number, at: number): Patch | null {
   const rank = rankOf(s, computeId, nodeId)
@@ -893,19 +921,25 @@ function gauge(s: Store, computeId: string, nodeId: string, name: string, value:
 function derive(name: string, value: number, raw: Record<string, number>, previous: Record<string, number>, at: number): Partial<NodeMetrics> | null {
   if (name === 'cpu') return { cpu: clamp(value, 0, 100) }
   if (name === 'gpu_util') return { gpu: clamp(value, 0, 100) }
-  if (name === 'gpu_temp') return { temp: value }
+  if (name === 'gpu_temp_c' || name === 'gpu_temp') return { temp: value }
   if (name === 'gpu_mem_mb' || name === 'gpu_mem_total_mb') {
     const total = raw['gpu_mem_total_mb'] ?? 0
     return total > 0 ? { vram: clamp(((raw['gpu_mem_mb'] ?? 0) / total) * 100, 0, 100) } : null
   }
-  if (name.startsWith('net_rx_') || name.startsWith('net_tx_')) {
-    const before = previous[name]
-    const then = previous[`${name}@`]
-    if (before === undefined || then === undefined) return null
-    const seconds = Math.max(0.001, (at - then) / 1000)
-    return { net: clamp(Math.max(0, value - before) / seconds / 1e6, 0, 1e4) }
-  }
-  return null
+  const rx = name.startsWith('net_rx_')
+  if (!rx && !name.startsWith('net_tx_')) return null
+  const mbps = name === 'net_rx_kbps' || name === 'net_tx_kbps' ? value / 8000 : counted(name, value, previous, at)
+  if (mbps === null) return null
+  const rate = clamp(mbps, 0, 1e4)
+  return rx ? { rx: rate } : { tx: rate }
+}
+
+/** MB/s off a builder's cumulative byte counter: the delta since its previous sample, or null on the first. */
+function counted(name: string, value: number, previous: Record<string, number>, at: number): number | null {
+  const before = previous[name]
+  const then = previous[`${name}@`]
+  if (before === undefined || then === undefined) return null
+  return Math.max(0, value - before) / Math.max(0.001, (at - then) / 1000) / 1e6
 }
 
 function band(s: Store, computeId: string): Record<string, BandPoint[]> {

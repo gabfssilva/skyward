@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../state/store'
 import type { Compute, Node } from '../../api/client'
 import type { NodeMetrics } from '../../state/model'
-import { clamp, readyOf } from '../../state/model'
+import { clamp, holderOf, readyOf } from '../../state/model'
 import { Icon } from '../../ui/icons'
 
 type TermLine = { c: string; t: string }
@@ -129,7 +129,7 @@ export function ShellCard({ computeId, rank, onClose }: { computeId: string; ran
     input.current?.focus()
   }, [computeId, rank])
 
-  const node = (nodes ?? []).find((n) => n.rank === rank)
+  const node = holderOf(nodes ?? [], rank)
   const head = (
     <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
       <span className="cap">Shell on rank {rank}</span>
@@ -159,8 +159,8 @@ export function ShellCard({ computeId, rank, onClose }: { computeId: string; ran
     count: spec?.accelerator_count ?? 1,
     peers: readyOf(all).length,
     concurrency: compute.spec.worker?.concurrency ?? 1,
-    head: all[0]?.address ?? '—',
-    metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, net: 0 },
+    head: holderOf(all, 0)?.address ?? '—',
+    metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 },
   }
 
   const submit = (e: React.FormEvent): void => {

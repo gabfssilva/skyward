@@ -24,6 +24,7 @@ export function Inspector() {
   const accel = n.accelerator ?? c.spec.specs[0]?.accelerator ?? '?'
   const count = c.spec.specs[0]?.accelerator_count ?? 1
   const vram = VRAM[accel]
+  const cells = combNodes(c.id, nodes, state.metrics, state.progress)
 
   const drain = async () => {
     await api.drainNode(c.id, n.id)
@@ -38,10 +39,10 @@ export function Inspector() {
         <div style={{ marginTop: 10 }}>
           <Comb
             layout="hive"
-            nodes={combNodes(c.id, nodes, state.metrics, state.progress)}
+            nodes={cells}
             computeId={c.id}
             name={c.name ?? c.id}
-            size={hiveSize(nodes.length, 300, 300)}
+            size={hiveSize(cells.length, 300, 300)}
             only={new Set([n.rank])}
             onPick={(rank) => navigate(`/computes/${c.id}/nodes/${rank}`)}
           />

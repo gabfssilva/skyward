@@ -105,15 +105,16 @@ def shared_database(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @contextmanager
-def serving(database: Path, log: Path) -> Iterator[str]:
-    """A daemon on a free port, for as long as the block lasts.
+def serving(database: Path, log: Path, port: int | None = None) -> Iterator[str]:
+    """A daemon on ``port``, or a free one, for as long as the block lasts.
 
     The CLI has no embedded transport, so every command in a test needs one of
     these — there is no database a test can hand ``sky`` instead of a daemon.
     """
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+    if port is None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
 
     url = f"http://127.0.0.1:{port}"
     sink = log.open("wb")

@@ -136,7 +136,8 @@ svg.ic{width:1em;height:1em;flex:0 0 auto;stroke:currentColor;fill:none;stroke-w
 .btn.sm svg{font-size:15px}
 .btn[disabled]{opacity:.4;pointer-events:none}
 .pick{display:flex;gap:2px;background:var(--sunk);border-radius:10px;padding:2px;font-size:12.5px}
-.pick button{color:var(--muted);font-weight:600;padding:4px 10px;border-radius:8px}
+.pick button{color:var(--muted);font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap}
+.inspector .pick button{padding:4px 7px}
 .pick button[aria-selected="true"]{color:var(--ink);background:var(--panel)}
 .chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--sunk);font-size:12px;font-weight:500;color:var(--muted)}
 .chip[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
@@ -245,7 +246,7 @@ tbody tr:first-child td{border-top:0}
 .crumb button svg{font-size:18px;color:var(--muted)}
 .app.wide{grid-template-columns:minmax(0,1fr)}
 .app.wide .inspector{display:none}
-.mgrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.mgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
 .mcard{background:var(--sunk);border-radius:var(--rs);padding:10px 12px;display:grid;gap:4px}
 .mcard b{font-size:24px;font-weight:800;letter-spacing:-.02em;line-height:1}
 .mcard b small{font-size:11px;font-weight:500;color:var(--muted);margin-left:2px}

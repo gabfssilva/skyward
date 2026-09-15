@@ -232,15 +232,17 @@ class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
     Recorded, because output that only existed live would be output a client that
     reconnected could never see.
 
-    ``task`` carries the *execution* — the attempt on this node — because that is
-    what the machine that wrote the line was handed. A reader after a whole task's
-    output wants every execution of it, not a string equal to the task's id.
+    ``execution`` is the attempt on this node, which is what the machine that wrote
+    the line was handed; ``task`` is the task it is an attempt at, looked up by the
+    daemon, and means what it means on every other event. A reader after a whole
+    task's output asks for the task and gets every attempt's lines.
     """
 
     compute: str
     node: str
     content: str
     task: str | None = None
+    execution: str | None = None
 
 
 class PhaseEvent(Struct, frozen=True, tag_field="type", tag="node.phase"):

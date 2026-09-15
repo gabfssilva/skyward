@@ -1,5 +1,5 @@
 import { memo, type CSSProperties } from 'react'
-import { KIND, KIND_FILL, SQ3, clamp, hexCols, hexPts, hexSize, hive, hiveSize, money, ringsFor, spiral } from '../state/model'
+import { KIND, KIND_FILL, SQ3, clamp, hexCols, hexPts, hexSize, hive, hiveSize, money, ringsFor, spiral, type NodeMetrics } from '../state/model'
 
 export type CombNode = {
   rank: number
@@ -8,7 +8,7 @@ export type CombNode = {
   price?: number | null
   phase?: string | null
   error?: string | null
-  m?: Partial<Record<'gpu' | 'vram' | 'cpu' | 'temp' | 'net', number>>
+  m?: Partial<NodeMetrics>
 }
 
 /** A ready cell is the accent, deepened by how hard its GPU is working; any other cell is its state's colour. */

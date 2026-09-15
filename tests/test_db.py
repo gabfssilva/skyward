@@ -8,7 +8,9 @@ import pytest
 
 from skyward.server.persistence import db
 from skyward.server.persistence.db import POOL_SIZE, connect
-from skyward.server.persistence.tables import ComputeRow, EventRow
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow
+from skyward.shared.events import ConsoleEvent
 
 pytestmark = pytest.mark.local
 
@@ -102,3 +104,20 @@ def describe_a_log_written_before_the_node_column() -> None:
         assert [row["node_id"] for row in await EventRow.select(EventRow.node_id)] == ["nod_7"]
         assert await EventRow.count().where(EventRow.node_id == "nod_7") == 1, "asked for through the index the added column carries"
         assert [row["integrity_check"] for row in await EventRow.raw("PRAGMA integrity_check").run()] == ["ok"]
+
+
+def describe_a_log_whose_lines_named_the_execution_as_their_task() -> None:
+    async def a_line_is_given_the_task_and_keeps_the_execution_under_its_own_name(tmp_path: Path) -> None:
+        path = tmp_path / "skyward.sqlite"
+        await connect(path)
+        await ExecutionRow(id="exe_1", task_id="tsk_1", ordinal=1, state="succeeded").save().run()
+        await EventRow.raw(
+            "INSERT INTO events (type, compute_id, node_id, task_id, payload, created_at) "
+            "VALUES ('node.console', 'cmp_a', 'nod_7', 'exe_1', {}, '2026-01-01 00:00:00+00:00')",
+            '{"type":"node.console","compute":"cmp_a","node":"nod_7","content":"printed","task":"exe_1"}',
+        ).run()
+
+        await connect(path)
+
+        (entry,) = (await EventStore().log(None, 10, task="tsk_1")).items
+        assert entry.data ==ConsoleEvent(compute="cmp_a", node="nod_7", content="printed", task="tsk_1", execution="exe_1")
