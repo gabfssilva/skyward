@@ -140,6 +140,19 @@ class Error(Struct, frozen=True):
     details: dict[str, Any] | None = None
 
 
+class Resize(Struct, frozen=True):
+    """A terminal's new shape, sent up a session already carrying keystrokes.
+
+    Only a transport that is full-duplex has anywhere to put this: the paired
+    half-duplex streams carry the size once, in the query that opens them, and a
+    window dragged wider after that has no way back. On a socket it is the one
+    thing said in words rather than in bytes, which is what tells the two apart.
+    """
+
+    columns: int
+    rows: int
+
+
 class ProviderRef(Struct, frozen=True):
     """Which account a spec wants to buy from.
 

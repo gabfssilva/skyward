@@ -5,6 +5,7 @@ here are the ones asked of a computer: what is on it, put this there, and let me
 talk to the port that thing is listening on.
 """
 
+import asyncio
 import os
 import pty
 import subprocess
@@ -93,6 +94,19 @@ def describe_a_terminal_on_a_machine() -> None:
         assert code == 0
         assert painted.count("x") > 100_000, "and every byte still arrives, held until the terminal takes it"
 
+    def it_is_reachable_over_one_socket(pool: sky.Compute, daemon: str) -> None:
+        """What the browser console uses, and which uvicorn serves only with a WebSocket library installed."""
+        painted = asyncio.run(_over_a_socket(daemon, pool.id))
+
+        assert "typed over a socket" in painted, "keystrokes went up the same socket the terminal painted down"
+
+    def a_machine_nobody_holds_closes_the_socket_with_the_reason(pool: sky.Compute, daemon: str) -> None:
+        """A browser is told nothing by a rejected upgrade, so the refusal is a frame and the close carries its code."""
+        code, refusal = asyncio.run(_refused_over_a_socket(daemon, pool.id))
+
+        assert "compute_not_connected" in refusal, "the same error every other endpoint answers with"
+        assert code == 4409, "and the close says so too, for a caller that only listens for one"
+
 
 def describe_putting_a_file_on_the_machines() -> None:
     def it_lands_on_every_node_and_comes_back_off_one(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
@@ -108,6 +122,33 @@ def describe_putting_a_file_on_the_machines() -> None:
         assert cli("compute", "download", pool.id, "/tmp/payload.txt", str(back), "--url", daemon).code == 0
 
         assert back.read_text() == "carried by hand\n"
+
+
+async def _over_a_socket(daemon: str, compute: str) -> str:
+    """Attach to a machine's terminal the way the console does, and return what it painted."""
+    from websockets.asyncio.client import connect
+
+    url = f"{daemon.replace('http://', 'ws://')}/v1/computes/{compute}/shell/attach?node=0&command=cat"
+    async with connect(url) as socket:
+        await socket.send(b"typed over a socket\n")
+        painted = ""
+        while "typed over a socket" not in painted:
+            frame = await asyncio.wait_for(socket.recv(), timeout=60)
+            painted += frame.decode(errors="replace") if isinstance(frame, bytes) else frame
+        return painted
+
+
+async def _refused_over_a_socket(daemon: str, compute: str) -> tuple[int, str]:
+    """Ask for a rank the daemon holds no machine at, and return how the socket ended."""
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import ConnectionClosed
+
+    url = f"{daemon.replace('http://', 'ws://')}/v1/computes/{compute}/shell/attach?node=97"
+    async with connect(url) as socket:
+        refusal = await asyncio.wait_for(socket.recv(), timeout=60)
+        with suppress(ConnectionClosed):
+            await asyncio.wait_for(socket.recv(), timeout=60)
+        return socket.close_code or 0, str(refusal)
 
 
 def _under_a_tty(*tokens: str) -> tuple[int, str]:

@@ -116,6 +116,15 @@ export const ms = (iso: string | null | undefined): number => (iso ? Date.parse(
 export const nodeLive = (n: Node): boolean => !['failed', 'lost', 'deleted'].includes(n.state)
 
 /**
+ * Whether the daemon still has a link to this machine, which is all a terminal needs.
+ *
+ * Wider than ready: the link is dialled as soon as the machine has an address, and the
+ * whole bootstrap happens behind it. Those are the minutes somebody most wants to be
+ * inside a machine, so they are the minutes a shell is offered for.
+ */
+export const nodeHeld = (n: Node): boolean => ['connecting', 'bootstrapping', 'ready'].includes(n.state)
+
+/**
  * One node per rank, the one holding it now.
  *
  * The daemon gives a replacement the rank of the node it replaced, and the list keeps

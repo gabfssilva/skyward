@@ -117,6 +117,29 @@ The frame's `event:` name is finer than that tag — ten node states share `node
 
 See [Events](reference/events.md) for the stream's filters, replay semantics, and behaviour with slow consumers.
 
+## A terminal on a machine
+
+Three routes carry a live connection rather than a document, and all three reach a machine the daemon holds an SSH link to — which is every machine that has answered SSH, not only the ones whose bootstrap finished. Watching one install its driver is most of what a terminal is for.
+
+The pair is for a client that cannot hold a socket:
+
+```console
+$ http POST ':17590/v1/computes/cmp_7f3a1c/shell/up?cid=s1&node=0' < keystrokes   # the keyboard
+$ http GET  ':17590/v1/computes/cmp_7f3a1c/shell/down?cid=s1'                     # what it paints
+```
+
+Two half-duplex streams, tied by a `cid` the caller mints, because HTTP/1.1 will not carry a request body that is still being written alongside the response to it. `/forward/up` and `/forward/down` are the same shape around a node port instead of a pty. Neither is resumable: a dropped stream is a dead session.
+
+The socket is for a client that can, which in practice means a browser — `fetch` cannot stream a request body over HTTP/1.1 at all:
+
+```
+ws://127.0.0.1:17590/v1/computes/cmp_7f3a1c/shell/attach?node=0&columns=120&rows=40
+```
+
+Binary frames are the terminal, both ways. Text frames up are the screen's new shape, `{"columns": 132, "rows": 50}`, which the pair has nowhere to put — it carries the size once, in the query that opens it. A session that cannot be opened is refused with the same `Error` object every other route answers with, sent as a text frame and followed by a close with code `4409`; the handshake itself is accepted first, because a browser is told nothing about a rejected upgrade.
+
+This is the one route the OpenAPI document below does not describe, OpenAPI having no notion of a WebSocket.
+
 ## Health
 
 ```console
@@ -129,7 +152,7 @@ $ http GET :17590/v1/health/dependencies  # what it depends on, and their state
 
 ## The full specification
 
-Every route, parameter, request body, response shape, and schema is in the OpenAPI document, browsable in full:
+Every route above bar the socket — with its parameters, request bodies, response shapes and schemas — is in the OpenAPI document, browsable in full:
 
 <p style="margin: 1.2em 0;">
   <a class="md-button md-button--primary" href="../api/">Open the API explorer &rarr;</a>

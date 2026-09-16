@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import asyncssh
@@ -27,6 +28,30 @@ compute for discovering nothing."""
 
 type Channel = tuple[asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]]
 """One direct-tcpip connection to a node's port: bytes in, bytes out."""
+
+
+@dataclass(frozen=True, slots=True)
+class Pty:
+    """One pseudo-terminal on a machine: the pair a socket has, and the verb it does not.
+
+    A forwarded socket is two streams and nothing more. A terminal is two streams and
+    a shape, because the far end draws into it: a shell asks how wide the screen is
+    before it wraps a line, and anything full-screen repaints itself when the answer
+    changes. A transport that can carry the new shape mid-session has somewhere to
+    put it.
+    """
+
+    process: asyncssh.SSHClientProcess[bytes]
+
+    @property
+    def channel(self) -> Channel:
+        """The same pair a forwarded socket is, so whatever pumps one pumps this."""
+        return self.process.stdout, self.process.stdin
+
+    def resize(self, size: tuple[int, int]) -> None:
+        """Tell the far end the screen changed shape, and let it repaint."""
+        columns, rows = size
+        self.process.change_terminal_size(columns, rows)
 
 
 class Result(Struct, frozen=True):
@@ -305,7 +330,7 @@ class SshChannel:
         command: str | None = None,
         term: str = "xterm-256color",
         size: tuple[int, int] = (80, 24),
-    ) -> Channel:
+    ) -> Pty:
         """Open one interactive session on the machine, behind a pseudo-terminal.
 
         The PTY is what makes it a terminal rather than a pipe: it is what a login
@@ -319,14 +344,15 @@ class SshChannel:
         """
         conn = await self._ready()
         columns, rows = size
-        process = await conn.create_process(
-            command,
-            term_type=term,
-            term_size=(columns, rows),
-            encoding=None,
-            stderr=asyncssh.STDOUT,
+        return Pty(
+            await conn.create_process(
+                command,
+                term_type=term,
+                term_size=(columns, rows),
+                encoding=None,
+                stderr=asyncssh.STDOUT,
+            )
         )
-        return process.stdout, process.stdin
 
     async def close(self) -> None:
         if self._closed:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterable, Sequence
 from typing import Literal, Protocol, runtime_checkable
 
-from skyward.server.application.ssh import Result
+from skyward.server.application.ssh import Pty, Result
 from skyward.shared.events import LogEntry
 from skyward.shared.schemas import (
     Aggregate,
@@ -417,6 +417,15 @@ class Shell(Protocol):
 
         Waits for the terminal and then hands back the stream, so a refusal is an
         answer with a status on it rather than a body that stops mid-chunk.
+        """
+        ...
+
+    async def open(self, compute_id: str, rank: int | None, command: str | None, term: str, size: tuple[int, int]) -> Pty:
+        """The terminal itself, for a transport that carries both directions at once.
+
+        The pair above is what HTTP/1.1 leaves room for. A caller holding one socket
+        needs neither half nor the id that ties them, and gets the one thing the
+        pair has nowhere to put: the screen's new shape, sent mid-session.
         """
         ...
 

@@ -1,14 +1,13 @@
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
-import { useStore } from '../../state/store'
-import type { Compute, Node } from '../../api/client'
+import { BASE, type Compute, type Node, type WireError } from '../../api/client'
+import { MOCK } from '../../api/mock'
 import type { NodeMetrics } from '../../state/model'
-import { clamp, holderOf, readyOf } from '../../state/model'
+import { clamp, holderOf, nodeHeld, readyOf } from '../../state/model'
+import { useStore } from '../../state/store'
 import { Icon } from '../../ui/icons'
-
-type TermLine = { c: string; t: string }
-type ShellState = { lines: TermLine[]; history: string[] }
-
-const shells: Record<string, ShellState> = {}
 
 /** How much memory each accelerator carries, the way the prototype's catalog reads. */
 export const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
@@ -22,21 +21,116 @@ const SMI_NAME: Record<string, string> = {
 }
 
 const nameOf = (c: Compute): string => c.name ?? c.id
-const promptOf = (c: Compute, rank: number): string => `root@${nameOf(c)}-${rank}:~#`
+const promptOf = (c: Compute, rank: number): string => `root@${nameOf(c)}-${rank}:~# `
 
-function shellFor(computeId: string, rank: number): ShellState {
-  const k = `${computeId}/${rank}`
-  const found = shells[k]
-  if (found) return found
-  const fresh: ShellState = {
-    lines: [
-      { c: 'd', t: `pty opened on rank ${rank} — xterm-256color, keystrokes over POST /shell/up` },
-      { c: 'd', t: 'mock shell: nvidia-smi, ls, uv pip list, env | grep SKYWARD, help' },
-    ],
-    history: [],
+/** A CSS custom property's value, so the terminal is painted in the theme the page is. */
+const token = (name: string): string => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+
+/**
+ * Where the daemon opens a terminal on a machine.
+ *
+ * A socket rather than the two half-duplex streams the CLI uses, because a browser
+ * cannot write a request body it is still reading the answer to: a streaming body
+ * needs HTTP/2, and the daemon serves 1.1. The size travels in the query so the pty
+ * opens at the shape it will be drawn at, and again in a frame whenever that changes.
+ */
+const attach = (computeId: string, rank: number, columns: number, rows: number): string => {
+  const query = new URLSearchParams({ node: String(rank), columns: String(columns), rows: String(rows), term: 'xterm-256color' })
+  return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/computes/${computeId}/shell/attach?${query}`
+}
+
+/** The refusal the daemon sends as a frame before it closes, in the shape every endpoint answers with. */
+const reasonOf = (frame: string): string => {
+  try {
+    const wire = JSON.parse(frame) as Partial<WireError>
+    return wire.message ?? frame
+  } catch {
+    return frame
   }
-  shells[k] = fresh
-  return fresh
+}
+
+type Context = { compute: Compute; node: Node; rank: number; count: number; peers: number; concurrency: number; head: string; metrics: NodeMetrics }
+
+/**
+ * The machine's own terminal, carried over one socket.
+ *
+ * Nothing is interpreted on this side: what arrives is what the pty painted, escape
+ * codes and all, which is why it is drawn by a terminal emulator and not by a list of
+ * lines. The session is over when the socket closes — the shell exiting, the machine
+ * going away, or this card unmounting.
+ */
+function live(term: Terminal, computeId: string, rank: number, say: (said: string | null) => void): () => void {
+  const socket = new WebSocket(attach(computeId, rank, term.cols, term.rows))
+  socket.binaryType = 'arraybuffer'
+  let refused = false
+
+  const shape = (): void => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ columns: term.cols, rows: term.rows }))
+  }
+
+  const typed = term.onData((data) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data))
+  })
+  const moved = term.onResize(shape)
+
+  socket.onopen = () => {
+    say(null)
+    shape()
+    term.focus()
+  }
+  socket.onmessage = (event: MessageEvent<string | ArrayBuffer>) => {
+    if (typeof event.data !== 'string') return term.write(new Uint8Array(event.data))
+    refused = true
+    say(reasonOf(event.data))
+  }
+  socket.onclose = (event) => {
+    if (!refused && event.code !== 1000) say(`the session ended (${event.code})`)
+  }
+
+  return () => {
+    typed.dispose()
+    moved.dispose()
+    socket.onclose = null
+    socket.close()
+  }
+}
+
+/**
+ * The prototype's machine, answering into the same terminal a real one would.
+ *
+ * Only under ``VITE_MOCK``, where there is no daemon and so no socket: the example
+ * data has always included a shell, and a terminal that only ever says it cannot
+ * connect would be a worse prototype than one that answers.
+ */
+function fake(term: Terminal, context: () => Context): () => void {
+  const prompt = promptOf(context().compute, context().rank)
+  term.writeln(`pty opened on rank ${context().rank} — xterm-256color, example data`)
+  term.writeln('nvidia-smi · ls · uv pip list · env | grep SKYWARD · help')
+  term.write(prompt)
+
+  let line = ''
+  const typed = term.onData((data) => {
+    for (const key of data) {
+      if (key === '\r') {
+        term.write('\r\n')
+        const said = answer(context(), line)
+        if (said) term.writeln(said.replaceAll('\n', '\r\n'))
+        line = ''
+        term.write(prompt)
+      } else if (key === '\x7f') {
+        if (line) {
+          line = line.slice(0, -1)
+          term.write('\b \b')
+        }
+      } else if (key >= ' ') {
+        line += key
+        term.write(key)
+      }
+    }
+  })
+
+  term.focus()
+  return () => typed.dispose()
 }
 
 function smi(n: Node, count: number, m: NodeMetrics): string {
@@ -63,71 +157,127 @@ function smi(n: Node, count: number, m: NodeMetrics): string {
   return out.join('\n')
 }
 
-type Context = { compute: Compute; node: Node; rank: number; count: number; peers: number; concurrency: number; head: string; metrics: NodeMetrics }
-
-function runCommand(ctx: Context, raw: string): void {
+/** What the prototype's machine says to one command line. */
+function answer(ctx: Context, raw: string): string {
   const { compute: c, node: n, rank } = ctx
-  const sh = shellFor(c.id, rank)
   const cmd = raw.trim()
-  sh.lines.push({ c: 'p', t: `${promptOf(c, rank)} ${cmd}` })
-  const say = (t: string, cls?: string): number => sh.lines.push({ c: cls ?? '', t })
   const head = cmd.split(/\s+/)[0] ?? ''
-  if (!cmd) {
-    /* an empty line only prints the prompt */
-  } else if (cmd === 'clear') sh.lines = []
-  else if (head === 'help')
-    say('nvidia-smi · ls · pwd · whoami · uname -a · df -h · free -g · uv pip list · python -c "…" · env | grep SKYWARD · cat train.py · clear', 'd')
-  else if (head === 'nvidia-smi') say(smi(n, ctx.count, ctx.metrics))
-  else if (head === 'ls') say('checkpoints/  data/  skyward/  train.py  pyproject.toml  events.jsonl')
-  else if (head === 'pwd') say('/root')
-  else if (head === 'whoami') say('root')
-  else if (head === 'uname') say(`Linux ${n.machine ?? n.id} 6.8.0-51-generic #52-Ubuntu SMP x86_64 GNU/Linux`)
-  else if (head === 'df') say('Filesystem      Size  Used Avail Use% Mounted on\n/dev/root       1.8T  412G  1.4T  23% /\ntmpfs           1.0T     0  1.0T   0% /dev/shm')
-  else if (head === 'free') say('              total   used   free  shared  buff/cache  available\nMem:           2015    998    612      12         405         1002')
-  else if (/^(uv )?pip list/.test(cmd))
-    say(
-      'Package              Version\n-------------------- --------\ncasty                0.22.1\ncloudpickle          3.1.2\nlz4                  4.4.4\nmsgspec              0.19.0\nskyward              0.9.3\ntorch                2.8.0\ntransformers         4.57.1',
-    )
-  else if (cmd.startsWith('env'))
-    say(
-      [
-        `SKYWARD_COMPUTE=${c.id}`,
-        `SKYWARD_NODE=${n.id}`,
-        `SKYWARD_RANK=${rank}`,
-        `SKYWARD_NODES=${ctx.peers}`,
-        `SKYWARD_WORKERS_PER_NODE=${ctx.concurrency}`,
-        `SKYWARD_HEAD_ADDR=${ctx.head}`,
-        'SKYWARD_HEAD_PORT=29500',
-      ].join('\n'),
-    )
-  else if (head === 'python' || head === 'python3') {
-    if (cmd.includes('device_count')) say(String(ctx.count))
-    else if (cmd.includes('instance_info'))
-      say(`Info(node='${n.id}', compute='${c.id}', rank=${rank}, peers=${ctx.peers}, worker=0, workers_per_node=${ctx.concurrency})`)
-    else say('/root/.skyward/venv/bin/python — Python 3.12.7')
-  } else if (head === 'cat' && cmd.includes('train.py'))
-    say('import skyward as sky\n\n@sky.function\ndef train_step(batch):\n    info = sky.instance_info()\n    return model.step(sky.shard(batch)[info.rank])')
-  else if (head === 'sky') say('bash: sky: command not found — a node runs the worker, not the CLI', 'e')
-  else say(`bash: ${head}: command not found`, 'e')
-  if (cmd) sh.history.push(cmd)
+  if (!cmd) return ''
+  if (cmd === 'clear') return '\x1b[2J\x1b[H'
+  if (head === 'help')
+    return 'nvidia-smi · ls · pwd · whoami · uname -a · df -h · free -g · uv pip list · python -c "…" · env | grep SKYWARD · cat train.py · clear'
+  if (head === 'nvidia-smi') return smi(n, ctx.count, ctx.metrics)
+  if (head === 'ls') return 'checkpoints/  data/  skyward/  train.py  pyproject.toml  events.jsonl'
+  if (head === 'pwd') return '/root'
+  if (head === 'whoami') return 'root'
+  if (head === 'uname') return `Linux ${n.machine ?? n.id} 6.8.0-51-generic #52-Ubuntu SMP x86_64 GNU/Linux`
+  if (head === 'df') return 'Filesystem      Size  Used Avail Use% Mounted on\n/dev/root       1.8T  412G  1.4T  23% /\ntmpfs           1.0T     0  1.0T   0% /dev/shm'
+  if (head === 'free') return '              total   used   free  shared  buff/cache  available\nMem:           2015    998    612      12         405         1002'
+  if (/^(uv )?pip list/.test(cmd))
+    return 'Package              Version\n-------------------- --------\ncasty                0.22.1\ncloudpickle          3.1.2\nlz4                  4.4.4\nmsgspec              0.19.0\nskyward              0.9.3\ntorch                2.8.0\ntransformers         4.57.1'
+  if (cmd.startsWith('env'))
+    return [
+      `SKYWARD_COMPUTE=${c.id}`,
+      `SKYWARD_NODE=${n.id}`,
+      `SKYWARD_RANK=${rank}`,
+      `SKYWARD_NODES=${ctx.peers}`,
+      `SKYWARD_WORKERS_PER_NODE=${ctx.concurrency}`,
+      `SKYWARD_HEAD_ADDR=${ctx.head}`,
+      'SKYWARD_HEAD_PORT=29500',
+    ].join('\n')
+  if (head === 'python' || head === 'python3') {
+    if (cmd.includes('device_count')) return String(ctx.count)
+    if (cmd.includes('instance_info'))
+      return `Info(node='${n.id}', compute='${c.id}', rank=${rank}, peers=${ctx.peers}, worker=0, workers_per_node=${ctx.concurrency})`
+    return '/root/.skyward/venv/bin/python — Python 3.12.7'
+  }
+  if (head === 'cat' && cmd.includes('train.py'))
+    return 'import skyward as sky\n\n@sky.function\ndef train_step(batch):\n    info = sky.instance_info()\n    return model.step(sky.shard(batch)[info.rank])'
+  if (head === 'sky') return 'bash: sky: command not found — a node runs the worker, not the CLI'
+  return `bash: ${head}: command not found`
 }
+
+/** The terminal itself: an emulator sized to its box, and whatever is feeding it. */
+function Screen({ ctx }: { ctx: Context }) {
+  const mount = useRef<HTMLDivElement>(null)
+  const [said, setSaid] = useState<string | null>('opening a terminal…')
+  const latest = useRef(ctx)
+  latest.current = ctx
+  const { id: computeId } = ctx.compute
+  const { rank } = ctx
+
+  useEffect(() => {
+    const host = mount.current
+    if (!host) return
+
+    const term = new Terminal({
+      fontFamily: token('--mono') || 'monospace',
+      fontSize: 12,
+      cursorBlink: true,
+      theme: { background: token('--term-bg'), foreground: token('--term-ink'), cursor: token('--term-p') },
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(host)
+
+    let stop = (): void => {}
+    let gone = false
+    let queued = 0
+
+    /*
+     * Refitting is deferred to the next frame, and the box it watches is bounded from
+     * the outside. A terminal is a fixed grid of cells, so it has a width of its own
+     * to contribute upward; measuring it inside the box it just widened is how a
+     * resize becomes a loop that never settles.
+     */
+    const resized = new ResizeObserver(() => {
+      cancelAnimationFrame(queued)
+      queued = requestAnimationFrame(() => fit.fit())
+    })
+
+    /* The font is a webfont, and a terminal measured before it lands is measured against the fallback. */
+    void document.fonts.ready.then(() => {
+      if (gone) return
+      fit.fit()
+      resized.observe(host)
+      stop = MOCK ? fake(term, () => latest.current) : live(term, computeId, rank, setSaid)
+      if (MOCK) setSaid(null)
+    })
+
+    return () => {
+      gone = true
+      cancelAnimationFrame(queued)
+      resized.disconnect()
+      stop()
+      term.dispose()
+    }
+  }, [computeId, rank])
+
+  return (
+    <div className="term">
+      <div className="term-screen" ref={mount} />
+      {said ? <div className="term-said">{said}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * Why there is no terminal, for a machine the daemon holds no link to.
+ *
+ * Worth telling apart: one that has not been bought yet is a wait, and one the daemon
+ * has let go of is not — the same distinction the daemon draws between a channel that
+ * is not up and a channel that is finished.
+ */
+const why = (n: Node): string =>
+  ['requested', 'provisioning'].includes(n.state)
+    ? 'This machine is still being bought. A terminal opens the moment it answers SSH, which is well before its bootstrap finishes.'
+    : 'The daemon has no link to this machine. Every machine that answers SSH takes a terminal, and this one is not answering.'
 
 /** The prototype's ``shellCard``: a pty on one rank, in a card of its own on the node page. */
 export function ShellCard({ computeId, rank, onClose }: { computeId: string; rank: number; onClose: () => void }) {
   const compute = useStore((s) => s.computes.find((c) => c.id === computeId))
   const nodes = useStore((s) => s.nodes[computeId])
   const metrics = useStore((s) => s.metrics)
-  const [, bump] = useState(0)
-  const out = useRef<HTMLDivElement>(null)
-  const input = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (out.current) out.current.scrollTop = out.current.scrollHeight
-  })
-
-  useEffect(() => {
-    input.current?.focus()
-  }, [computeId, rank])
 
   const node = holderOf(nodes ?? [], rank)
   const head = (
@@ -141,54 +291,32 @@ export function ShellCard({ computeId, rank, onClose }: { computeId: string; ran
     </div>
   )
 
-  if (!compute || !node || node.state !== 'ready')
+  if (!compute || !node || !nodeHeld(node))
     return (
       <section className="card">
         {head}
-        <div className="sub">{compute ? 'This node is not ready to take a shell.' : 'Only a live compute takes a shell.'}</div>
+        <div className="sub">{!compute || !node ? 'Only a live compute takes a shell.' : why(node)}</div>
       </section>
     )
 
   const all = nodes ?? []
   const spec = compute.spec.specs[0]
-  const sh = shellFor(compute.id, rank)
-  const context: Context = {
-    compute,
-    node,
-    rank,
-    count: spec?.accelerator_count ?? 1,
-    peers: readyOf(all).length,
-    concurrency: compute.spec.worker?.concurrency ?? 1,
-    head: holderOf(all, 0)?.address ?? '—',
-    metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 },
-  }
-
-  const submit = (e: React.FormEvent): void => {
-    e.preventDefault()
-    const field = input.current
-    if (!field) return
-    runCommand(context, field.value)
-    field.value = ''
-    field.focus()
-    bump((n) => n + 1)
-  }
 
   return (
     <section className="card">
       {head}
-      <div className="term">
-        <div className="term-out" id="term-out" ref={out}>
-          {sh.lines.map((l, i) => (
-            <div key={i} className={l.c}>
-              {l.t}
-            </div>
-          ))}
-        </div>
-        <form className="term-in" onSubmit={submit}>
-          <span>{promptOf(compute, rank)}</span>
-          <input id="term-input" name="cmd" autoComplete="off" spellCheck={false} aria-label="shell command" ref={input} />
-        </form>
-      </div>
+      <Screen
+        ctx={{
+          compute,
+          node,
+          rank,
+          count: spec?.accelerator_count ?? 1,
+          peers: readyOf(all).length,
+          concurrency: compute.spec.worker?.concurrency ?? 1,
+          head: holderOf(all, 0)?.address ?? '—',
+          metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 },
+        }}
+      />
     </section>
   )
 }

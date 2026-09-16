@@ -118,7 +118,7 @@ export function Stage() {
       </section>
       {ran.length ? <RanHere rows={ran} /> : null}
       <RankLogs c={c} n={n} />
-      {shell && ready ? <ShellCard computeId={c.id} rank={n.rank} onClose={() => setUi({ shell: false })} /> : null}
+      {shell ? <ShellCard computeId={c.id} rank={n.rank} onClose={() => setUi({ shell: false })} /> : null}
     </>
   )
 }

@@ -26,7 +26,7 @@ import casty
 from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.ports import Route, Target
 from skyward.server.application.source import Source, resolve
-from skyward.server.application.ssh import CHUNK, Channel, Result, SshUnavailableError
+from skyward.server.application.ssh import CHUNK, Channel, Pty, Result, SshUnavailableError
 from skyward.shared.errors import ComputeNotConnectedError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
@@ -363,7 +363,7 @@ class Runtime:
         command: str | None = None,
         term: str = "xterm-256color",
         size: tuple[int, int] = (80, 24),
-    ) -> Channel:
+    ) -> Pty:
         """A pseudo-terminal on the machine at one rank, or on the lowest one held.
 
         Deliberately not round-robin, which is what a forward does: a forward is one
@@ -375,7 +375,9 @@ class Runtime:
         Held rather than ready, because a terminal is largely how a bootstrap that is
         going wrong gets watched: waiting for the worker would be waiting for the very
         thing the person is trying to find out about. The channel does the waiting — a
-        machine still booting takes the session at the moment it answers.
+        machine still booting takes the session at the moment it answers, and one that
+        gives up while it is waiting is refused here by name rather than raised through
+        as whatever the ssh layer called it.
         """
         held = self.held
         if not held:
@@ -395,7 +397,14 @@ class Runtime:
                     rank=named,
                 )
 
-        return await self.nodes[chosen]._ssh.open_shell(command, term, size)
+        try:
+            return await self.nodes[chosen]._ssh.open_shell(command, term, size)
+        except SshUnavailableError as gone:
+            raise ComputeNotConnectedError(
+                f"compute {self.compute} lost its link to the machine at rank {self.nodes[chosen]._rank} before the terminal opened",
+                compute=self.compute,
+                rank=self.nodes[chosen]._rank,
+            ) from gone
 
     def _select(self, target: Target) -> tuple[str, ...]:
         """The ready nodes an operation lands on.
@@ -732,4 +741,17 @@ class Terminal(Paired):
         size: tuple[int, int],
         chunks: AsyncIterator[bytes],
     ) -> None:
-        await self._pump(cid, lambda: self._runtimes.holding(compute_id).open_shell(rank, command, term, size), chunks)
+        async def opening() -> Channel:
+            return (await self.open(compute_id, rank, command, term, size)).channel
+
+        await self._pump(cid, opening, chunks)
+
+    async def open(self, compute_id: str, rank: int | None, command: str | None, term: str, size: tuple[int, int]) -> Pty:
+        """A terminal to drive directly, for a transport that carries both ways at once.
+
+        The paired halves exist because HTTP/1.1 will not: a request body that is
+        still being written cannot be read from the same response. A socket that is
+        full-duplex needs none of that bookkeeping — no id to mint, nothing to hold
+        until the other half arrives — so it takes the terminal itself.
+        """
+        return await self._runtimes.holding(compute_id).open_shell(rank, command, term, size)

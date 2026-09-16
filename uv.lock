@@ -2911,6 +2911,7 @@ server = [
     { name = "litestar" },
     { name = "piccolo", extra = ["sqlite"] },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 storage = [
     { name = "aioboto3" },
@@ -2987,6 +2988,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'all'", specifier = ">=13" },
     { name = "websockets", marker = "extra == 'providers'", specifier = ">=13" },
     { name = "websockets", marker = "extra == 'salad'", specifier = ">=13" },
+    { name = "websockets", marker = "extra == 'server'", specifier = ">=13" },
 ]
 provides-extras = ["all", "aws", "cli", "client", "gcp", "notebook", "providers", "salad", "server", "storage", "tui"]
 

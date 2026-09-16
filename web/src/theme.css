@@ -90,7 +90,7 @@ svg.ic{width:1em;height:1em;flex:0 0 auto;stroke:currentColor;fill:none;stroke-w
 /* ---------- app frame ---------- */
 .app{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;
   padding:0 max(16px,calc((100vw - 1440px)/2));align-items:start}
-.stage{min-width:0;display:grid;gap:16px}
+.stage{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
 .inspector{position:sticky;top:70px;display:grid;gap:14px;min-width:0}
 .card{background:var(--panel);border-radius:var(--r);padding:18px 20px}
 .card.tight{padding:15px 17px}
@@ -186,13 +186,10 @@ tbody tr:first-child td{border-top:0}
 .evline:first-child{border-top:0}
 
 /* ---------- terminal ---------- */
-.term{background:var(--term-bg);border-radius:12px;color:var(--term-ink);font-family:var(--mono);font-size:12px;line-height:1.55;overflow:hidden}
-.term-out{padding:12px 14px;height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word}
-.term-out .p{color:var(--term-p)} .term-out .d{color:var(--term-dim)} .term-out .e{color:#F28B85}
-.term-in{display:flex;gap:8px;padding:8px 14px;border-top:1px solid rgba(255,255,255,.08)}
-.term-in span{color:var(--term-p)}
-.term-in input{flex:1;background:none;border:0;color:var(--term-ink);font-family:var(--mono);font-size:12px}
-.term-in input:focus{outline:none}
+.term{background:var(--term-bg);border-radius:12px;color:var(--term-ink);font-family:var(--mono);font-size:12px;overflow:hidden}
+.term-screen{height:320px;padding:10px 12px;overflow:hidden}
+.term-screen .xterm{height:100%}
+.term-said{padding:8px 14px;border-top:1px solid rgba(255,255,255,.08);color:var(--term-dim)}
 
 /* ---------- overlays ---------- */
 #overlay:empty{display:none}

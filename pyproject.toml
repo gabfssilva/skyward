@@ -49,6 +49,10 @@ server = [
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",
     "uvicorn>=0.30",
+    # Uvicorn serves a WebSocket only if one of these is importable, and falls back
+    # to refusing the upgrade if neither is. The browser console's terminal is a
+    # WebSocket, so without this the daemon serves the page and not the thing on it.
+    "websockets>=13",
     # The daemon mints a certificate authority per compute and signs its members.
     # The node only reads the three files it is handed, so this stops here.
     "cryptography>=42",

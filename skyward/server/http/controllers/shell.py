@@ -1,14 +1,33 @@
 from __future__ import annotations
 
-from litestar import Controller, Request, get, post
+import asyncio
+from contextlib import suppress
+
+import asyncssh
+import msgspec
+from litestar import Controller, Request, get, post, websocket
+from litestar.connection import WebSocket
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
+from skyward.server.application.ssh import CHUNK, Pty
 from skyward.server.http.exceptions import failures
+from skyward.shared.errors import SkywardError
+from skyward.shared.schemas import Error, Resize
 
 BYTES = "application/octet-stream"
+
+REFUSED = 4409
+"""The close code for a session that could not be opened — the 409 of the paired halves.
+
+Refusing the handshake would be the closer analogue, and it is the wrong one: a
+browser is told nothing about a rejected upgrade, since the WebSocket API hands
+``onerror`` no status and no body. So the socket is accepted, the refusal is sent as
+the same :class:`Error` every other endpoint answers with, and only then is it closed
+— the reason is in a frame, not in the close, which holds 123 bytes.
+"""
 
 
 class ShellController(Controller):
@@ -76,3 +95,96 @@ class ShellController(Controller):
         cid: str = Parameter(query="cid", description="The session id shared with `up`."),
     ) -> Stream:
         return Stream(await shell.down(cid), media_type=BYTES)
+
+    @websocket("/attach")
+    async def attach(
+        self,
+        compute_id: str,
+        socket: WebSocket,
+        shell: ports.Shell,
+        node: int | None = Parameter(query="node", default=None, description="The rank to open the terminal on; omit for the lowest one held."),
+        command: str | None = Parameter(query="command", default=None, description="What to run; omit for the login shell."),
+        term: str = Parameter(query="term", default="xterm-256color", description="The terminal type to claim."),
+        columns: int = Parameter(query="columns", default=80, description="The terminal width it opens at."),
+        rows: int = Parameter(query="rows", default=24, description="The terminal height it opens at."),
+    ) -> None:
+        """One interactive session, both directions on one socket.
+
+        The same terminal the paired halves open, for a caller that can hold a socket.
+        Those two exist because HTTP/1.1 cannot carry a request body that is still
+        being written alongside the response to it — which is exactly what a browser
+        cannot work around, since a streaming request body needs HTTP/2. So the
+        console uses this and the CLI uses those, and both reach the same pty.
+
+        Binary frames are the terminal itself: keystrokes up, whatever it paints
+        down, unframed, because a terminal has no frames and one output. Text frames
+        up are a :class:`Resize` — the screen's new shape, which the halves can only
+        say once and this can say whenever the window moves.
+
+        The machine need not be ready: every machine that has answered SSH takes a
+        terminal, and one still booting takes it the moment it does, so the socket
+        may be open a while before the first byte comes back. One that cannot be
+        opened at all is an :class:`Error` in a text frame and then a close.
+        """
+        await socket.accept()
+        try:
+            pty = await shell.open(compute_id, node, command, term, (columns, rows))
+        except SkywardError as refused:
+            await socket.send_json(Error(code=refused.code, message=refused.message, retryable=refused.retryable, details=refused.details or None))
+            await socket.close(code=REFUSED, reason=refused.code)
+            return
+
+        await _carry(socket, pty)
+
+
+async def _carry(socket: WebSocket, pty: Pty) -> None:
+    """Both directions at once, until whichever ends first ends the other.
+
+    A socket does not need the pairing the two halves do, so there is nothing here
+    to reconcile: one task carries what is typed down to the machine, another
+    carries what the terminal paints back up, and the session is over when either
+    stops — the shell exiting, or the browser tab closing.
+    """
+    reader, writer = pty.channel
+    both = (asyncio.create_task(_paint(socket, reader)), asyncio.create_task(_type(socket, pty)))
+    try:
+        await asyncio.wait(both, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in both:
+            task.cancel()
+        await asyncio.gather(*both, return_exceptions=True)
+        with suppress(OSError, asyncssh.Error):
+            writer.close()
+        with suppress(Exception):
+            await socket.close()
+
+
+async def _paint(socket: WebSocket, reader: asyncssh.SSHReader[bytes]) -> None:
+    """What the terminal paints, as binary frames, until the shell exits."""
+    with suppress(OSError, asyncssh.Error):
+        while data := await reader.read(CHUNK):
+            await socket.send_bytes(data)
+
+
+async def _type(socket: WebSocket, pty: Pty) -> None:
+    """What the caller sends, until they stop sending.
+
+    Binary is the keyboard and text is the screen's shape — the only two things a
+    terminal takes from this side, which is why neither needs a tag to say which it
+    is. A text frame that is not a shape is ignored: nothing else in this direction
+    has anything to do with the session, and a frame the caller got wrong is not a
+    reason to take their shell away.
+    """
+    _, writer = pty.channel
+    while True:
+        match await socket.receive():
+            case {"type": "websocket.disconnect"}:
+                return
+            case {"bytes": bytes(typed)} if typed:
+                writer.write(typed)
+            case {"text": str(control)} if control:
+                with suppress(msgspec.DecodeError, msgspec.ValidationError):
+                    shape = msgspec.json.decode(control, type=Resize)
+                    pty.resize((shape.columns, shape.rows))
+            case _:
+                pass
