@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import msgspec
 from litestar import Controller, MediaType, Response, delete, get, post
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
@@ -10,6 +11,7 @@ from litestar.response import Stream
 from skyward.server.application import ports
 from skyward.server.application.reconciler import Wakeup
 from skyward.server.http.exceptions import failures
+from skyward.shared import codec
 from skyward.shared.schemas import (
     Execution,
     ExecutionCreate,
@@ -22,6 +24,21 @@ from skyward.shared.schemas import (
 
 BLOB = "application/vnd.skyward.blob"
 FRAMES = "application/vnd.skyward.frames"
+
+
+async def pickled(data: TaskCreate) -> TaskCreate:
+    """The arguments as everything below takes them, however the caller said them.
+
+    A ``call`` is JSON because the caller had no interpreter to pickle with. What
+    is written down is the same inline pickle every other caller sends, so the
+    store, the dispatcher and the worker never learn there were two ways to say
+    it — the second way ends here.
+    """
+    if data.call is None:
+        return data
+
+    arguments = (tuple(data.call.args or ()), dict(data.call.kwargs or {}))
+    return msgspec.structs.replace(data, call=None, args_inline=await codec.payload.encode(arguments))
 
 
 async def framed(frames: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
@@ -72,6 +89,8 @@ class TaskController(Controller):
             "`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes "
             "the set of `ready` nodes at admission and creates one execution per rank — a later scale-up does not add "
             "executions.\n\n"
+            "The arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no "
+            "Python to pickle with sends `call` instead — the values in JSON — and the daemon encodes them here.\n\n"
             "The task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on "
             "`(task_id, execution_id, args_hash)`."
         ),
@@ -87,7 +106,7 @@ class TaskController(Controller):
         wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Task]:
-        task, created = await tasks.submit(data, idempotency_key)
+        task, created = await tasks.submit(await pickled(data), idempotency_key)
         wake("task.changed", task_id=task.id)
         wake("compute.changed", compute_id=data.compute)
         return Response(task, status_code=201 if created else 200)

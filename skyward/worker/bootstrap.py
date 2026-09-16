@@ -582,3 +582,48 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
             FOOTER,
         ),
     )
+
+
+RESTARTS = 5
+"""How many deaths in a row, each within ``SHORT_LIVED`` seconds of starting, before the machine is given up on."""
+
+SHORT_LIVED = 30
+"""Seconds a worker has to stay up for its death to count as a crash rather than as a crash loop."""
+
+
+def supervised(command: str) -> str:
+    """``command``, started again whenever it dies, as a script for ``bash -c``.
+
+    On the thread executor the user's function runs inside the worker's own process,
+    and a function that crashes the interpreter — a segfault in an extension, bytecode
+    compiled by another Python — takes the worker with it. The machine is fine and
+    nothing on it answers, and the daemon would only learn so the next time the link
+    dropped. Started again, the worker answers the daemon's next question about the
+    attempt it was running by not knowing it, which is already how an attempt is
+    declared lost.
+
+    An exit of zero is the worker leaving on purpose — a failed health check writes
+    its reason to the journal and returns — so it is not started again. A worker that
+    dies over and over just after starting is broken rather than unlucky: after
+    ``RESTARTS`` of those in a row the loop stops and says so as a health event, which
+    the daemon already reads as the node being lost.
+    """
+    return f"""\
+[ -f {ENV} ] && . {ENV}
+. {SKYWARD_DIR}/emit.sh
+set +e
+quick=0
+while true; do
+    began=$(date +%s)
+    {command}
+    code=$?
+    [ "$code" -eq 0 ] && exit 0
+    if [ $(( $(date +%s) - began )) -lt {SHORT_LIVED} ]; then quick=$((quick + 1)); else quick=0; fi
+    if [ "$quick" -ge {RESTARTS} ]; then
+        emit "{{\\"type\\":\\"health\\",\\"reason\\":\\"the worker died $quick times in a row within {SHORT_LIVED}s of starting, last with code $code\\"}}"
+        exit "$code"
+    fi
+    emit_console "the worker exited with code $code; starting it again"
+    sleep 1
+done
+"""

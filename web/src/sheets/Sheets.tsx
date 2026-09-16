@@ -1,10 +1,13 @@
 import { useEffect } from 'react'
 import { useStore } from '../state/store'
-import type { Offer } from '../api/client'
+import type { FunctionRef, Offer } from '../api/client'
 import { Wizard, seedWizard } from './Wizard'
 import { Scale } from './Scale'
 import { Ports } from './Ports'
 import { AddProvider } from './AddProvider'
+import { Write } from './Write'
+import { Run } from './Run'
+import { Function } from './Function'
 import { Confirm } from './Confirm'
 import { Palette } from './Palette'
 
@@ -17,6 +20,10 @@ export const openWizard = (offer?: Offer): void => {
 export const openScale = (computeId: string): void => useStore.getState().openSheet({ kind: 'scale', computeId })
 export const openPorts = (computeId: string): void => useStore.getState().openSheet({ kind: 'ports', computeId })
 export const openAddProvider = (provider?: string): void => useStore.getState().openSheet({ kind: 'addProvider', provider })
+export const openWrite = (from?: FunctionRef): void => useStore.getState().openSheet({ kind: 'write', from })
+export const openRun = (run: { lineage?: string; version?: number; computeId?: string; node?: number } = {}): void =>
+  useStore.getState().openSheet({ kind: 'run', ...run })
+export const openFunction = (lineage: string): void => useStore.getState().openSheet({ kind: 'function', lineage })
 export const openPalette = (): void => useStore.getState().openSheet({ kind: 'palette' })
 export const closeSheet = (): void => useStore.getState().closeSheet()
 
@@ -55,6 +62,9 @@ export function Sheets() {
       {sheet.kind === 'scale' ? <Scale computeId={sheet.computeId} /> : null}
       {sheet.kind === 'ports' ? <Ports computeId={sheet.computeId} /> : null}
       {sheet.kind === 'addProvider' ? <AddProvider provider={sheet.provider} /> : null}
+      {sheet.kind === 'write' ? <Write from={sheet.from} /> : null}
+      {sheet.kind === 'run' ? <Run lineage={sheet.lineage} version={sheet.version} computeId={sheet.computeId} node={sheet.node} /> : null}
+      {sheet.kind === 'function' ? <Function lineage={sheet.lineage} /> : null}
       {sheet.kind === 'confirm' ? (
         <Confirm title={sheet.title} body={sheet.body} confirm={sheet.confirm} danger={sheet.danger} onConfirm={sheet.onConfirm} />
       ) : null}

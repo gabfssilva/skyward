@@ -198,13 +198,29 @@ class ChunkRow(Table, tablename="chunks"):
 
 
 class FunctionRow(Table, tablename="functions"):
-    """What a blob of code is, so a task can name it without carrying it."""
+    """What a blob of code is, so a task can name it without carrying it.
+
+    ``source`` is the text a function written in the console was built from;
+    ``excerpt`` is the text the SDK read off the file of one it pickled. The blob is
+    still what runs either way.
+
+    ``lineage`` and ``shape`` are read off the payload when it arrives, without
+    unpickling it: one function across all its uploads, and its code apart from
+    where it lives and what it captured. The version is not stored — it is counted
+    from the shapes, in order, each time it is read.
+    """
 
     sha256 = Varchar(primary_key=True)
     size_bytes = Integer()
     codec = Varchar()
     name = Varchar(null=True, default=None)
+    source = Text(null=True, default=None)
+    excerpt = Text(null=True, default=None)
     created_at = Timestamptz()
+    lineage = Varchar(index=True)
+    qualname = Varchar(null=True, default=None)
+    origin = Varchar(null=True, default=None)
+    shape = Varchar(null=True, default=None)
 
 
 class TaskRow(Table, tablename="tasks"):
@@ -222,6 +238,9 @@ class TaskRow(Table, tablename="tasks"):
     args_sha256 = Varchar()
     dispatch = Varchar()
     state = Varchar(index=True)
+    rank = Integer(null=True, default=None)
+    """The node the caller named, or null for any of them. Not the execution's rank:
+    that one says which node of a broadcast an attempt is, and every task has it."""
     decision = Varchar(null=True, default=None)
     """The digest of the task's retry decision. Not ``retry``: that column exists in
     older files as a ``NOT NULL`` object nobody read, and a file cannot be told to

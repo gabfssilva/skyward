@@ -6,6 +6,7 @@ import { useStore, computeById, isLive, spentOf } from '../../state/store'
 import { valuesFor } from '../../state/nodes'
 import { dur, median, money, nodeLive, ranOf, rateOf, readyOf, targetOf } from '../../state/model'
 import { Icon } from '../../ui/icons'
+import { openRun } from '../../sheets'
 
 const NONE: never[] = []
 
@@ -58,7 +59,7 @@ export function ComputeStats({ c, nodes, live }: { c: Compute; nodes: readonly N
 }
 
 /** The actions on a compute: Logs, Scale, Shell and Delete while it runs, Events once it is gone. */
-export function ComputeActions({ c, nodes, live, rank = 0 }: { c: Compute; nodes: readonly Node[]; live: boolean; rank?: number }) {
+export function ComputeActions({ c, nodes, live, rank }: { c: Compute; nodes: readonly Node[]; live: boolean; rank?: number }) {
   const navigate = useNavigate()
   const act = useStore((s) => s.act)
   const setUi = useStore((s) => s.setUi)
@@ -87,6 +88,10 @@ export function ComputeActions({ c, nodes, live, rank = 0 }: { c: Compute; nodes
     )
   return (
     <div className="spacer row" style={{ gap: 6, position: 'relative' }}>
+      <button className="btn sm" onClick={() => openRun({ computeId: c.id, node: rank })}>
+        <Icon name="run" />
+        Run
+      </button>
       <button className="btn sm" onClick={() => toActivity('logs')}>
         <Icon name="logs" />
         Logs
@@ -99,7 +104,7 @@ export function ComputeActions({ c, nodes, live, rank = 0 }: { c: Compute; nodes
         className="btn sm"
         onClick={() => {
           setUi({ shell: true })
-          navigate(`/computes/${c.id}/nodes/${rank}`)
+          navigate(`/computes/${c.id}/nodes/${rank ?? 0}`)
         }}
       >
         <Icon name="shell" />

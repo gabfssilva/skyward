@@ -86,6 +86,7 @@ Every failure is the same JSON object, whatever produced it:
 | `task_indeterminate` | 409 | no | Contact was lost after code may have run |
 | `duplication_not_acknowledged` | 409 | no | Retrying an indeterminate task without accepting it may run twice |
 | `capability_mismatch` | 422 | no | The provider cannot do what the spec asks — volumes, clustering |
+| `source_rejected` | 422 | no | Text registered as a function does not parse, or defines no function by that name |
 | `release_pending` | — | yes | Only in `status.last_error`: every machine is gone and the provider would not release the binding yet |
 | `reconcile_failed` | — | yes | Only in `status.last_error`: a reconcile pass broke on an error with no code of its own |
 
@@ -102,6 +103,40 @@ $ http POST :17590/v1/tasks function=<sha256> args_sha256=<sha256> compute=cmp_7
 ```
 
 The same argument broadcast to a hundred nodes is stored once. A `PUT` of content already present is a no-op, so a client can skip the upload entirely by trying the task first. Results come back the same way, which is why reading one twice does not consume it.
+
+## Calling without an interpreter
+
+Those blobs are cloudpickle, which only Python can write. A caller that has none — the browser console, or anything speaking HTTP and nothing more — says the same two things in the only notation it has, and the daemon encodes them at the edge:
+
+```console
+$ http POST :17590/v1/functions name=area source='import math
+
+def area(radius):
+    return math.pi * radius**2
+'
+$ http POST :17590/v1/tasks function=<sha256> compute=cmp_7f3a1c dispatch=one rank:=0 call:='{"args": [2.0]}'
+```
+
+`POST /v1/functions` takes a module and the name of the function in it to call. The daemon does not run a line of it: the text is captured in a callable, that callable is pickled, and what is registered is the same blob `PUT` would have taken — compiled on the machine, once per call. Text that does not parse, or that defines no function under that name, is refused with `source_rejected` rather than discovered twenty minutes later on a machine that is already costing money.
+
+`call` is the third way a task can say its arguments, beside `args_inline` and `args_sha256`. A list is taken in order, an object by name, and what fits is what JSON has — an argument that is a dataframe is an argument that has to be built where Python is.
+
+A function registered this way is read back with its `source`. A pickle has no text in it, so the SDK sends the text of one it uploads right after the pickle, to `PUT /v1/functions/{sha256}/excerpt`: the function, with the imports, constants, functions and classes of its module that it uses, in the order of the file. It is read where the function was defined, stored as sent and never run — and a function defined where there was no file to read, in a REPL or an `exec`, has none.
+
+## One function, many uploads
+
+Content-addressing names an upload, and an upload changes for reasons that have nothing to do with the code: the function moved down its file, or a run captured a different id. So uploads are grouped. `lineage` is one function — the same name and qualname in the same file — and `version` counts the changes to its code along it, in order:
+
+```console
+$ http :17590/v1/functions latest==true            # one row per function, at its newest upload
+$ http :17590/v1/functions lineage==<lineage>      # every upload of one function, newest first
+```
+
+An upload whose code matches the one before it is the same version, whatever else about its bytes moved. Going back to older code is a new version rather than the old number again, so the newest upload of a function always carries its highest version — which is what running "the latest" means. A task still names the exact upload it ran.
+
+The name, the file and the shape of the code are read off the pickle without unpickling it — the daemon never runs a function to find out what it is.
+
+`rank` picks the machine. Without it, `dispatch: one` takes any node with a slot going spare; with it, the task waits for that one rather than settling for another.
 
 ## Watching instead of polling
 

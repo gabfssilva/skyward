@@ -121,6 +121,7 @@ type ErrorCode = Literal[
     "release_pending",
     "illegal_transition",
     "reconcile_failed",
+    "source_rejected",
 ]
 
 
@@ -706,13 +707,78 @@ class Function(Struct, frozen=True):
 
     The metadata only. The code is a blob, fetched as one — which is what lets a
     task name its function without carrying it.
+
+    One function is many uploads. ``lineage`` names the function — the same name
+    and qualname in the same file — and ``version`` counts the changes to its code
+    along that lineage, in order. An upload that differs only in where the function
+    sits in its file, or in what a run captured, is the same version: a function
+    that closes over a job id is uploaded once per job and edited far less often.
+
+    The text comes one of two ways, because the pickle has none. ``source`` is a
+    function written in the console, and it is what the function was built from.
+    ``excerpt`` is one the SDK uploaded: the function and what it uses from its
+    module, read off the file where it was defined — a transcript for reading,
+    absent when there was no file to read.
     """
 
     sha256: str
     size_bytes: int
     codec: str
     created_at: datetime
+    lineage: str
+    version: int
     name: str | None = None
+    qualname: str | None = None
+    origin: str | None = None
+    """The file the function was written in, as the machine that pickled it named it."""
+    source: str | None = None
+    excerpt: str | None = None
+
+
+class FunctionExcerpt(Struct, frozen=True):
+    """The text of a function the SDK uploaded, sent after the pickle it describes.
+
+    The imports, constants, functions and classes of its module that it uses, then
+    the function, in the order of the file. Nothing runs it: it is what the console
+    shows where a pickle would otherwise show nothing.
+    """
+
+    text: str
+
+
+class FunctionSource(Struct, frozen=True):
+    """A function written out, for a caller with no interpreter to pickle one with.
+
+    The module a node will run and the name in it to call. The text is not
+    executed here — it is captured, so what is stored is the same pickled callable
+    the SDK would have uploaded, and the machine is still the only place any of it
+    runs.
+
+    The name is checked against the source rather than trusted: a module that does
+    not bind it is a function that cannot be called, and finding that out at
+    registration costs a parse, where finding it out at dispatch costs a machine.
+    """
+
+    name: str
+    source: str
+
+
+class Call(Struct, frozen=True):
+    """A call's arguments written as JSON, for a caller that cannot pickle them.
+
+    A worker takes a pickle, and a browser has no Python to make one with — so the
+    values are handed over as themselves and encoded at the edge. What fits is
+    what JSON has: numbers, strings, booleans, null, lists and objects. An
+    argument that is a dataframe or a model is an argument that has to be built
+    where Python is.
+
+    Both fields are untyped past their own shape, because what is inside them
+    belongs to the callee: the only thing true of every function's arguments is
+    that they are values.
+    """
+
+    args: tuple[object, ...] | None = None
+    kwargs: dict[str, object] | None = None
 
 
 class Execution(Struct, frozen=True):
@@ -739,7 +805,9 @@ class TaskCreate(Struct, frozen=True):
     """One call to place: the code, its arguments, and how widely to run it.
 
     Arguments travel inline below a size threshold and as a blob above it, which
-    is why there are two fields for them and exactly one is set.
+    is why there are fields for both and exactly one is set. ``call`` is the third
+    way to say the same thing, for a caller with no interpreter: the values in
+    JSON, encoded here into the pickle the other two already carry.
     """
 
     compute: str
@@ -747,7 +815,10 @@ class TaskCreate(Struct, frozen=True):
     dispatch: Dispatch
     args_inline: bytes | None = None
     args_sha256: str | None = None
+    call: Call | None = None
     rank: int | None = None
+    """The node to run on, for ``one`` and ``stream``. Omitted is any node with a slot
+    going spare; given, the task waits for that one rather than settling for another."""
     timeout_seconds: int | None = None
     retry: str | None | UnsetType = UNSET
     """The digest of this task's retry decision. Unset takes the compute's; ``None``
@@ -774,6 +845,9 @@ class Task(Struct, frozen=True):
     retry: str | None
     executions: tuple[Execution, ...]
     submitted_at: datetime
+    rank: int | None = None
+    """The node this task named, when it named one. ``None`` is any node with a slot,
+    which is what ``>>`` asks for."""
     correlation_id: str | None = None
     deadline_at: datetime | None = None
     result_sha256: str | None = None

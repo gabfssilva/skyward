@@ -9,11 +9,15 @@ from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
+import msgspec
+from msgspec import Struct
+
 from skyward.server.persistence.db import transaction
-from skyward.server.persistence.store import after, digest, now
+from skyward.server.persistence.store import digest, now
 from skyward.server.persistence.tables import BlobRow, ChunkRow, FunctionRow
 from skyward.shared.errors import HashMismatchError, NotFoundError
 from skyward.shared.observability import logger
+from skyward.shared.reading import Reading, read
 from skyward.shared.schemas import Function, Page
 
 logger = logger.bind(component="blobs")
@@ -168,6 +172,11 @@ class FunctionStore:
     A function is a blob plus the little that is worth knowing about it without
     unpickling it. Separating the two is what lets a thousand tasks over an hour
     ship a hash instead of a pickle.
+
+    What is worth knowing is read off the payload when it arrives: the function it
+    is an upload of, and the shape of its code. Uploads of one function are one
+    lineage, and its versions are counted along it — derived from the shapes each
+    time they are read, never written beside them.
     """
 
     def __init__(self, blobs: BlobStore) -> None:
@@ -177,45 +186,148 @@ class FunctionStore:
         return await FunctionRow.exists().where(FunctionRow.sha256 == sha256)
 
     async def get(self, sha256: str) -> Function:
-        row = await FunctionRow.objects().where(FunctionRow.sha256 == sha256).first()
-        if row is None:
+        rows = await FunctionRow.raw(_VERSIONED + "SELECT *, 0 AS total FROM versioned WHERE sha256 = {}", sha256).run()
+        if not rows:
             raise NotFoundError(f"no such function: {sha256}")
-        return _to_function(row)
+        return _to_function(rows[0])
 
-    async def list(self, cursor: str | None, limit: int) -> Page[Function]:
-        query = FunctionRow.objects()
-        if pivot := await after(cursor, FunctionRow.sha256, FunctionRow.created_at):
-            query = query.where(FunctionRow.created_at > pivot)
+    async def list(self, cursor: str | None, limit: int, latest: bool = False, lineage: str | None = None) -> Page[Function]:
+        """Newest first, because the code somebody is looking for is the code they just wrote.
 
-        rows = await query.order_by(FunctionRow.created_at).limit(limit)
+        ``latest`` is one row per function — its newest upload, which carries its
+        highest version, since a version only ever moves forward. ``lineage`` is
+        every upload of one function. Both at once is that function's newest.
+        """
+        if cursor is not None and not await self.exists(cursor):
+            raise NotFoundError(f"no such cursor: {cursor}")
+
+        rows = await FunctionRow.raw(_PAGE, int(latest), lineage, lineage, cursor, cursor, limit).run()
         items = tuple(_to_function(row) for row in rows)
-        return Page(items=items, next_cursor=items[-1].sha256 if items and len(items) == limit else None)
+        return Page(
+            items=items,
+            next_cursor=items[-1].sha256 if items and len(items) == limit else None,
+            total=rows[0]["total"] if rows else await self._counted(latest, lineage),
+        )
 
-    async def register(self, sha256: str, blob: bytes, name: str | None) -> tuple[Function, bool]:
+    async def register(self, sha256: str, blob: bytes, name: str | None, source: str | None = None) -> tuple[Function, bool]:
         if await self.exists(sha256):
             return await self.get(sha256), False
 
         await self._blobs.put(sha256, blob)
+        reading = await _reading(blob, name, source)
         await FunctionRow.insert(
             FunctionRow(
-                sha256=sha256,
-                size_bytes=len(blob),
-                codec=CODEC,
-                name=name,
-                created_at=now(),
+                {
+                    FunctionRow.sha256: sha256,
+                    FunctionRow.size_bytes: len(blob),
+                    FunctionRow.codec: CODEC,
+                    FunctionRow.name: name,
+                    FunctionRow.source: source,
+                    FunctionRow.created_at: now(),
+                    FunctionRow.lineage: _lineage(name, reading),
+                    FunctionRow.qualname: reading.qualname,
+                    FunctionRow.origin: reading.origin,
+                    FunctionRow.shape: reading.shape,
+                },
             ),
         ).on_conflict(action="DO NOTHING").run()
 
         return await self.get(sha256), True
 
+    async def excerpt(self, sha256: str, text: str) -> Function:
+        """Keep the text the SDK read for a function it already uploaded."""
+        if not await self.exists(sha256):
+            raise NotFoundError(f"no such function: {sha256}")
+        await FunctionRow.update({FunctionRow.excerpt: text}).where(FunctionRow.sha256 == sha256).run()
+        return await self.get(sha256)
 
-def _to_function(row: FunctionRow) -> Function:
+    async def _counted(self, latest: bool, lineage: str | None) -> int:
+        rows = await FunctionRow.raw(_COUNTED, int(latest), lineage, lineage).run()
+        return rows[0]["total"] if rows else 0
+
+
+_VERSIONED = """
+WITH ordered AS (
+    SELECT *,
+        ROW_NUMBER() OVER (PARTITION BY lineage ORDER BY created_at, sha256) AS nth,
+        LAG(shape) OVER (PARTITION BY lineage ORDER BY created_at, sha256) AS previous
+    FROM functions
+),
+versioned AS (
+    SELECT *,
+        SUM(CASE WHEN nth = 1 OR shape IS NOT previous THEN 1 ELSE 0 END)
+            OVER (PARTITION BY lineage ORDER BY created_at, sha256 ROWS UNBOUNDED PRECEDING) AS version,
+        ROW_NUMBER() OVER (PARTITION BY lineage ORDER BY created_at DESC, sha256 DESC) AS recency
+    FROM ordered
+)
+"""
+"""Every upload with its version: one more than the upload before it whenever the shape moved."""
+
+_MATCHED = _VERSIONED + """,
+matched AS (
+    SELECT * FROM versioned
+    WHERE ({} = 0 OR recency = 1) AND ({} IS NULL OR lineage = {})
+)
+"""
+
+_PAGE = _MATCHED + """
+SELECT *, (SELECT COUNT(*) FROM matched) AS total FROM matched
+WHERE {} IS NULL OR (created_at, sha256) < (SELECT created_at, sha256 FROM functions WHERE sha256 = {})
+ORDER BY created_at DESC, sha256 DESC
+LIMIT {}
+"""
+
+_COUNTED = _MATCHED + "SELECT COUNT(*) AS total FROM matched"
+
+
+class _Row(Struct):
+    """One upload as the versioned listing returns it: the columns, the version, and how many matched."""
+
+    sha256: str
+    size_bytes: int
+    codec: str
+    created_at: datetime
+    lineage: str
+    version: int
+    total: int
+    name: str | None = None
+    qualname: str | None = None
+    origin: str | None = None
+    source: str | None = None
+    excerpt: str | None = None
+
+
+async def _reading(blob: bytes, name: str | None, source: str | None) -> Reading:
+    """What a function is, from its text when it was written and from its payload when it was pickled.
+
+    A function written in the console is pickled as a closure of skyward's own over
+    the text, so its payload would describe that closure — the same one for every
+    function ever written there. Its text is the function, and its shape is the text.
+    """
+    if source is None:
+        return await read(blob)
+    return Reading(qualname=name, shape=await digest(source.encode()))
+
+
+def _lineage(name: str | None, reading: Reading) -> str:
+    """One function across its uploads: the same name and qualname, in the same file."""
+    return hashlib.sha256("\0".join((name or "", reading.qualname or "", reading.origin or "")).encode()).hexdigest()[:16]
+
+
+def _to_function(raw: dict[str, object]) -> Function:
+    row = msgspec.convert(raw, _Row, strict=False)
     return Function(
         sha256=row.sha256,
         size_bytes=row.size_bytes,
         codec=row.codec,
         created_at=row.created_at,
+        lineage=row.lineage,
+        version=row.version,
         name=row.name,
+        qualname=row.qualname,
+        origin=row.origin,
+        source=row.source,
+        excerpt=row.excerpt,
     )
 
 

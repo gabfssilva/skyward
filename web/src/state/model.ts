@@ -183,6 +183,15 @@ const execMs = (e: Execution): number => {
 }
 
 /**
+ * Which machine an attempt is on: the node it went to, or the rank it was admitted under.
+ *
+ * ``rank`` says which node of a *broadcast* an attempt is, and a broadcast's ranks are
+ * frozen at admission. A dispatch to one node names no rank unless the caller asked for
+ * one, so for those the machine is the one the daemon recorded when it placed it.
+ */
+const rankOf = (e: Execution, nodes: readonly Node[]): number => nodes.find((n) => n.id === e.node_id)?.rank ?? e.rank
+
+/**
  * The per-rank executions of a task, filled in for the ranks the task covers.
  *
  * A task's recorded executions win; the remaining ranks of an ``all`` or ``stream``
@@ -190,7 +199,7 @@ const execMs = (e: Execution): number => {
  */
 export const execsOf = (t: Task, nodes: readonly Node[]): ExecRow[] => {
   const real: ExecRow[] = t.executions.map((e) => ({
-    rank: e.rank,
+    rank: rankOf(e, nodes),
     ordinal: e.ordinal,
     state: e.state,
     ms: execMs(e),

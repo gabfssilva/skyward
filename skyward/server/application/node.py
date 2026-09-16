@@ -294,11 +294,8 @@ class Node:
             )
         )
         self._log.debug("starting the worker: rank {} of {} peers, {} slots on {}", self._rank, len(self.peers), self._concurrency, self._executor)
-        await self._ssh.run(
-            f"nohup {self._sudo}env {environment} sh -c "
-            f'"[ -f {bootstrap.ENV} ] && . {bootstrap.ENV}; exec {bootstrap.PYTHON} -m skyward.worker.worker" '
-            f">> {SKYWARD_DIR}/worker.log 2>&1 &",
-        )
+        supervisor = bootstrap.supervised(f"{bootstrap.PYTHON} -m skyward.worker.worker")
+        await self._ssh.run(f"nohup {self._sudo}env {environment} bash -c {shlex.quote(supervisor)} >> {SKYWARD_DIR}/worker.log 2>&1 &")
 
         await self._reach("worker", self._worker_timeout)
         self.tunnel = await self._ssh.forward(worker.PORT)

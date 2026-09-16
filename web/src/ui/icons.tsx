@@ -25,6 +25,8 @@ export const ICON = {
   show: '<path d="M6 10l6 6 6-6"/>',
   key: '<circle cx="8" cy="14" r="4"/><path d="M11 11l9-9M17 5l2 2M14 8l2 2"/>',
   refresh: '<path d="M20 12a8 8 0 01-14 5.3M4 12a8 8 0 0114-5.3"/><path d="M4 4v5h5M20 20v-5h-5"/>',
+  functions: '<path d="M8 7L3 12l5 5M16 7l5 5-5 5M13 5l-2 14"/>',
+  run: '<path d="M7 5l12 7-12 7z"/>',
 } as const
 
 export type IconName = keyof typeof ICON

@@ -7,9 +7,13 @@ from pathlib import Path
 import pytest
 
 from skyward.server.persistence import db
+from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.db import POOL_SIZE, connect
 from skyward.server.persistence.events import EventStore
-from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow
+from skyward.server.persistence.functions import BlobStore, FunctionStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow, FunctionRow, TaskRow
+from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.events import ConsoleEvent
 
 pytestmark = pytest.mark.local
@@ -121,3 +125,38 @@ def describe_a_log_whose_lines_named_the_execution_as_their_task() -> None:
 
         (entry,) = (await EventStore().log(None, 10, task="tsk_1")).items
         assert entry.data ==ConsoleEvent(compute="cmp_a", node="nod_7", content="printed", task="tsk_1", execution="exe_1")
+
+
+def describe_a_library_written_before_the_source_column() -> None:
+    async def a_function_from_before_it_is_one_nobody_can_read_back(tmp_path: Path) -> None:
+        """The column is added by the widening; what matters is that an old row reads as no source rather than as an empty one."""
+        path = tmp_path / "skyward.sqlite"
+        await connect(path)
+        await FunctionRow.raw("ALTER TABLE functions DROP COLUMN source").run()
+        await FunctionRow.raw(
+            "INSERT INTO functions (sha256, size_bytes, codec, name, created_at) "
+            "VALUES ('a', 42, 'cloudpickle+lz4', 'train', '2026-01-01 00:00:00+00:00')",
+        ).run()
+
+        await connect(path)
+
+        assert (await FunctionStore(BlobStore()).get("a")).source is None
+
+
+def describe_tasks_written_before_the_rank_column() -> None:
+    async def one_from_before_it_names_no_machine(tmp_path: Path) -> None:
+        """An added integer column that read back as zero would pin every queued task to rank zero."""
+        path = tmp_path / "skyward.sqlite"
+        await connect(path)
+        await TaskRow.raw("ALTER TABLE tasks DROP COLUMN rank").run()
+        await TaskRow.raw(
+            "INSERT INTO tasks (id, compute_id, generation, function, args_sha256, dispatch, state, submitted_at) "
+            "VALUES ('tsk_a', 'cmp_a', 1, 'f', 'a', 'one', 'queued', '2026-01-01 00:00:00+00:00')",
+        ).run()
+
+        await connect(path)
+
+        nodes = NodeStore()
+        tasks = TaskStore(ComputeStore(EventStore(), nodes), nodes, BlobStore())
+
+        assert (await tasks.get("tsk_a")).rank is None

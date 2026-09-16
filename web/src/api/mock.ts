@@ -352,13 +352,91 @@ const execution = (
 /** The prototype's function names, kept where the daemon keeps them: on the function. */
 const functions: Record<string, FunctionRef> = {}
 
-const sha = (name: string): string => {
+const hex = (text: string, width: number): string => {
   let h = 2166136261
-  for (const ch of name) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
-  const digest = (h >>> 0).toString(16).padStart(8, '0').repeat(8)
-  functions[digest] = { codec: 'cloudpickle+lz4', created_at: iso(now() - 8.6e6), name, sha256: digest, size_bytes: 4096 + (h >>> 20) }
+  for (const ch of text) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
+  return (h >>> 0).toString(16).padStart(8, '0').repeat(Math.ceil(width / 8)).slice(0, width)
+}
+
+/** What the SDK would have read off the file of each of the prototype's functions. */
+const EXCERPTS: Record<string, string> = {
+  train_step: `import torch
+import skyward as sky
+from torch.nn import functional as F
+
+
+LR = 3e-4
+
+
+def batches(epoch: int):
+    return sky.shard(range(1_000_000))[epoch::64]
+
+
+@sky.function
+def train_step(epoch: int) -> float:
+    model = torch.load("/data/model.pt")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    for batch in batches(epoch):
+        loss = F.cross_entropy(model(batch.x), batch.y)
+        loss.backward()
+        optimizer.step()
+    return float(loss)
+`,
+  evaluate: `import torch
+import skyward as sky
+from sklearn.metrics import f1_score
+
+
+@sky.function
+def evaluate(split: str) -> float:
+    model = torch.load("/data/model.pt").eval()
+    with torch.no_grad():
+        predicted, truth = model.predict(split)
+    return f1_score(truth, predicted)
+`,
+}
+
+/**
+ * One upload, as the daemon would file it: its lineage, and the version its edit makes it.
+ *
+ * ``edit`` stands for a change to the code — the same name and edit is the same
+ * upload, so a task naming a function again finds the one already there.
+ */
+const sha = (name: string, source: string | null = null, edit = 0): string => {
+  const digest = hex(`${name}\u0000${source ?? ''}\u0000${edit}`, 64)
+  if (functions[digest]) return digest
+  const written = source !== null
+  functions[digest] = {
+    codec: 'cloudpickle+lz4',
+    created_at: iso(now() - 8.6e6 + edit * 9e5),
+    name,
+    sha256: digest,
+    size_bytes: 4096 + (parseInt(digest.slice(0, 4), 16) % 16000),
+    source,
+    lineage: hex(`${name}\u0000${written ? 'console' : 'train.py'}`, 16),
+    version: edit + 1,
+    qualname: name,
+    origin: written ? null : '/Users/you/project/train.py',
+    excerpt: written ? null : (EXCERPTS[name] ?? null),
+  }
   return digest
 }
+
+/** A function's uploads, one row each, or its newest per lineage — newest first, as the daemon lists them. */
+const library = (query: URLSearchParams): Response => {
+  const lineage = query.get('lineage')
+  const every = Object.values(functions)
+    .filter((fn) => !lineage || fn.lineage === lineage)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  const held = query.get('latest') === 'true' ? every.filter((fn, i) => every.findIndex((x) => x.lineage === fn.lineage) === i) : every
+  return json({ items: held, next_cursor: null, total: held.length })
+}
+
+/** Two of the library written in the console rather than uploaded, so both kinds of row have something to show. */
+const WRITTEN = [
+  ['sweep', 'import skyward as sky\n\n\ndef sweep(lr: float, batch: int = 64):\n    info = sky.instance_info()\n    return {"node": info.node, "lr": lr, "batch": batch}\n'],
+  ['count_rows', 'def count_rows(path: str):\n    with open(path) as handle:\n        return sum(1 for _ in handle)\n'],
+] as const
 
 const task = (
   id: string,
@@ -696,6 +774,43 @@ const json = (value: unknown): Response =>
 
 const notFound = (): Response => new Response(JSON.stringify({ code: 'not_found', message: 'no such resource', retryable: false }), { status: 404 })
 
+/** What a caller wrote as text, registered as the daemon would register it: an edit is the next version of that name. */
+function write(init: RequestInit | undefined): Response {
+  const { name, source } = JSON.parse(String(init?.body ?? '{}')) as { name?: string; source?: string }
+  if (!name || !source) return new Response(JSON.stringify({ code: 'source_rejected', message: 'a name and a source', retryable: false }), { status: 422 })
+  const same = Object.values(functions).find((fn) => fn.name === name && fn.source === source)
+  if (same) return json(same)
+  const edits = Object.values(functions).filter((fn) => fn.name === name && fn.source !== null).length
+  const digest = sha(name, source, edits)
+  functions[digest] = { ...functions[digest]!, created_at: iso(now()) }
+  return json(functions[digest])
+}
+
+/** One task, filed under its compute where the views look for it, and left queued. */
+function submit(init: RequestInit | undefined): Response {
+  const body = JSON.parse(String(init?.body ?? '{}')) as { compute: string; function: string; dispatch: Task['dispatch']; rank?: number | null }
+  const ranks = body.dispatch === 'all' ? (nodes[body.compute] ?? []).filter((n) => n.state === 'ready').map((n) => n.rank) : [body.rank ?? 0]
+  const id = rid('tsk')
+  const submitted: Task = {
+    args_sha256: 'a'.repeat(64),
+    compute_id: body.compute,
+    correlation_id: null,
+    deadline_at: null,
+    dispatch: body.dispatch,
+    executions: ranks.map((rank) => execution(id, rank, 1, 'created', 0, false, null)),
+    finished_at: null,
+    function: body.function,
+    generation: 1,
+    id,
+    result_sha256: null,
+    retry: null,
+    state: 'queued',
+    submitted_at: iso(now()),
+  }
+  tasks[body.compute] = [submitted, ...(tasks[body.compute] ?? [])]
+  return json(submitted)
+}
+
 function route(path: string, init: RequestInit | undefined): Response {
   const method = (init?.method ?? 'GET').toUpperCase()
   const [raw] = path.split('?')
@@ -706,9 +821,13 @@ function route(path: string, init: RequestInit | undefined): Response {
   if (raw === '/v1/health/live') return json({ live: true, version: '0.9.3' })
   if (raw === '/v1/provider-kinds') return json(providerKinds)
   if (raw === '/v1/accelerators') return json(accelerators)
-  if (parts[0] === 'functions' && parts[1]) {
-    const fn = functions[parts[1]]
-    return fn ? json(fn) : notFound()
+  if (parts[0] === 'functions') {
+    if (parts[1]) {
+      const fn = functions[parts[1]]
+      return fn ? json(fn) : notFound()
+    }
+    if (method === 'POST') return write(init)
+    return library(new URLSearchParams(path.split('?')[1] ?? ''))
   }
   if (raw === '/v1/providers') {
     if (method === 'POST') return json(providers[0])
@@ -762,6 +881,7 @@ function route(path: string, init: RequestInit | undefined): Response {
 
   if (parts[0] === 'tasks') {
     if (!parts[1]) {
+      if (method === 'POST') return submit(init)
       const query = new URLSearchParams(path.split('?')[1] ?? '')
       const compute = query.get('compute')
       const state = query.get('state')
@@ -951,6 +1071,9 @@ const lines: Record<string, number> = {}
 
 /** Seed every ready node so the comb is coloured before the first tick lands. */
 function seed_all(): void {
+  for (const [name, source] of WRITTEN) sha(name, source)
+  for (const edit of [1, 2, 3]) sha('train_step', null, edit)
+
   for (const c of computes) {
     for (const n of nodes[c.id] ?? []) {
       const m = live.get(`${c.id}/${n.rank}`)

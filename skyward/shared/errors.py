@@ -74,6 +74,19 @@ class HashMismatchError(SkywardError):
     status = 400
 
 
+class SourceRejectedError(SkywardError):
+    """Text that was handed in as a function and is not one.
+
+    Refused where it was written, not where it would have run: a module that does
+    not parse, or that never binds the name it was registered under, fails the
+    same way on every machine, and a dispatch is a slow and expensive place to
+    find that out.
+    """
+
+    code = "source_rejected"
+    status = 422
+
+
 class TaskFailedError(SkywardError):
     code = "task_failed"
     status = 409

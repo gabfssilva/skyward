@@ -16,9 +16,11 @@ from contextlib import suppress
 from pathlib import Path
 
 import cloudpickle
+import httpx
 import pytest
 
 import skyward as sky
+from skyward.shared import codec
 from tests.conftest import SKY, Build, cli, rows
 
 pytest.importorskip("cyclopts", reason="the sky CLI needs: pip install 'skyward[cli]'")
@@ -76,6 +78,18 @@ def describe_running_a_script_on_the_machines() -> None:
         assert "spoke from rank 0" in ran.out, "the lines come back over the event log, and this is where they land"
         assert "spoke from rank 1" in ran.out
 
+    def it_keeps_the_script_as_the_text_of_its_function(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        """The script travels inside a closure of skyward's own, so the text is the only part of it worth reading."""
+        script = tmp_path / "kept.py"
+        script.write_text("import sys\n\nprint(sys.argv)\n")
+
+        ran = cli("compute", "run", pool.id, str(script), "--url", daemon)
+        assert ran.code == 0, ran.err
+
+        listed = httpx.get(f"{daemon}/v1/functions", params={"latest": "true", "limit": 500}, timeout=30)
+        assert listed.status_code == 200, listed.text
+        assert [function["excerpt"] for function in listed.json()["items"] if function["name"] == "kept.py"] == [script.read_text()]
+
 
 def describe_a_terminal_on_a_machine() -> None:
     def it_carries_what_is_typed_and_what_is_painted(pool: sky.Compute, daemon: str) -> None:
@@ -106,6 +120,54 @@ def describe_a_terminal_on_a_machine() -> None:
 
         assert "compute_not_connected" in refusal, "the same error every other endpoint answers with"
         assert code == 4409, "and the close says so too, for a caller that only listens for one"
+
+
+def describe_a_function_written_rather_than_pickled() -> None:
+    def it_runs_on_the_machine_it_was_pointed_at(pool: sky.Compute, daemon: str) -> None:
+        """What the browser console does, end to end, with no interpreter anywhere on the caller's side."""
+        source = "import skyward as sky\n\n\ndef greet(name):\n    return f'{name} from rank {sky.instance_info().rank}'\n"
+
+        written = httpx.post(f"{daemon}/v1/functions", json={"name": "greet", "source": source}, timeout=30)
+        assert written.status_code in (200, 201), written.text
+
+        for rank in (1, 0):
+            said, recorded = _greeted(daemon, pool.id, written.json()["sha256"], rank)
+
+            assert said == f"typed in a browser from rank {rank}", "the source ran where it was pointed, on the argument it was given"
+            assert recorded == rank, "and the attempt is written down under the machine that took it"
+
+
+def _greeted(daemon: str, compute: str, function: str, rank: int) -> tuple[str, int]:
+    """One task on one named machine, and what it said. The arguments never become Python until the daemon has them."""
+    submitted = httpx.post(
+        f"{daemon}/v1/tasks",
+        json={
+            "compute": compute,
+            "function": function,
+            "dispatch": "one",
+            "rank": rank,
+            "call": {"args": ["typed in a browser"]},
+        },
+        headers={"Idempotency-Key": os.urandom(16).hex()},
+        timeout=30,
+    )
+    assert submitted.status_code == 201, submitted.text
+
+    task = submitted.json()["id"]
+    said: str = codec.loads(_settled(daemon, task))
+    [attempt] = httpx.get(f"{daemon}/v1/tasks/{task}", timeout=30).json()["executions"]
+    return said, attempt["rank"]
+
+
+def _settled(daemon: str, task: str, timeout: float = 180.0) -> bytes:
+    """The result, once there is one. A 204 is the daemon saying to ask again."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        answer = httpx.get(f"{daemon}/v1/tasks/{task}/result", params={"wait": 10}, timeout=30)
+        if answer.status_code == 200:
+            return answer.content
+        assert answer.status_code == 204, answer.text
+    raise AssertionError(f"task {task} never settled")
 
 
 def describe_putting_a_file_on_the_machines() -> None:

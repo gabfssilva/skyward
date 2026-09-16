@@ -21,7 +21,7 @@ FAILURES: dict[int, str] = {
     412: "`If-Match` did not name the stored revision — `revision_conflict`. Retryable: re-read, re-apply, re-send",
     422: (
         "Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, "
-        "`unsupported_provider`, `unsupported_plugin`"
+        "`unsupported_provider`, `unsupported_plugin`, `source_rejected`"
     ),
 }
 """What each status means when the body is an :class:`Error`.

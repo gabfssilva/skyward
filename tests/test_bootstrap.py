@@ -1,6 +1,7 @@
 """The metrics collectors a bootstrap starts, as the shell that runs them sees them."""
 
 import json
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -148,3 +149,51 @@ def describe_the_builtin_loop_on_linux() -> None:
 
         names = {record["name"] for record in records if str(record["name"]).startswith("gpu_")}
         assert names == {"gpu_util", "gpu_mem_mb", "gpu_mem_total_mb", "gpu_temp_c"}
+
+
+def describe_the_worker_supervisor() -> None:
+    @pytest.mark.local
+    def it_is_valid_bash(tmp_path: Path) -> None:
+        path = tmp_path / "supervised.sh"
+        path.write_text(bootstrap.supervised("true"))
+
+        assert subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10, check=False).returncode == 0
+
+    @pytest.mark.compute
+    @pytest.mark.xdist_group("bootstrap")
+    def it_starts_a_worker_that_crashed_again_and_lets_one_that_left_go() -> None:
+        """Two segfaults, then a clean exit: the way a failed health check leaves."""
+        events, code = _supervised('n=$(cat /tmp/runs 2>/dev/null || echo 0)\necho $((n + 1)) > /tmp/runs\n[ "$n" -ge 2 ] && exit 0\nkill -SEGV $$')
+
+        assert code == 0
+        assert [event["content"] for event in events if event["type"] == "console"] == ["the worker exited with code 139; starting it again"] * 2
+        assert not [event for event in events if event["type"] == "health"]
+
+    @pytest.mark.compute
+    @pytest.mark.xdist_group("bootstrap")
+    def it_gives_the_machine_up_when_the_worker_dies_every_time_it_starts() -> None:
+        events, code = _supervised("exit 3")
+
+        assert code == 3
+        assert events[-1] == {
+            "type": "health",
+            "reason": f"the worker died {bootstrap.RESTARTS} times in a row within {bootstrap.SHORT_LIVED}s of starting, last with code 3",
+        }
+
+
+def _supervised(worker: str) -> tuple[list[dict[str, object]], int]:
+    """The supervisor over a stand-in worker, on a machine that has been bootstrapped: its journal, and how it ended."""
+    runner = "\n".join(
+        (
+            f"cat > /tmp/worker.sh <<'WORKER'\n{worker}\nWORKER",
+            f"cat > /tmp/bootstrap.sh <<'BOOTSTRAP'\n{bootstrap.HEADER}{bootstrap.FOOTER}BOOTSTRAP",
+            "bash /tmp/bootstrap.sh",
+            f"bash -c {shlex.quote(bootstrap.supervised('bash /tmp/worker.sh'))}",
+            'echo "exit $?"',
+            "grep -v '\"type\":\"phase\"' /opt/skyward/events.jsonl",
+        )
+    )
+    done = subprocess.run(["docker", "run", "--rm", "-i", IMAGE, "bash"], input=runner, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    ended, *lines = done.stdout.splitlines()
+    return [json.loads(line) for line in lines], int(ended.removeprefix("exit "))

@@ -94,12 +94,13 @@ export function Kv({ k, v }: { k: ReactNode; v: ReactNode }) {
   )
 }
 
-/** A task's function: its name, or the head of the sha the task actually carries. */
+/** A task's function: its name and the version the task ran, or the head of the sha the task actually carries. */
 export function Fn({ sha, size, weight }: { sha: string; size?: number; weight?: number }) {
   const fn = useFunctionLabel(sha)
   return (
     <b className={fn.mono ? 'mono' : undefined} style={{ fontSize: size, fontWeight: weight ?? 600 }}>
       {fn.text}
+      {fn.version ? <span className="faint mono" style={{ fontWeight: 400, fontSize: '0.85em' }}> v{fn.version}</span> : null}
     </b>
   )
 }

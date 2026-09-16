@@ -39,6 +39,8 @@ from skyward.shared.schemas import (
     ComputeSpec,
     ComputeSpecPatch,
     Dispatch,
+    Function,
+    FunctionExcerpt,
     Node,
     NodeBounds,
     Page,
@@ -509,6 +511,7 @@ async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ..
     blob = await codec.payload.encode(_wrap(source, argv))
     function = await codec.digest(blob)
     await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": Path(argv[0]).name})
+    await client.call("PUT", f"/v1/functions/{function}/excerpt", Function, body=msgspec.json.encode(FunctionExcerpt(text=source)))
 
     return await client.call(
         "POST",

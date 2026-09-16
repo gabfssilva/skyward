@@ -5,6 +5,7 @@ import * as compute from './views/compute'
 import * as node from './views/node'
 import * as activity from './views/activity'
 import * as tasks from './views/tasks'
+import * as functions from './views/functions'
 import * as market from './views/market'
 import * as providers from './views/providers'
 import { Sheets, openPalette } from './sheets'
@@ -21,6 +22,7 @@ import './theme.css'
 const VIEWS: readonly (readonly [string, string, IconName])[] = [
   ['/', 'Computes', 'fleet'],
   ['/tasks', 'Tasks', 'tasks'],
+  ['/functions', 'Functions', 'functions'],
   ['/activity', 'Activity', 'activity'],
   ['/market', 'Market', 'market'],
   ['/providers', 'Providers', 'providers'],
@@ -140,6 +142,7 @@ function StageRoutes() {
       <Route path="/activity" element={<activity.Stage />} />
       <Route path="/tasks" element={<tasks.Stage />} />
       <Route path="/tasks/:id" element={<tasks.TaskStage />} />
+      <Route path="/functions" element={<functions.Stage />} />
       <Route path="/market" element={<market.Stage />} />
       <Route path="/providers" element={<providers.Stage />} />
     </Routes>
@@ -154,6 +157,7 @@ function InspectorRoutes() {
       <Route path="/computes/:id/nodes/:rank" element={<node.Inspector />} />
       <Route path="/tasks" element={<tasks.Inspector />} />
       <Route path="/tasks/:id" element={<tasks.TaskInspector />} />
+      <Route path="/functions" element={<functions.Inspector />} />
       <Route path="/market" element={<market.Inspector />} />
       <Route path="/providers" element={<providers.Inspector />} />
       <Route path="*" element={null} />

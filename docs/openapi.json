@@ -33,6 +33,36 @@
         "title": "Accelerator",
         "type": "object"
       },
+      "Call": {
+        "description": "A call's arguments written as JSON, for a caller that cannot pickle them.\n\nA worker takes a pickle, and a browser has no Python to make one with \u2014 so the\nvalues are handed over as themselves and encoded at the edge. What fits is\nwhat JSON has: numbers, strings, booleans, null, lists and objects. An\nargument that is a dataframe or a model is an argument that has to be built\nwhere Python is.\n\nBoth fields are untyped past their own shape, because what is inside them\nbelongs to the callee: the only thing true of every function's arguments is\nthat they are values.",
+        "properties": {
+          "args": {
+            "oneOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kwargs": {
+            "oneOf": [
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "Call",
+        "type": "object"
+      },
       "Compute": {
         "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.",
         "properties": {
@@ -259,7 +289,8 @@
               "capability_mismatch",
               "release_pending",
               "illegal_transition",
-              "reconcile_failed"
+              "reconcile_failed",
+              "source_rejected"
             ],
             "type": "string"
           },
@@ -354,7 +385,8 @@
               "capability_mismatch",
               "release_pending",
               "illegal_transition",
-              "reconcile_failed"
+              "reconcile_failed",
+              "source_rejected"
             ],
             "type": "string"
           },
@@ -709,7 +741,8 @@
               "capability_mismatch",
               "release_pending",
               "illegal_transition",
-              "reconcile_failed"
+              "reconcile_failed",
+              "source_rejected"
             ],
             "type": "string"
           },
@@ -875,7 +908,7 @@
         "type": "object"
       },
       "Function": {
-        "description": "A registered piece of code, named by the hash of its serialized bytes.\n\nThe metadata only. The code is a blob, fetched as one \u2014 which is what lets a\ntask name its function without carrying it.",
+        "description": "A registered piece of code, named by the hash of its serialized bytes.\n\nThe metadata only. The code is a blob, fetched as one \u2014 which is what lets a\ntask name its function without carrying it.\n\nOne function is many uploads. ``lineage`` names the function \u2014 the same name\nand qualname in the same file \u2014 and ``version`` counts the changes to its code\nalong that lineage, in order. An upload that differs only in where the function\nsits in its file, or in what a run captured, is the same version: a function\nthat closes over a job id is uploaded once per job and edited far less often.\n\nThe text comes one of two ways, because the pickle has none. ``source`` is a\nfunction written in the console, and it is what the function was built from.\n``excerpt`` is one the SDK uploaded: the function and what it uses from its\nmodule, read off the file where it was defined \u2014 a transcript for reading,\nabsent when there was no file to read.",
         "properties": {
           "codec": {
             "type": "string"
@@ -884,7 +917,40 @@
             "format": "date-time",
             "type": "string"
           },
+          "excerpt": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lineage": {
+            "type": "string"
+          },
           "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "qualname": {
             "oneOf": [
               {
                 "type": "string"
@@ -899,15 +965,60 @@
           },
           "size_bytes": {
             "type": "integer"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "type": "integer"
           }
         },
         "required": [
           "codec",
           "created_at",
+          "lineage",
           "sha256",
-          "size_bytes"
+          "size_bytes",
+          "version"
         ],
         "title": "Function",
+        "type": "object"
+      },
+      "FunctionExcerpt": {
+        "description": "The text of a function the SDK uploaded, sent after the pickle it describes.\n\nThe imports, constants, functions and classes of its module that it uses, then\nthe function, in the order of the file. Nothing runs it: it is what the console\nshows where a pickle would otherwise show nothing.",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "FunctionExcerpt",
+        "type": "object"
+      },
+      "FunctionSource": {
+        "description": "A function written out, for a caller with no interpreter to pickle one with.\n\nThe module a node will run and the name in it to call. The text is not\nexecuted here \u2014 it is captured, so what is stored is the same pickled callable\nthe SDK would have uploaded, and the machine is still the only place any of it\nruns.\n\nThe name is checked against the source rather than trusted: a module that does\nnot bind it is a function that cannot be called, and finding that out at\nregistration costs a parse, where finding it out at dispatch costs a machine.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "FunctionSource",
         "type": "object"
       },
       "Generation": {
@@ -2783,6 +2894,16 @@
           "id": {
             "type": "string"
           },
+          "rank": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "result_sha256": {
             "oneOf": [
               {
@@ -2836,7 +2957,7 @@
         "type": "object"
       },
       "TaskCreate": {
-        "description": "One call to place: the code, its arguments, and how widely to run it.\n\nArguments travel inline below a size threshold and as a blob above it, which\nis why there are two fields for them and exactly one is set.",
+        "description": "One call to place: the code, its arguments, and how widely to run it.\n\nArguments travel inline below a size threshold and as a blob above it, which\nis why there are fields for both and exactly one is set. ``call`` is the third\nway to say the same thing, for a caller with no interpreter: the values in\nJSON, encoded here into the pickle the other two already carry.",
         "properties": {
           "args_inline": {
             "oneOf": [
@@ -2852,6 +2973,16 @@
             "oneOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "call": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Call"
               },
               {
                 "type": "null"
@@ -3581,7 +3712,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Create a compute",
@@ -3903,7 +4034,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Change a compute's spec",
@@ -4036,7 +4167,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Run a shell command on the compute",
@@ -4169,7 +4300,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Remove a path on the compute",
@@ -4300,7 +4431,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "List a path on the compute",
@@ -4438,7 +4569,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Write a file onto the compute",
@@ -4567,7 +4698,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Read a file off the compute",
@@ -4682,7 +4813,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "The down half of a forwarded connection",
@@ -4807,7 +4938,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "The up half of a forwarded connection",
@@ -5029,7 +5160,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Create a generation (roll back to an earlier one)",
@@ -6086,7 +6217,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "The down half of an interactive session",
@@ -6277,7 +6408,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "The up half of an interactive session",
@@ -6713,7 +6844,7 @@
     "/v1/functions": {
       "get": {
         "deprecated": false,
-        "description": "Every function this daemon has been handed, by hash. Uploading the same code twice adds no row.",
+        "description": "Every upload this daemon has been handed, newest first. Uploading the same bytes twice adds no row, but one function is still many uploads: moving it down its file changes the pickle, and so does a run that captures a different value.\n\nSo uploads are grouped. `lineage` is one function \u2014 the same name and qualname in the same file \u2014 and `version` counts the changes to its *code* along it, in order: an upload whose code matches the one before it is the same version, whatever else about the bytes moved. Reverting to older code is a new version, not the old number again, so the newest upload always carries the highest one.\n\n`latest` is one row per function, its newest upload. `lineage` is every upload of one function.\n\nThe name, the file and the shape of the code are read off the payload without unpickling it. The text is not in the payload at all: `source` is a function written in the console, `excerpt` one the SDK uploaded along with what it uses from its module, and a function defined where there was no file to read has neither.",
         "operationId": "V1FunctionsList",
         "parameters": [
           {
@@ -6745,6 +6876,40 @@
               "default": 50,
               "minimum": 1.0,
               "type": "integer"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "One row per function: its newest upload, which carries its highest version.",
+            "in": "query",
+            "name": "latest",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "One row per function: its newest upload, which carries its highest version.",
+              "type": "boolean"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Every upload of one function.",
+            "in": "query",
+            "name": "lineage",
+            "required": false,
+            "schema": {
+              "description": "Every upload of one function.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           }
         ],
@@ -6803,12 +6968,102 @@
         "tags": [
           "functions"
         ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "A function as **text** instead of as a pickle, for a caller with no interpreter of its own \u2014 the browser console, or anything that speaks HTTP and nothing more.\n\nThe body is a Python module and the name of the function in it to call. The daemon does not run any of it: the source is captured in a callable, that callable is pickled, and what is registered is the same blob `PUT` would have taken. The machine is still the only place a line of it executes, and it is compiled there once per call.\n\nText that does not parse, or that defines no function under that name, is refused with `source_rejected` \u2014 both are wrong on every machine equally, and a dispatch is a slow place to find that out.\n\nThe same text under the same name pickles to the same bytes, so writing it twice registers once. Editing it does not: a name takes in every version of its code, and each is a function of its own.",
+        "operationId": "V1FunctionsWrite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FunctionSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Function"
+                }
+              }
+            },
+            "description": "Already registered \u2014 the same text, written again"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Function"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
+          }
+        },
+        "summary": "Write a function",
+        "tags": [
+          "functions"
+        ]
       }
     },
     "/v1/functions/{sha256}": {
       "get": {
         "deprecated": false,
-        "description": "The size, the codec and the name it was registered under \u2014 never the code itself, which is a blob and is fetched as one.",
+        "description": "The size, the codec, the name it was registered under and, for one written as text, that text \u2014 never the pickle itself, which is a blob and is fetched as one.",
         "operationId": "V1FunctionsSha256Read",
         "parameters": [
           {
@@ -7039,6 +7294,99 @@
           }
         },
         "summary": "Register a function",
+        "tags": [
+          "functions"
+        ]
+      }
+    },
+    "/v1/functions/{sha256}/excerpt": {
+      "put": {
+        "deprecated": false,
+        "description": "What the SDK sends after the pickle: the function as text, with the imports, constants, functions and classes of its module that it uses, in the order of the file. A pickle is compiled code and carries no text, so this is read where the function was defined and is the only way the console has anything to show for it.\n\nStored as sent and never run. The function must already be registered.",
+        "operationId": "V1FunctionsSha256ExcerptExcerpt",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FunctionExcerpt"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Function"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Attach a function's text",
         "tags": [
           "functions"
         ]
@@ -7371,7 +7719,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Query instance offers",
@@ -7512,7 +7860,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Register a provider account",
@@ -7780,7 +8128,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Update a provider account",
@@ -7992,7 +8340,7 @@
       },
       "post": {
         "deprecated": false,
-        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
+        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions.\n\nThe arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead \u2014 the values in JSON \u2014 and the daemon encodes them here.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
         "operationId": "V1TasksSubmit",
         "parameters": [
           {
@@ -8103,7 +8451,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Submit a task",
@@ -8770,7 +9118,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected`"
           }
         },
         "summary": "Read a streaming task",

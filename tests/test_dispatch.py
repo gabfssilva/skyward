@@ -5,7 +5,9 @@ written here is what a user writes, which is the only reason a green run means
 anything: the failure these catch is the failure a user would have hit.
 """
 
+import functools
 import os
+import signal
 import sys
 import threading
 import time
@@ -14,9 +16,11 @@ from concurrent.futures import Future
 from contextvars import Context
 
 import cloudpickle
+import msgspec
 import pytest
 
 import skyward as sky
+from skyward.shared.schemas import FunctionExcerpt
 
 pytestmark = [pytest.mark.compute, pytest.mark.xdist_group("pool")]
 
@@ -48,6 +52,20 @@ def echo_reversed(payload: bytes) -> bytes:
 @sky.function
 def counted(x: int) -> int:
     return x + 1
+
+
+@sky.function
+def tripled(x: int) -> int:
+    return x * 3
+
+
+def scaled(factor: int, x: int) -> int:
+    return factor * x
+
+
+@sky.function(retry=None)
+def crash() -> None:
+    os.kill(os.getpid(), signal.SIGSEGV)
 
 
 @sky.function
@@ -92,6 +110,17 @@ def describe_dispatching_a_call() -> None:
 
             assert "the function said no" in raised.value.message
             assert "ValueError" in (raised.value.details.get("traceback") or ""), "the remote traceback survives the trip"
+
+    def describe_when_it_takes_the_worker_down_with_it() -> None:
+        def it_is_lost_at_once_and_the_worker_comes_back(pool: sky.Compute) -> None:
+            """On the thread executor a segfault ends the worker's own process; what is left to check is that nobody waits on it."""
+            started = time.monotonic()
+
+            with pytest.raises(sky.TaskIndeterminateError):
+                crash() >> pool
+
+            assert time.monotonic() - started < 60, "the attempt was declared lost when the worker came back, not when a link next dropped"
+            assert sorted(rank for _, rank in where_am_i() @ pool) == [0, 1], "and the restarted worker takes work again"
 
     def describe_when_it_outlives_its_timeout() -> None:
         def it_fails_instead_of_hanging_and_leaves_the_node_usable(pool: sky.Compute) -> None:
@@ -142,6 +171,64 @@ def describe_function_uploads() -> None:
 
         assert [counted(n) >> pool for n in range(3)] == [1, 2, 3]
         assert len([path for path in uploads if path.startswith("/v1/functions/")]) == 1
+
+    def it_sends_the_text_of_the_function_beside_it(pool: sky.Compute, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pickle is compiled code with no text in it, so what the console shows is read off this file and sent along."""
+        client = pool.client
+        original = client.call
+        sent: list[str] = []
+
+        async def spying[T](
+            method: str,
+            path: str,
+            kind: type[T],
+            /,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+            urgent: bool = False,
+            **query: object,
+        ) -> T:
+            if path.endswith("/excerpt") and body is not None:
+                sent.append(msgspec.json.decode(body, type=FunctionExcerpt).text)
+            return await original(method, path, kind, body=body, headers=headers, urgent=urgent, **query)
+
+        monkeypatch.setattr(client, "call", spying)
+
+        assert tripled(3) >> pool == 9
+        assert sent == ["import skyward as sky\n\n\n@sky.function\ndef tripled(x: int) -> int:\n    return x * 3\n"]
+
+    def a_partial_goes_by_the_name_and_the_text_of_the_function_it_was_made_of(pool: sky.Compute, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A partial has no name and no file of its own; the function inside it has both."""
+        client = pool.client
+        uploading, calling = client.upload, client.call
+        named: list[str] = []
+        sent: list[str] = []
+
+        async def upload(path: str, body: bytes, headers: dict[str, str] | None = None) -> None:
+            if path.startswith("/v1/functions/") and headers is not None:
+                named.append(headers["X-Skyward-Function-Name"])
+            await uploading(path, body, headers)
+
+        async def call[T](
+            method: str,
+            path: str,
+            kind: type[T],
+            /,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+            urgent: bool = False,
+            **query: object,
+        ) -> T:
+            if path.endswith("/excerpt") and body is not None:
+                sent.append(msgspec.json.decode(body, type=FunctionExcerpt).text)
+            return await calling(method, path, kind, body=body, headers=headers, urgent=urgent, **query)
+
+        monkeypatch.setattr(client, "upload", upload)
+        monkeypatch.setattr(client, "call", call)
+
+        assert sky.function(functools.partial(scaled, 4))(3) >> pool == 12
+        assert named == ["scaled"]
+        assert sent == ["def scaled(factor: int, x: int) -> int:\n    return factor * x\n"]
 
 
 def describe_callbacks_on_an_async_future() -> None:

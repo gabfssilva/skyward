@@ -29,6 +29,7 @@ from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
 from skyward.core.console import Observer, Watcher, watcher
 from skyward.core.errors import SkywardError, TaskFailedError
+from skyward.core.excerpt import defined, excerpt
 from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
@@ -48,6 +49,8 @@ from skyward.shared.schemas import (
     Dispatch,
     Endpoint,
     Error,
+    Function,
+    FunctionExcerpt,
     Image,
     Lease,
     LeaseClaim,
@@ -722,11 +725,14 @@ class Compute:
         code = await codec.payload.encode(pending.fn)
         function = await codec.digest(code)
         if function not in self._functions:
+            written = defined(pending.fn)
             await self.client.upload(
                 f"/v1/functions/{function}",
                 code,
-                headers={"X-Skyward-Function-Name": pending.fn.__name__},
+                headers={"X-Skyward-Function-Name": written.__name__},
             )
+            if (text := await asyncio.to_thread(excerpt, written)) is not None:
+                await self.client.call("PUT", f"/v1/functions/{function}/excerpt", Function, body=msgspec.json.encode(FunctionExcerpt(text=text)))
             self._functions.add(function)
 
         args = await codec.payload.encode((pending.args, pending.kwargs))

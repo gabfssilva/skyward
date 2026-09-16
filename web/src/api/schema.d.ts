@@ -520,11 +520,27 @@ export interface paths {
         };
         /**
          * List registered functions
-         * @description Every function this daemon has been handed, by hash. Uploading the same code twice adds no row.
+         * @description Every upload this daemon has been handed, newest first. Uploading the same bytes twice adds no row, but one function is still many uploads: moving it down its file changes the pickle, and so does a run that captures a different value.
+         *
+         *     So uploads are grouped. `lineage` is one function — the same name and qualname in the same file — and `version` counts the changes to its *code* along it, in order: an upload whose code matches the one before it is the same version, whatever else about the bytes moved. Reverting to older code is a new version, not the old number again, so the newest upload always carries the highest one.
+         *
+         *     `latest` is one row per function, its newest upload. `lineage` is every upload of one function.
+         *
+         *     The name, the file and the shape of the code are read off the payload without unpickling it. The text is not in the payload at all: `source` is a function written in the console, `excerpt` one the SDK uploaded along with what it uses from its module, and a function defined where there was no file to read has neither.
          */
         get: operations["V1FunctionsList"];
         put?: never;
-        post?: never;
+        /**
+         * Write a function
+         * @description A function as **text** instead of as a pickle, for a caller with no interpreter of its own — the browser console, or anything that speaks HTTP and nothing more.
+         *
+         *     The body is a Python module and the name of the function in it to call. The daemon does not run any of it: the source is captured in a callable, that callable is pickled, and what is registered is the same blob `PUT` would have taken. The machine is still the only place a line of it executes, and it is compiled there once per call.
+         *
+         *     Text that does not parse, or that defines no function under that name, is refused with `source_rejected` — both are wrong on every machine equally, and a dispatch is a slow place to find that out.
+         *
+         *     The same text under the same name pickles to the same bytes, so writing it twice registers once. Editing it does not: a name takes in every version of its code, and each is a function of its own.
+         */
+        post: operations["V1FunctionsWrite"];
         delete?: never;
         options?: never;
         head?: never;
@@ -540,7 +556,7 @@ export interface paths {
         };
         /**
          * Read a function's metadata
-         * @description The size, the codec and the name it was registered under — never the code itself, which is a blob and is fetched as one.
+         * @description The size, the codec, the name it was registered under and, for one written as text, that text — never the pickle itself, which is a blob and is fetched as one.
          */
         get: operations["V1FunctionsSha256Read"];
         /**
@@ -558,6 +574,28 @@ export interface paths {
          * @description The SDK calls this before uploading the blob. A function is uploaded **once**, no matter how many tasks call it — content-addressing is what makes `function` a cheap resource instead of a pickle repeated on every dispatch.
          */
         head: operations["V1FunctionsSha256Exists"];
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/functions/{sha256}/excerpt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attach a function's text
+         * @description What the SDK sends after the pickle: the function as text, with the imports, constants, functions and classes of its module that it uses, in the order of the file. A pickle is compiled code and carries no text, so this is read where the function was defined and is the only way the console has anything to show for it.
+         *
+         *     Stored as sent and never run. The function must already be registered.
+         */
+        put: operations["V1FunctionsSha256ExcerptExcerpt"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -740,6 +778,8 @@ export interface paths {
          *
          *     `dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank — a later scale-up does not add executions.
          *
+         *     The arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead — the values in JSON — and the daemon encodes them here.
+         *
          *     The task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.
          */
         post: operations["V1TasksSubmit"];
@@ -885,6 +925,26 @@ export interface components {
             vram: number;
         };
         /**
+         * Call
+         * @description A call's arguments written as JSON, for a caller that cannot pickle them.
+         *
+         *     A worker takes a pickle, and a browser has no Python to make one with — so the
+         *     values are handed over as themselves and encoded at the edge. What fits is
+         *     what JSON has: numbers, strings, booleans, null, lists and objects. An
+         *     argument that is a dataframe or a model is an argument that has to be built
+         *     where Python is.
+         *
+         *     Both fields are untyped past their own shape, because what is inside them
+         *     belongs to the callee: the only thing true of every function's arguments is
+         *     that they are values.
+         */
+        Call: {
+            args?: unknown[] | null;
+            kwargs?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
          * Compute
          * @description A set of machines held under one intention, as the API serves it.
          *
@@ -963,7 +1023,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1002,7 +1062,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1152,7 +1212,7 @@ export interface components {
          */
         Error: {
             /** @enum {string} */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             details?: {
                 [key: string]: unknown;
             } | null;
@@ -1200,14 +1260,60 @@ export interface components {
          *
          *     The metadata only. The code is a blob, fetched as one — which is what lets a
          *     task name its function without carrying it.
+         *
+         *     One function is many uploads. ``lineage`` names the function — the same name
+         *     and qualname in the same file — and ``version`` counts the changes to its code
+         *     along that lineage, in order. An upload that differs only in where the function
+         *     sits in its file, or in what a run captured, is the same version: a function
+         *     that closes over a job id is uploaded once per job and edited far less often.
+         *
+         *     The text comes one of two ways, because the pickle has none. ``source`` is a
+         *     function written in the console, and it is what the function was built from.
+         *     ``excerpt`` is one the SDK uploaded: the function and what it uses from its
+         *     module, read off the file where it was defined — a transcript for reading,
+         *     absent when there was no file to read.
          */
         Function: {
             codec: string;
             /** Format: date-time */
             created_at: string;
+            excerpt?: string | null;
+            lineage: string;
             name?: string | null;
+            origin?: string | null;
+            qualname?: string | null;
             sha256: string;
             size_bytes: number;
+            source?: string | null;
+            version: number;
+        };
+        /**
+         * FunctionExcerpt
+         * @description The text of a function the SDK uploaded, sent after the pickle it describes.
+         *
+         *     The imports, constants, functions and classes of its module that it uses, then
+         *     the function, in the order of the file. Nothing runs it: it is what the console
+         *     shows where a pickle would otherwise show nothing.
+         */
+        FunctionExcerpt: {
+            text: string;
+        };
+        /**
+         * FunctionSource
+         * @description A function written out, for a caller with no interpreter to pickle one with.
+         *
+         *     The module a node will run and the name in it to call. The text is not
+         *     executed here — it is captured, so what is stored is the same pickled callable
+         *     the SDK would have uploaded, and the machine is still the only place any of it
+         *     runs.
+         *
+         *     The name is checked against the source rather than trusted: a module that does
+         *     not bind it is a function that cannot be called, and finding that out at
+         *     registration costs a parse, where finding it out at dispatch costs a machine.
+         */
+        FunctionSource: {
+            name: string;
+            source: string;
         };
         /**
          * Generation
@@ -1946,6 +2052,7 @@ export interface components {
             function: string;
             generation: number;
             id: string;
+            rank?: number | null;
             result_sha256?: string | null;
             retry: string | null;
             /** @enum {string} */
@@ -1958,11 +2065,14 @@ export interface components {
          * @description One call to place: the code, its arguments, and how widely to run it.
          *
          *     Arguments travel inline below a size threshold and as a blob above it, which
-         *     is why there are two fields for them and exactly one is set.
+         *     is why there are fields for both and exactly one is set. ``call`` is the third
+         *     way to say the same thing, for a caller with no interpreter: the values in
+         *     JSON, encoded here into the pickle the other two already carry.
          */
         TaskCreate: {
             args_inline?: string | null;
             args_sha256?: string | null;
+            call?: components["schemas"]["Call"] | null;
             compute: string;
             correlation_id?: string | null;
             /** @enum {string} */
@@ -2310,7 +2420,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2493,7 +2603,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2564,7 +2674,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2635,7 +2745,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2706,7 +2816,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2777,7 +2887,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2846,7 +2956,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2913,7 +3023,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2972,7 +3082,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3098,7 +3208,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3581,7 +3691,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3656,7 +3766,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3757,6 +3867,10 @@ export interface operations {
             query?: {
                 cursor?: string | null;
                 limit?: number;
+                /** @description One row per function: its newest upload, which carries its highest version. */
+                latest?: boolean;
+                /** @description Every upload of one function. */
+                lineage?: string | null;
             };
             header?: never;
             path?: never;
@@ -3786,6 +3900,63 @@ export interface operations {
                         } | unknown[];
                         status_code: number;
                     };
+                };
+            };
+        };
+    };
+    V1FunctionsWrite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FunctionSource"];
+            };
+        };
+        responses: {
+            /** @description Already registered — the same text, written again */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Function"];
+                };
+            };
+            /** @description Document created, URL follows */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Function"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
         };
@@ -3927,6 +4098,56 @@ export interface operations {
             };
         };
     };
+    V1FunctionsSha256ExcerptExcerpt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FunctionExcerpt"];
+            };
+        };
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Function"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     V1HealthDependenciesDependencyHealth: {
         parameters: {
             query?: never;
@@ -4037,7 +4258,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4134,7 +4355,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4248,7 +4469,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4415,7 +4636,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4791,7 +5012,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
+            /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
                 headers: {
                     [name: string]: unknown;

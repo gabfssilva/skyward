@@ -99,10 +99,18 @@ class Functions(Protocol):
 
     async def get(self, sha256: str) -> Function: ...
 
-    async def list(self, cursor: str | None, limit: int) -> Page[Function]: ...
+    async def list(self, cursor: str | None, limit: int, latest: bool = False, lineage: str | None = None) -> Page[Function]: ...
 
-    async def register(self, sha256: str, blob: bytes, name: str | None) -> tuple[Function, bool]:
-        """Returns the function and whether it was newly registered."""
+    async def register(self, sha256: str, blob: bytes, name: str | None, source: str | None = None) -> tuple[Function, bool]:
+        """Returns the function and whether it was newly registered.
+
+        ``source`` is the text it was written as, for one that was written rather
+        than pickled from a callable that was already running somewhere.
+        """
+        ...
+
+    async def excerpt(self, sha256: str, text: str) -> Function:
+        """Keep the text the SDK read for a function it already uploaded."""
         ...
 
 

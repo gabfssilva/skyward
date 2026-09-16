@@ -29,6 +29,9 @@ export type EventWindow = { items: SkyEvent[]; cursor: string | null; loading: b
 /** The tasks the daemon answered with under one set of filters, and how many matched them. */
 export type TaskFeed = { key: string; items: Task[]; cursor: string | null; loading: boolean; total: number | null }
 
+/** The functions the daemon holds, one row per function — its newest upload, carrying its highest version — newest first. */
+export type Library = { items: FunctionRef[]; cursor: string | null; loading: boolean; total: number | null }
+
 /** Where a paged listing stands: what continues it, whether a page is on its way, and how many rows the filters match. */
 export type Pages = { key: string; cursor: string | null; loading: boolean; total: number | null }
 
@@ -41,6 +44,9 @@ export type Sheet =
   | { kind: 'scale'; computeId: string }
   | { kind: 'ports'; computeId: string }
   | { kind: 'addProvider'; provider?: string }
+  | { kind: 'write'; from?: FunctionRef }
+  | { kind: 'run'; lineage?: string; version?: number; computeId?: string; node?: number }
+  | { kind: 'function'; lineage: string }
   | { kind: 'confirm'; title: string; body: string; confirm: string; danger?: boolean; onConfirm: () => void }
   | { kind: 'palette' }
 
@@ -99,6 +105,8 @@ export type Entities = {
   feed: LogFeed | null
   /** what a task's `function` sha256 stands for; `null` is a sha the daemon does not know */
   functions: Record<string, FunctionRef | null>
+  /** the registered functions, one per lineage, as a listing rather than as a lookup; `null` before its first page */
+  library: Library | null
 }
 
 export type Store = Entities &
@@ -143,6 +151,8 @@ export type Store = Entities &
     pageTasks: (reset?: boolean) => Promise<void>
     /** read the next page of what has ended, or the first page under a new cause */
     pageHistory: (reset?: boolean) => Promise<void>
+    /** read the next page of registered functions, or the first one again after writing one */
+    pageLibrary: (reset?: boolean) => Promise<void>
     /** ask the catalog for more of the order it is already in */
     moreOffers: () => Promise<void>
     reloadProviders: () => Promise<void>
@@ -156,6 +166,7 @@ const LOGS_MAX = 2000
 const EVENTS_MAX = 200
 const HISTORY_PAGE = 50
 const OFFERS_PAGE = 200
+const LIBRARY_PAGE = 50
 
 const EMPTY: NodeMetrics = { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 }
 
@@ -186,6 +197,7 @@ export const useStore = create<Store>((set, get) => ({
   windows: {},
   feed: null,
   functions: {},
+  library: null,
 
   metric: 'gpu',
   shell: false,
@@ -377,6 +389,27 @@ export const useStore = create<Store>((set, get) => ({
       }))
     } catch {
       set({ histPages: at })
+    }
+  },
+
+  pageLibrary: async (reset = false) => {
+    const at = get().library
+    const fresh = reset || at === null
+    if (!fresh && (at.loading || !at.cursor)) return
+    set({ library: { items: fresh ? [] : at.items, cursor: fresh ? null : at.cursor, loading: true, total: fresh ? null : at.total } })
+    try {
+      const read = await api.functions({ latest: true, limit: LIBRARY_PAGE, cursor: fresh ? undefined : (at?.cursor ?? undefined) })
+      set((s) => ({
+        library: {
+          items: [...(fresh ? [] : (s.library?.items ?? [])), ...read.items],
+          cursor: read.next_cursor ?? null,
+          loading: false,
+          total: read.total ?? null,
+        },
+        functions: { ...s.functions, ...Object.fromEntries(read.items.map((fn) => [fn.sha256, fn])) },
+      }))
+    } catch {
+      set({ library: at })
     }
   },
 
@@ -864,6 +897,15 @@ export function useTasks(): TaskFeed | null {
   return feed?.key === key ? feed : null
 }
 
+/** The functions the daemon holds, read once when something first asks for them. */
+export function useLibrary(): Library | null {
+  const library = useStore((s) => s.library)
+  useEffect(() => {
+    if (useStore.getState().library === null) void useStore.getState().pageLibrary(true)
+  }, [])
+  return library
+}
+
 /** Where the history listing stands, its first page read again when the cause asked for changes. */
 export function useHistory(): Pages | null {
   const key = useStore((s) => s.hist.cause)
@@ -999,10 +1041,11 @@ export const computeById = (state: Store, computeId: string): Compute | undefine
 /** What a function is called, once the daemon has said; `null` until then, or if it never will. */
 export const functionName = (state: Store, sha256: string): string | null => state.functions[sha256]?.name ?? null
 
-/** What to print for a task's function: its name, or the head of its hash in the mono face. */
-export const useFunctionLabel = (sha256: string): { text: string; mono: boolean } => {
+/** What to print for a task's function: its name and the version it ran, or the head of its hash in the mono face. */
+export const useFunctionLabel = (sha256: string): { text: string; mono: boolean; version: number | null } => {
   const name = useStore((s) => functionName(s, sha256))
-  return name ? { text: name, mono: false } : { text: sha256.slice(0, 8), mono: true }
+  const version = useStore((s) => s.functions[sha256]?.version ?? null)
+  return name ? { text: name, mono: false, version } : { text: sha256.slice(0, 8), mono: true, version: null }
 }
 
 /** Whether a compute is still the daemon's to change, or only a record of one. */

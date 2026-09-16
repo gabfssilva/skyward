@@ -26,6 +26,8 @@ export type ProviderKind = Schemas['ProviderKind']
 export type Offer = Schemas['Offer']
 export type Accelerator = Schemas['Accelerator']
 export type FunctionRef = Schemas['Function']
+export type FunctionSource = Schemas['FunctionSource']
+export type Call = Schemas['Call']
 export type Generation = Schemas['Generation']
 export type Liveness = Schemas['Liveness']
 export type LogEntry = Schemas['LogEntry']
@@ -131,6 +133,8 @@ async function conditional<T>(id: string, init: RequestInit & { headers?: Record
 
 export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause'] }
 export type NodeQuery = { include_terminal?: boolean; generation?: number }
+/** ``latest`` is one row per function, its newest upload; ``lineage`` is every upload of one function. */
+export type FunctionQuery = { cursor?: string; limit?: number; latest?: boolean; lineage?: string }
 export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string; order?: TaskOrder }
 export type LogQuery = { cursor?: string; limit?: number; compute?: string; task?: string; node?: string; types?: readonly string[]; contains?: readonly string[] }
 export type OfferQuery = {
@@ -165,13 +169,16 @@ export const api = {
     request<Schemas['Result']>(`/computes/${computeId}/exec${qs({ command, node })}`, { method: 'POST' }),
 
   tasks: (query?: TaskQuery): Promise<Page<Task>> => request<Page<Task>>(`/tasks${qs(query)}`),
+  submitTask: (payload: TaskCreate): Promise<Task> => request<Task>('/tasks', { method: 'POST', ...body(payload), headers: once() }),
   task: (id: string): Promise<Task> => request<Task>(`/tasks/${id}`),
   cancelTask: (id: string): Promise<void> => request<void>(`/tasks/${id}`, { method: 'DELETE', headers: once() }),
   executions: (taskId: string): Promise<Page<Execution>> => request<Page<Execution>>(`/tasks/${taskId}/executions`),
   retry: (taskId: string, payload: ExecutionCreate = { acknowledge_duplication: false }): Promise<Execution> =>
     request<Execution>(`/tasks/${taskId}/executions`, { method: 'POST', ...body(payload), headers: once() }),
 
+  functions: (query?: FunctionQuery): Promise<Page<FunctionRef>> => request<Page<FunctionRef>>(`/functions${qs(query)}`),
   function: (sha256: string): Promise<FunctionRef> => request<FunctionRef>(`/functions/${sha256}`),
+  writeFunction: (payload: FunctionSource): Promise<FunctionRef> => request<FunctionRef>('/functions', { method: 'POST', ...body(payload) }),
 
   log: (query?: LogQuery): Promise<Page<LogEntry>> => request<Page<LogEntry>>(`/events/log${qs(query)}`),
 

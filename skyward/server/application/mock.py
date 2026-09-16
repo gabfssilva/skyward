@@ -97,6 +97,8 @@ FUNCTION = Function(
     size_bytes=18_422,
     codec="cloudpickle+lz4",
     created_at=NOW,
+    lineage="f" * 16,
+    version=1,
     name="train",
 )
 
@@ -220,10 +222,13 @@ class MockFunctions:
     async def get(self, sha256: str) -> Function:
         return FUNCTION
 
-    async def list(self, cursor: str | None, limit: int) -> Page[Function]:
+    async def list(self, cursor: str | None, limit: int, latest: bool = False, lineage: str | None = None) -> Page[Function]:
         return Page(items=(FUNCTION,))
 
-    async def register(self, sha256: str, blob: bytes, name: str | None) -> tuple[Function, bool]:
+    async def excerpt(self, sha256: str, text: str) -> Function:
+        return FUNCTION
+
+    async def register(self, sha256: str, blob: bytes, name: str | None, source: str | None = None) -> tuple[Function, bool]:
         return FUNCTION, True
 
 

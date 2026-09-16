@@ -228,7 +228,9 @@ class Dispatcher:
             raise ComputeNotAcceptingError(f"compute {task.compute_id} has no free node to stream from")
 
         execution = task.executions[0]
-        node_id = free[execution.ordinal % len(free)]
+        node_id = free[execution.ordinal % len(free)] if task.rank is None else await self._pinned(task.compute_id, task.rank, free)
+        if node_id is None:
+            raise ComputeNotAcceptingError(f"compute {task.compute_id} has no free node at rank {task.rank} to stream from")
 
         code = await self._blobs.get(task.function)
         args = await self._blobs.get(task.args_sha256)
@@ -313,22 +315,35 @@ class Dispatcher:
     async def _placement(self, task: Task, execution: Execution, free: tuple[str, ...]) -> str | None:
         """One node, or the one node this execution is owed.
 
-        A retry goes somewhere else when there is somewhere else: the node that lost
-        the last attempt, or raised on it, is the one node with a known reason to do
-        it again. With nowhere else to go, it goes there anyway.
+        A task that named a rank is pinned to it, retry included: the caller asked
+        for that machine, and the next best one is not what they asked for. If it is
+        not free the execution waits, because waiting is what being asked for a
+        particular machine means.
 
-        A broadcast is pinned: its ranks were frozen when it was admitted, and rank
-        3's execution belongs on the machine that is rank 3. If that machine is not
-        there, the execution waits — placing it elsewhere would run the user's code
-        twice on one node and never on another.
+        A retry of a task that named none goes somewhere else when there is
+        somewhere else: the node that lost the last attempt, or raised on it, is the
+        one node with a known reason to do it again. With nowhere else to go, it
+        goes there anyway.
+
+        A broadcast is pinned the same way, by the ranks frozen when it was
+        admitted: rank 3's execution belongs on the machine that is rank 3, and
+        placing it elsewhere would run the user's code twice on one node and never
+        on another.
         """
-        if task.dispatch == "one":
-            previous = next((e.node_id for e in task.executions if e.id == execution.retry_of), None)
-            elsewhere = tuple(node for node in free if node != previous) or free
-            return elsewhere[execution.ordinal % len(elsewhere)]
+        match task.dispatch, task.rank:
+            case "one", None:
+                previous = next((e.node_id for e in task.executions if e.id == execution.retry_of), None)
+                elsewhere = tuple(node for node in free if node != previous) or free
+                return elsewhere[execution.ordinal % len(elsewhere)]
+            case "one", int(named):
+                return await self._pinned(task.compute_id, named, free)
+            case _:
+                return await self._pinned(task.compute_id, execution.rank, free)
 
-        ranks = {node.rank: node.id for node in await self._nodes.of(task.compute_id)}
-        pinned = ranks.get(execution.rank)
+    async def _pinned(self, compute_id: str, rank: int, free: tuple[str, ...]) -> str | None:
+        """The machine at that rank, if it is one of the free ones."""
+        ranks = {node.rank: node.id for node in await self._nodes.of(compute_id)}
+        pinned = ranks.get(rank)
         return pinned if pinned in free else None
 
     async def _run(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> None:
