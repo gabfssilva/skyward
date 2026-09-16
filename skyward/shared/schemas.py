@@ -598,6 +598,13 @@ class Compute(Struct, frozen=True):
     status: ComputeStatus
     lease: Lease
     created_at: datetime
+    cost: float
+    """What its machines have cost so far: up to now while it is live, and up to its ending
+
+    once it is deleted, where it is the same number ``ended.cost`` carries. Derived on
+    every read from the node rows, by the rule the meter reads — nothing sums it on the
+    way, so there is no total that can disagree with the rows it came from.
+    """
     offer: "Offer | None" = None
     ended: Ending | None = None
 

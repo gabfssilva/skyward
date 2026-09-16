@@ -9,6 +9,10 @@ const SPARK_BUCKETS = 20
 const SPARK_GLYPHS = '▁▂▃▄▅▆▇█'
 const NO_SAMPLES: readonly null[] = Array.from({ length: SPARK_BUCKETS }, () => null)
 const NODES_PER_PAGE = 4
+const IDLE_GPU_PCT = 5
+// Four buckets of 30s: a gap between two tasks is not idleness.
+const IDLE_BUCKETS = 4
+const NODE_STAGES = ['requested', 'provisioning', 'connecting', 'bootstrapping', 'ready', 'draining', 'lost', 'deleting', 'deleted', 'failed']
 const TASKS_PER_PAGE = 5
 const DELETE_ATTEMPTS = 5
 const NAME_WIDTH = 16
@@ -69,8 +73,19 @@ type TaskOrder = 'state' | 'submitted' | 'finished'
 type TaskQuery = { order: TaskOrder; fn: string | null; cursors: readonly string[] }
 type TaskPage = { items: Task[]; total: number | null; next: string | null; counts: Map<string, number> }
 
+// What the compute is as a whole: its nodes counted by stage, the mean of each metric over the nodes still
+// alive, and whether it is doing anything. `idle` is null when no node reported gpu_util in the window, and
+// `capped` means the whole window was idle, so it began before the window did.
+type Fleet = {
+  stages: readonly (readonly [string, number])[]
+  averages: ReadonlyMap<string, number>
+  running: number
+  idle: { since: number; capped: boolean } | null
+}
+
 type Detail = {
   compute: Compute
+  fleet: Fleet
   nodes: Node[]
   page: number
   pageCount: number
@@ -153,6 +168,7 @@ const items = <T,>(body: unknown, parse: (item: unknown) => T | undefined): T[] 
     return parsed === undefined ? [] : [parsed]
   })
 const metricKey = (node: string, name: string): string => `${node}/${name}`
+const metricNode = (key: string): string => key.slice(0, key.lastIndexOf('/'))
 
 function parseCompute(item: unknown): Compute | undefined {
   const id = str(at(item, 'id'))
@@ -176,7 +192,7 @@ function parseCompute(item: unknown): Compute | undefined {
     acceleratorCount: num(at(item, 'offer', 'accelerator_count')) ?? num(at(spec, 'accelerator_count')) ?? 1,
     price: num(at(item, 'offer', 'price')) ?? null,
     ended: time(at(item, 'ended', 'at')) !== null,
-    cost: num(at(item, 'ended', 'cost')) ?? null,
+    cost: num(at(item, 'cost')) ?? null,
     lastError: str(at(item, 'status', 'last_error', 'message')) ?? null,
   }
 }
@@ -263,6 +279,23 @@ const gpu = (c: Compute): string =>
   c.accelerator === null ? '—' : c.acceleratorCount > 1 ? `${c.acceleratorCount}×${c.accelerator}` : c.accelerator
 const deletable = (c: Compute): boolean => !c.ended && c.state !== 'deleting' && c.state !== 'deleted'
 const hourly = (c: Compute): number | null => (c.ended || c.price === null ? null : c.price * c.nodesTotal)
+const averaged = (f: Fleet): string => {
+  const mean = (name: string): number | undefined => f.averages.get(name)
+  const pct = (name: string, label: string): string | null => {
+    const value = mean(name)
+    return value === undefined ? null : `${label} ${Math.round(value)}%`
+  }
+  const used = mean('mem_used_mb')
+  const total = mean('mem_total_mb')
+  return [
+    pct('cpu', 'cpu'),
+    pct('gpu_util', 'gpu'),
+    used === undefined || total === undefined ? null : `mem ${gib(used)}/${gib(total)} GB`,
+    pct('disk_used_pct', 'disk'),
+  ]
+    .filter((part) => part !== null)
+    .join(' · ')
+}
 const sum = (values: (number | null)[]): number | null =>
   values.reduce<number | null>((total, value) => (total === null || value === null ? null : total + value), 0)
 
@@ -382,7 +415,7 @@ async function loadTasks($: EngineInterface, id: string, query: TaskQuery, names
 }
 
 async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage | undefined, names: Map<string, string | null>): Promise<Snapshot> {
-  const { id, page: requestedPage, expanded } = target
+  const { id, page: requestedPage } = target
   const start = (Math.floor(Date.now() / SPARK_STEP_MS) - (SPARK_BUCKETS - 1)) * SPARK_STEP_MS
   const base = `/v1/computes/${id}`
   const path = logPath(id, target.log)
@@ -397,19 +430,15 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
   const compute = parseCompute(computeBody)
   if (compute === undefined) throw new Error(`unexpected compute payload for ${id}`)
 
-  // The nodes endpoint has no cursor, so the page is cut here; latest values are asked for that page's nodes only,
-  // and the sparkline series for the expanded ones among them.
+  // The nodes endpoint has no cursor, so the page is cut here. The metrics are asked for the whole compute rather
+  // than for the page: the header averages them and reads idleness off the window, and a page's sparklines read the
+  // same two maps.
   const nodes = items(nodesBody, parseNode).sort((a, b) => Number(a.terminatedAt !== null) - Number(b.terminatedAt !== null) || a.rank - b.rank)
   const pageCount = Math.max(1, Math.ceil(nodes.length / NODES_PER_PAGE))
   const page = Math.min(requestedPage, pageCount - 1)
-  const pageNodes = nodes.slice(page * NODES_PER_PAGE, (page + 1) * NODES_PER_PAGE)
-  const nodeQuery = (selected: Node[]) => selected.map((n) => `node=${n.id}`).join('&')
-  const openNodes = pageNodes.filter((n) => expanded.has(n.id))
   const [latestBody, seriesBody] = await Promise.all([
-    pageNodes.length === 0 ? undefined : getJson($, `${base}/metrics/latest?${nodeQuery(pageNodes)}`),
-    openNodes.length === 0
-      ? undefined
-      : getJson($, `${base}/metrics?since=${start}&step=${SPARK_STEP_MS}&agg=avg&name=cpu&name=gpu_util&${nodeQuery(openNodes)}`),
+    nodes.length === 0 ? undefined : getJson($, `${base}/metrics/latest`),
+    nodes.length === 0 ? undefined : getJson($, `${base}/metrics?since=${start}&step=${SPARK_STEP_MS}&agg=avg&name=cpu&name=gpu_util`),
   ])
 
   const latest = new Map(
@@ -438,7 +467,38 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
     sparks.set(metricKey(node, name), buckets)
   }
 
-  return { kind: 'detail', detail: { compute, nodes, page, pageCount, latest, sparks, tasks, log }, at: Date.now() }
+  const alive = nodes.filter((n) => n.terminatedAt === null)
+  const across = (pick: (node: Node) => number | null | undefined): number | undefined => {
+    const values = alive.flatMap((n) => {
+      const value = pick(n)
+      return value === undefined || value === null ? [] : [value]
+    })
+    return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0) / values.length
+  }
+
+  const averages = new Map<string, number>()
+  for (const name of new Set(items(latestBody, (item) => str(at(item, 'name'))))) {
+    const value = across((n) => latest.get(metricKey(n.id, name)))
+    if (value !== undefined) averages.set(name, value)
+  }
+
+  // The window is the sparkline's own: the last bucket to reach the threshold is when the fleet last did work, and
+  // no bucket reaching it means the idleness began before the window did.
+  const window = Array.from({ length: SPARK_BUCKETS }, (_, i) => across((n) => sparks.get(metricKey(n.id, 'gpu_util'))?.[i]))
+  const busy = window.reduce<number>((found, value, i) => (value !== undefined && value >= IDLE_GPU_PCT ? i : found), -1)
+  const idle =
+    window.every((value) => value === undefined) || SPARK_BUCKETS - 1 - busy < IDLE_BUCKETS
+      ? null
+      : { since: start + (busy + 1) * SPARK_STEP_MS, capped: busy < 0 }
+
+  const fleet: Fleet = {
+    stages: NODE_STAGES.map((state) => [state, alive.filter((n) => n.state === state).length] as const).filter(([, count]) => count > 0),
+    averages,
+    running: tasks.counts.get('running') ?? 0,
+    idle,
+  }
+
+  return { kind: 'detail', detail: { compute, fleet, nodes, page, pageCount, latest, sparks, tasks, log }, at: Date.now() }
 }
 
 // The reconciler's own writes also move the revision, so a refused If-Match is read again and sent again, under the same key.
@@ -664,23 +724,42 @@ export const register: Register = (on) => {
       </Box>
     )
 
-    const computeHeader = (c: Compute): RenderElement => (
-      <Box flexDirection="column">
-        <Box flexDirection="row" gap={2}>
-          <Text bold wrap="truncate">{c.name ?? c.id}</Text>
-          <Text color={STATE_COLORS.get(c.state)}>{`${STATE_GLYPHS.get(c.state) ?? '●'} ${c.state}`}</Text>
+    const computeHeader = (c: Compute, f: Fleet): RenderElement => {
+      const means = averaged(f)
+      const quiet = f.idle === null ? null : `${f.idle.capped ? '≥' : ''}${age(now - f.idle.since)}`
+      const tasks = f.running === 0 ? 'no task' : `${f.running} running`
+      // A compute whose gpu is working, or that has no gpu to read, is only called idle by its tasks.
+      const idleness =
+        c.ended || (quiet === null && (f.running > 0 || f.averages.has('gpu_util')))
+          ? null
+          : quiet === null
+            ? { text: `idle · ${tasks}`, color: 'yellow' }
+            : f.running > 0
+              ? { text: `gpu idle ${quiet} · ${tasks}`, color: 'red' }
+              : { text: `idle ${quiet} · ${tasks}`, color: 'yellow' }
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={2}>
+            <Text bold wrap="truncate">{c.name ?? c.id}</Text>
+            <Text color={STATE_COLORS.get(c.state)}>{`${STATE_GLYPHS.get(c.state) ?? '●'} ${c.state}`}</Text>
+          </Box>
+          <Text dimColor wrap="truncate">
+            {[
+              f.stages.length === 0 ? `${c.nodesReady}/${c.nodesTotal} nodes` : f.stages.map(([state, count]) => `${count} ${state}`).join(', '),
+              c.accelerator === null ? c.provider : `${c.provider} ${gpu(c)}`,
+              c.ended ? `cost $${money(c.cost)}` : `$${money(c.cost)} spent`,
+              c.ended ? null : `$${money(hourly(c))}/h`,
+              age(now - c.createdAt),
+            ]
+              .filter((part) => part !== null)
+              .join(' · ')}
+          </Text>
+          {means === '' ? null : <Text dimColor wrap="truncate">{`avg ${means}`}</Text>}
+          {idleness === null ? null : <Text color={idleness.color} wrap="truncate">{idleness.text}</Text>}
+          {c.lastError !== null ? <Text color="red" wrap="truncate">{c.lastError}</Text> : null}
         </Box>
-        <Text dimColor wrap="truncate">
-          {[
-            `${c.nodesReady}/${c.nodesTotal} nodes`,
-            c.accelerator === null ? c.provider : `${c.provider} ${gpu(c)}`,
-            c.ended ? `cost $${money(c.cost)}` : `$${money(hourly(c))}/h`,
-            age(now - c.createdAt),
-          ].join(' · ')}
-        </Text>
-        {c.lastError !== null ? <Text color="red" wrap="truncate">{c.lastError}</Text> : null}
-      </Box>
-    )
+      )
+    }
 
     const rankBadge = (rank: number | undefined, muted = false): RenderElement =>
       rank === undefined || muted ? (
@@ -790,11 +869,18 @@ export const register: Register = (on) => {
           const first = d.page * NODES_PER_PAGE
           const pageNodes = d.nodes.slice(first, first + NODES_PER_PAGE)
           // Columns before any node on the page had a sample are blank for all of them, so they are dropped.
-          const sparkStart = Math.min(SPARK_BUCKETS, ...[...d.sparks.values()].map((buckets) => buckets.findIndex((value) => value !== null)).filter((i) => i >= 0))
+          const onPage = new Set(pageNodes.map((n) => n.id))
+          const sparkStart = Math.min(
+            SPARK_BUCKETS,
+            ...[...d.sparks]
+              .filter(([key]) => onPage.has(metricNode(key)))
+              .map(([, buckets]) => buckets.findIndex((value) => value !== null))
+              .filter((i) => i >= 0),
+          )
           return (
             <Box flexDirection="column" gap={1}>
               <Box flexDirection="column">
-                {computeHeader(d.compute)}
+                {computeHeader(d.compute, d.fleet)}
                 <Text dimColor>{`${d.compute.id} · updated ${clock(snapshot.at)}`}</Text>
               </Box>
               <Box flexDirection="column">

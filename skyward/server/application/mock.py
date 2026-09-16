@@ -61,6 +61,7 @@ COMPUTE = Compute(
     status=ComputeStatus(state="ready", observed_generation=3, nodes_ready=4, nodes_total=4),
     lease=Lease(owner="ctl_1:epoch_9", expires_at=NOW),
     created_at=NOW,
+    cost=18.4,
 )
 
 NODE = Node(

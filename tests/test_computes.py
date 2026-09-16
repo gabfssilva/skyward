@@ -161,6 +161,41 @@ def describe_listing_computes() -> None:
         assert len(page.items) == 2 and page.total == 3, "what the filters match, not what the page carries"
 
 
+def describe_what_a_compute_has_cost() -> None:
+    async def it_is_its_machines_bill_up_to_now_while_it_is_live(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="running")
+        nodes = NodeStore()
+        node = await nodes.request(compute.id, compute.generation)
+        await NodeRow.update({
+            NodeRow.launched_at: now() - timedelta(minutes=90),
+            NodeRow.price_per_hour: 2.0,
+            NodeRow.billing_unit: "hour",
+        }).where(NodeRow.id == node.id).run()
+        await nodes.request(compute.id, compute.generation)
+
+        assert (await store.get(compute.id)).cost == pytest.approx(2 * 2.0)
+
+    async def a_deleted_one_charges_no_further_and_agrees_with_its_ending(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="closed")
+        nodes = NodeStore()
+        node = await nodes.request(compute.id, compute.generation)
+        launched = now() - timedelta(hours=4)
+        await NodeRow.update({
+            NodeRow.launched_at: launched,
+            NodeRow.terminated_at: launched + timedelta(minutes=90),
+            NodeRow.price_per_hour: 2.0,
+            NodeRow.billing_unit: "hour",
+        }).where(NodeRow.id == node.id).run()
+
+        await _delete(store, compute.id)
+
+        served = await store.get(compute.id)
+        assert served.ended is not None
+        assert served.cost == pytest.approx(2 * 2.0) == served.ended.cost
+
+
 def describe_a_compute_that_has_ended() -> None:
     async def a_live_one_has_no_ending(tmp_path: Path) -> None:
         store = await _store(tmp_path)

@@ -452,7 +452,9 @@ class ComputeStore:
         return row
 
     async def _served(self, row: ComputeRow) -> Compute:
-        return await _to_compute(row, await self._ended(row) if row.status_state == "deleted" else None)
+        ended = await self._ended(row) if row.status_state == "deleted" else None
+        cost = ended.cost if ended is not None else round(sum(accrued(node, now()) for node in await self._nodes.of(row.id)), 6)
+        return await _to_compute(row, cost, ended)
 
     async def _ended(self, row: ComputeRow) -> Ending:
         """What a deleted compute came to.
@@ -547,7 +549,7 @@ async def _projected(event: Event) -> dict[Column, Any]:
     return columns
 
 
-async def _to_compute(row: ComputeRow, ended: Ending | None) -> Compute:
+async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None) -> Compute:
     return Compute(
         id=row.id,
         name=row.name,
@@ -563,6 +565,7 @@ async def _to_compute(row: ComputeRow, ended: Ending | None) -> Compute:
         ),
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
         created_at=row.created_at,
+        cost=cost,
         offer=await unpacked(row.offer, Offer) if row.offer else None,
         ended=ended,
     )
