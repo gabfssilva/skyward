@@ -67,9 +67,9 @@ class Ran:
     err: str
 
 
-def cli(*tokens: str) -> Ran:
+def cli(*tokens: str, stdin: str | None = None) -> Ran:
     """Run the ``sky`` command in a process of its own, as a shell does."""
-    done = subprocess.run([str(SKY), *tokens], capture_output=True, text=True, timeout=180, check=False)
+    done = subprocess.run([str(SKY), *tokens], input=stdin, capture_output=True, text=True, timeout=180, check=False)
     return Ran(done.returncode, done.stdout, done.stderr)
 
 

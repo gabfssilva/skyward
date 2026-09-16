@@ -16,7 +16,7 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 | `sky sessions` | Every compute — `status` with no argument |
 | `sky stop REF` | Tear a compute down (alias of `compute delete`) |
 | `sky monitor REF [--mode rich\|log]` | Watch a live compute until interrupted |
-| `sky console REF [--node N] [--command CMD]` | Interactive shell on one machine |
+| `sky compute ssh REF [--node N] [--command CMD]` | Interactive shell on one machine, ready or still bootstrapping (`sky console` is the older name) |
 | `sky repl REF [--node N]` | Python REPL on the node's bootstrapped interpreter |
 
 ---

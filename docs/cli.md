@@ -219,13 +219,22 @@ sky stop research
 ## Interactive commands
 
 ```bash
-sky console research
-sky console research --node 0
-sky console research --node 0 --command "nvidia-smi"
+sky compute ssh research
+sky compute ssh research --node 0
+sky compute ssh research --node 0 --command "nvidia-smi"
 sky repl research
 ```
 
-`console` opens a shell on one node. `repl` opens the Python interpreter bootstrapped on that node.
+`ssh` opens a shell on one machine. No key is involved on this side: the SSH connection belongs to the daemon,
+which generated the compute's key and never hands it out, and what crosses is the terminal's bytes.
+`sky console` is the same command under its older top-level name.
+
+`--node` is a rank; without one it takes the lowest rank the daemon has a link to. A machine takes a session as
+soon as it answers SSH, which is the whole of its bootstrap before it is ready — so this is also how you watch
+one install its driver, or find out why it never finished. One that is still booting is waited for rather than
+refused.
+
+`repl` opens the Python interpreter bootstrapped on that machine.
 
 `sky monitor` attaches to a running compute and follows it until you interrupt:
 

@@ -75,6 +75,15 @@ def describe_looking_at_computes() -> None:
             assert "unknown provider" in ran.err
 
 
+def describe_asking_for_a_terminal() -> None:
+    def a_compute_this_daemon_is_not_holding_is_a_sentence(alone: str) -> None:
+        ran = cli("compute", "ssh", "cmp_nowhere", "--url", alone)
+
+        assert ran.code != 0
+        assert "Traceback" not in ran.err, "a session that cannot be opened is an answer, not a crash"
+        assert "compute_not_connected" in ran.err
+
+
 def describe_looking_at_offers() -> None:
     def describe_when_no_provider_has_been_registered() -> None:
         def there_are_no_offers_to_show(alone: str) -> None:

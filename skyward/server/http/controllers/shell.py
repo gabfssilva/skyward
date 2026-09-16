@@ -20,14 +20,17 @@ class ShellController(Controller):
         status_code=200,
         summary="The up half of an interactive session",
         description=(
-            "The caller's keystrokes into a node's terminal, as a streaming request body. **This request is the "
-            "dispatch**: it opens the pseudo-terminal — on `node` if given, else on the first ready node — and pumps "
-            "the body into it until the body ends.\n\n"
+            "The caller's keystrokes into a machine's terminal, as a streaming request body. **This request is the "
+            "dispatch**: it opens the pseudo-terminal — at `node` if given, else at the lowest rank this daemon holds "
+            "a link to — and pumps the body into it until the body ends.\n\n"
+            "The machine does not have to be ready. Every machine that has answered SSH takes a terminal, which is "
+            "how a bootstrap is watched while it is still happening; one that is still booting takes the session at "
+            "the moment it answers, so the request may wait before the first byte comes back.\n\n"
             "The body is the keyboard. It has no length and closes only when the session does.\n\n"
             "Paired with `GET .../down` by the `cid` the caller mints — the two are one session, and HTTP/1.1 will not "
             "carry both directions on a single request."
         ),
-        responses=failures(404, 422),
+        responses=failures(404, 409, 422),
     )
     async def up(
         self,
@@ -35,7 +38,7 @@ class ShellController(Controller):
         request: Request,
         shell: ports.Shell,
         cid: str = Parameter(query="cid", description="The session id, minted by the caller, shared with `down`."),
-        node: str | None = Parameter(query="node", default=None, description="The node to open the terminal on; omit for the first ready one."),
+        node: int | None = Parameter(query="node", default=None, description="The rank to open the terminal on; omit for the lowest one held."),
         command: str | None = Parameter(query="command", default=None, description="What to run; omit for the login shell."),
         term: str = Parameter(query="term", default="xterm-256color", description="The terminal type to claim."),
         columns: int = Parameter(query="columns", default=80, description="The terminal width."),
@@ -51,6 +54,9 @@ class ShellController(Controller):
             "What the terminal paints, as a raw byte stream — no framing, because a terminal has none, and the error "
             "stream is folded in because a terminal has one output. Waits for the matching `up` to open the session, "
             "then follows it until the shell exits.\n\n"
+            "The wait is before the answer, not inside it: a session that cannot be opened — no machine at that rank, "
+            "not this daemon's compute — is refused here with a status, rather than answered 200 and cut off part-way "
+            "through the body.\n\n"
             "Not resumable. A dropped stream is a dead session; open another."
         ),
         responses={
@@ -60,7 +66,7 @@ class ShellController(Controller):
                 description="Whatever the terminal paints, unframed, until the shell exits",
                 generate_examples=False,
             ),
-            **failures(404, 422),
+            **failures(404, 409, 422),
         },
     )
     async def down(
@@ -69,4 +75,4 @@ class ShellController(Controller):
         shell: ports.Shell,
         cid: str = Parameter(query="cid", description="The session id shared with `up`."),
     ) -> Stream:
-        return Stream(shell.down(cid), media_type=BYTES)
+        return Stream(await shell.down(cid), media_type=BYTES)

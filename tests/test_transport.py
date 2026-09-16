@@ -287,6 +287,7 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
         status=ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1),
         lease=Lease(),
         created_at=datetime.now(UTC),
+        cost=0.0,
     )
 
     def main(request: httpx.Request) -> httpx.Response:

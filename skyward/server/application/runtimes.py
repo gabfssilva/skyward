@@ -26,7 +26,7 @@ import casty
 from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.ports import Route, Target
 from skyward.server.application.source import Source, resolve
-from skyward.server.application.ssh import Channel, Result, SshUnavailableError
+from skyward.server.application.ssh import CHUNK, Channel, Result, SshUnavailableError
 from skyward.shared.errors import ComputeNotConnectedError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
@@ -218,6 +218,17 @@ class Runtime:
         """
         return tuple(node_id for node_id in self.ready if self.nodes[node_id].linked)
 
+    @property
+    def held(self) -> tuple[str, ...]:
+        """The machines this daemon has a channel to, lowest rank first.
+
+        Wider than :attr:`ready`, and deliberately so: the channel is dialled the
+        moment a machine has an address, which is the whole bootstrap before it is
+        ready — and those are the minutes somebody wants to be let into it, to watch
+        a driver install or find out why it never finished.
+        """
+        return tuple(node_id for node_id, node in sorted(self.nodes.items(), key=lambda entry: entry[1]._rank) if node.held)
+
     async def system(self, node_id: str | None = None) -> casty.Client:
         """The client, dialling every worker through its own tunnel.
 
@@ -348,30 +359,41 @@ class Runtime:
 
     async def open_shell(
         self,
-        node_id: str | None = None,
+        rank: int | None = None,
         command: str | None = None,
         term: str = "xterm-256color",
         size: tuple[int, int] = (80, 24),
     ) -> Channel:
-        """A pseudo-terminal on one named node, or on the first ready one.
+        """A pseudo-terminal on the machine at one rank, or on the lowest one held.
 
         Deliberately not round-robin, which is what a forward does: a forward is one
         connection among many to a service replicated across the compute, and a shell
         is a person. Somebody who opens a terminal, reads a file and opens another
-        expects the same machine both times, so the choice is either the node they
-        named or the lowest-numbered one ready — never the next in a rotation.
-        """
-        ready = self.ready
-        if not ready:
-            raise RuntimeError(f"compute {self.compute} has no ready node to reach")
+        expects the same machine both times, so the choice is either the rank they
+        named or the lowest one there is — never the next in a rotation.
 
-        match node_id:
+        Held rather than ready, because a terminal is largely how a bootstrap that is
+        going wrong gets watched: waiting for the worker would be waiting for the very
+        thing the person is trying to find out about. The channel does the waiting — a
+        machine still booting takes the session at the moment it answers.
+        """
+        held = self.held
+        if not held:
+            raise ComputeNotConnectedError(f"compute {self.compute} has no machine this daemon holds a link to", compute=self.compute)
+
+        seats = {self.nodes[node_id]._rank: node_id for node_id in held}
+        match rank:
             case None:
-                chosen = ready[0]
-            case named if named in ready:
-                chosen = named
+                chosen = held[0]
+            case named if named in seats:
+                chosen = seats[named]
             case named:
-                raise RuntimeError(f"node {named} is not ready on compute {self.compute}")
+                raise ComputeNotConnectedError(
+                    f"compute {self.compute} has no machine at rank {named} this daemon holds a link to — "
+                    f"it holds rank(s) {', '.join(str(seat) for seat in seats)}",
+                    compute=self.compute,
+                    rank=named,
+                )
 
         return await self.nodes[chosen]._ssh.open_shell(command, term, size)
 
@@ -488,6 +510,19 @@ class Runtimes:
     def of(self, compute: str) -> Runtime | None:
         return self._runtimes.get(compute)
 
+    def holding(self, compute: str) -> Runtime:
+        """The connections this daemon is holding for a compute, if it is holding any.
+
+        A compute is a row anybody can read and a set of SSH links exactly one
+        process holds. Asking a daemon that is not the one holding them is not a
+        malformed request and not a missing compute — it is the wrong daemon, and
+        the answer is worth saying rather than raising through as a 500.
+        """
+        runtime = self._runtimes.get(compute)
+        if runtime is None:
+            raise ComputeNotConnectedError(f"compute {compute} is not connected to this daemon", compute=compute)
+        return runtime
+
     def open(
         self,
         compute: str,
@@ -595,12 +630,6 @@ class Paired:
     def _slot(self, cid: str) -> asyncio.Future[Channel]:
         return self._channels.setdefault(cid, asyncio.get_running_loop().create_future())
 
-    def _runtime(self, compute_id: str) -> Runtime:
-        runtime = self._runtimes.of(compute_id)
-        if runtime is None:
-            raise RuntimeError(f"compute {compute_id} is not live on this daemon")
-        return runtime
-
     async def _pump(self, cid: str, opening: Callable[[], Awaitable[Channel]], chunks: AsyncIterator[bytes]) -> None:
         slot = self._slot(cid)
         try:
@@ -619,14 +648,27 @@ class Paired:
             writer.write_eof()
 
     async def down(self, cid: str) -> AsyncIterator[bytes]:
+        """The far end's bytes, once there is a far end.
+
+        A coroutine that hands back the stream, rather than a stream that opens the
+        channel as it is read: the waiting happens here, before a status line has
+        gone out, so a channel that cannot be opened is an answer the caller can read
+        rather than a response that stops mid-body. A refusal reached through a body
+        the caller was already reading is a protocol error on their end and a
+        sentence in the daemon's log, which is the wrong way round.
+        """
         try:
-            reader, writer = await self._slot(cid)
+            channel = await self._slot(cid)
         except Exception:
             self._channels.pop(cid, None)
             raise
+        return self._follow(cid, channel)
+
+    async def _follow(self, cid: str, channel: Channel) -> AsyncIterator[bytes]:
+        reader, writer = channel
         try:
             with suppress(OSError, asyncssh.Error):
-                while data := await reader.read(65536):
+                while data := await reader.read(CHUNK):
                     yield data
         finally:
             self._channels.pop(cid, None)
@@ -638,7 +680,7 @@ class Forward(Paired):
     """One local TCP connection carried to a node port."""
 
     async def up(self, compute_id: str, cid: str, remote_port: int, route: Route, chunks: AsyncIterator[bytes]) -> None:
-        await self._pump(cid, lambda: self._runtime(compute_id).open_channel(remote_port, route), chunks)
+        await self._pump(cid, lambda: self._runtimes.holding(compute_id).open_channel(remote_port, route), chunks)
 
 
 class Files:
@@ -657,32 +699,19 @@ class Files:
         self._runtimes = runtimes
 
     async def ls(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]:
-        return await self._live(compute_id).run(target, f"ls -la {shlex.quote(path)}")
+        return await self._runtimes.holding(compute_id).run(target, f"ls -la {shlex.quote(path)}")
 
     async def rm(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]:
-        return await self._live(compute_id).run(target, f"rm -rf {shlex.quote(path)}")
+        return await self._runtimes.holding(compute_id).run(target, f"rm -rf {shlex.quote(path)}")
 
     async def put(self, compute_id: str, target: Target, path: str, content: bytes) -> tuple[tuple[str, str | None], ...]:
-        return await self._live(compute_id).put(target, path, content)
+        return await self._runtimes.holding(compute_id).put(target, path, content)
 
     def get(self, compute_id: str, rank: int, path: str) -> AsyncIterator[bytes]:
-        return self._live(compute_id).get(rank, path)
+        return self._runtimes.holding(compute_id).get(rank, path)
 
     async def run(self, compute_id: str, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
-        return await self._live(compute_id).run(target, command)
-
-    def _live(self, compute_id: str) -> Runtime:
-        """The connections this daemon is holding for a compute, if it is holding any.
-
-        A compute is a row anybody can read and a set of SSH links exactly one
-        process holds. Asking a daemon that is not the one holding them is not a
-        malformed request and not a missing compute — it is the wrong daemon, and
-        the answer is worth saying rather than raising through as a 500.
-        """
-        runtime = self._runtimes.of(compute_id)
-        if runtime is None:
-            raise ComputeNotConnectedError(f"compute {compute_id} is not connected to this daemon", compute=compute_id)
-        return runtime
+        return await self._runtimes.holding(compute_id).run(target, command)
 
 
 class Terminal(Paired):
@@ -697,10 +726,10 @@ class Terminal(Paired):
         self,
         compute_id: str,
         cid: str,
-        node_id: str | None,
+        rank: int | None,
         command: str | None,
         term: str,
         size: tuple[int, int],
         chunks: AsyncIterator[bytes],
     ) -> None:
-        await self._pump(cid, lambda: self._runtime(compute_id).open_shell(node_id, command, term, size), chunks)
+        await self._pump(cid, lambda: self._runtimes.holding(compute_id).open_shell(rank, command, term, size), chunks)

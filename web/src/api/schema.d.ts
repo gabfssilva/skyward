@@ -197,6 +197,8 @@ export interface paths {
          * The down half of a forwarded connection
          * @description The node's bytes back to the caller, as a raw byte stream — no framing, because a byte proxy has no frames. Waits for the matching `up` to open the channel, then follows it until the node closes its side.
          *
+         *     The wait is before the answer, not inside it: a channel that cannot be opened is refused here with a status, rather than answered 200 and cut off part-way through the body.
+         *
          *     Not resumable. A dropped stream is a dead connection; open another.
          */
         get: operations["V1ComputesComputeIdForwardDownDown"];
@@ -407,6 +409,8 @@ export interface paths {
          * The down half of an interactive session
          * @description What the terminal paints, as a raw byte stream — no framing, because a terminal has none, and the error stream is folded in because a terminal has one output. Waits for the matching `up` to open the session, then follows it until the shell exits.
          *
+         *     The wait is before the answer, not inside it: a session that cannot be opened — no machine at that rank, not this daemon's compute — is refused here with a status, rather than answered 200 and cut off part-way through the body.
+         *
          *     Not resumable. A dropped stream is a dead session; open another.
          */
         get: operations["V1ComputesComputeIdShellDownDown"];
@@ -429,7 +433,9 @@ export interface paths {
         put?: never;
         /**
          * The up half of an interactive session
-         * @description The caller's keystrokes into a node's terminal, as a streaming request body. **This request is the dispatch**: it opens the pseudo-terminal — on `node` if given, else on the first ready node — and pumps the body into it until the body ends.
+         * @description The caller's keystrokes into a machine's terminal, as a streaming request body. **This request is the dispatch**: it opens the pseudo-terminal — at `node` if given, else at the lowest rank this daemon holds a link to — and pumps the body into it until the body ends.
+         *
+         *     The machine does not have to be ready. Every machine that has answered SSH takes a terminal, which is how a bootstrap is watched while it is still happening; one that is still booting takes the session at the moment it answers, so the request may wait before the first byte comes back.
          *
          *     The body is the keyboard. It has no length and closes only when the session does.
          *
@@ -889,6 +895,7 @@ export interface components {
          *     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
          */
         Compute: {
+            cost: number;
             /** Format: date-time */
             created_at: string;
             ended?: components["schemas"]["Ending"] | null;
@@ -2897,6 +2904,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
             422: {
                 headers: {
@@ -3556,6 +3572,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin` */
             422: {
                 headers: {
@@ -3572,8 +3597,8 @@ export interface operations {
             query: {
                 /** @description The session id, minted by the caller, shared with `down`. */
                 cid: string;
-                /** @description The node to open the terminal on; omit for the first ready one. */
-                node?: string | null;
+                /** @description The rank to open the terminal on; omit for the lowest one held. */
+                node?: number | null;
                 /** @description What to run; omit for the login shell. */
                 command?: string | null;
                 /** @description The terminal type to claim. */
@@ -3615,6 +3640,15 @@ export interface operations {
             };
             /** @description No such resource — `not_found` */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -36,6 +36,9 @@
       "Compute": {
         "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.",
         "properties": {
+          "cost": {
+            "type": "number"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -90,6 +93,7 @@
           }
         },
         "required": [
+          "cost",
           "created_at",
           "generation",
           "id",
@@ -4575,7 +4579,7 @@
     "/v1/computes/{compute_id}/forward/down": {
       "get": {
         "deprecated": false,
-        "description": "The node's bytes back to the caller, as a raw byte stream \u2014 no framing, because a byte proxy has no frames. Waits for the matching `up` to open the channel, then follows it until the node closes its side.\n\nNot resumable. A dropped stream is a dead connection; open another.",
+        "description": "The node's bytes back to the caller, as a raw byte stream \u2014 no framing, because a byte proxy has no frames. Waits for the matching `up` to open the channel, then follows it until the node closes its side.\n\nThe wait is before the answer, not inside it: a channel that cannot be opened is refused here with a status, rather than answered 200 and cut off part-way through the body.\n\nNot resumable. A dropped stream is a dead connection; open another.",
         "operationId": "V1ComputesComputeIdForwardDownDown",
         "parameters": [
           {
@@ -4659,6 +4663,16 @@
               }
             },
             "description": "No such resource \u2014 `not_found`"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5969,7 +5983,7 @@
     "/v1/computes/{compute_id}/shell/down": {
       "get": {
         "deprecated": false,
-        "description": "What the terminal paints, as a raw byte stream \u2014 no framing, because a terminal has none, and the error stream is folded in because a terminal has one output. Waits for the matching `up` to open the session, then follows it until the shell exits.\n\nNot resumable. A dropped stream is a dead session; open another.",
+        "description": "What the terminal paints, as a raw byte stream \u2014 no framing, because a terminal has none, and the error stream is folded in because a terminal has one output. Waits for the matching `up` to open the session, then follows it until the shell exits.\n\nThe wait is before the answer, not inside it: a session that cannot be opened \u2014 no machine at that rank, not this daemon's compute \u2014 is refused here with a status, rather than answered 200 and cut off part-way through the body.\n\nNot resumable. A dropped stream is a dead session; open another.",
         "operationId": "V1ComputesComputeIdShellDownDown",
         "parameters": [
           {
@@ -6054,6 +6068,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -6074,7 +6098,7 @@
     "/v1/computes/{compute_id}/shell/up": {
       "post": {
         "deprecated": false,
-        "description": "The caller's keystrokes into a node's terminal, as a streaming request body. **This request is the dispatch**: it opens the pseudo-terminal \u2014 on `node` if given, else on the first ready node \u2014 and pumps the body into it until the body ends.\n\nThe body is the keyboard. It has no length and closes only when the session does.\n\nPaired with `GET .../down` by the `cid` the caller mints \u2014 the two are one session, and HTTP/1.1 will not carry both directions on a single request.",
+        "description": "The caller's keystrokes into a machine's terminal, as a streaming request body. **This request is the dispatch**: it opens the pseudo-terminal \u2014 at `node` if given, else at the lowest rank this daemon holds a link to \u2014 and pumps the body into it until the body ends.\n\nThe machine does not have to be ready. Every machine that has answered SSH takes a terminal, which is how a bootstrap is watched while it is still happening; one that is still booting takes the session at the moment it answers, so the request may wait before the first byte comes back.\n\nThe body is the keyboard. It has no length and closes only when the session does.\n\nPaired with `GET .../down` by the `cid` the caller mints \u2014 the two are one session, and HTTP/1.1 will not carry both directions on a single request.",
         "operationId": "V1ComputesComputeIdShellUpUp",
         "parameters": [
           {
@@ -6103,15 +6127,15 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
-            "description": "The node to open the terminal on; omit for the first ready one.",
+            "description": "The rank to open the terminal on; omit for the lowest one held.",
             "in": "query",
             "name": "node",
             "required": false,
             "schema": {
-              "description": "The node to open the terminal on; omit for the first ready one.",
+              "description": "The rank to open the terminal on; omit for the lowest one held.",
               "oneOf": [
                 {
-                  "type": "string"
+                  "type": "integer"
                 },
                 {
                   "type": "null"
@@ -6234,6 +6258,16 @@
               }
             },
             "description": "No such resource \u2014 `not_found`"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {

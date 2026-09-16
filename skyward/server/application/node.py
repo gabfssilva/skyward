@@ -146,6 +146,16 @@ class Node:
         return self._ssh.connected
 
     @property
+    def held(self) -> bool:
+        """Whether this daemon still has a channel to the machine.
+
+        Up, healing, or dialling one that has not finished booting — all of them a
+        machine somebody can be let into. False once the channel was let go or gave
+        up, which is the one case where sending anybody here is sending them nowhere.
+        """
+        return not self._ssh.closed
+
+    @property
     def peer(self) -> str:
         """Where the other machines reach this one."""
         return self._machine.private_host or self._machine.host or ""

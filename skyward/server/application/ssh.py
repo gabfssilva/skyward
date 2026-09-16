@@ -162,6 +162,17 @@ class SshChannel:
         """
         return self._conn is not None and self._up.is_set() and self._failure is None and not self._closed
 
+    @property
+    def closed(self) -> bool:
+        """Whether the channel is finished, as opposed to down for a moment.
+
+        Let go of on purpose, or out of reconnects. The difference from
+        :attr:`connected` is the whole of a machine that is still booting: that
+        channel is not up and is not finished either, and whoever waits on it is
+        waiting for something that is coming.
+        """
+        return self._closed or self._failure is not None
+
     async def ready(self) -> None:
         """Until the link is up, which it may already be.
 

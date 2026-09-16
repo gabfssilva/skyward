@@ -344,8 +344,12 @@ class Forwarder(Protocol):
         """Open a channel to a ready node and pump the caller's bytes into it."""
         ...
 
-    def down(self, cid: str) -> AsyncIterator[bytes]:
-        """The node's bytes back to the caller, for the ``up`` that opened this id."""
+    async def down(self, cid: str) -> AsyncIterator[bytes]:
+        """The node's bytes back to the caller, for the ``up`` that opened this id.
+
+        Waits for the channel and then hands back the stream, so a channel that
+        cannot be opened is raised here rather than part-way through a body.
+        """
         ...
 
 
@@ -386,26 +390,34 @@ class Shell(Protocol):
 
     The transport a :class:`Forwarder` uses, carrying a pseudo-terminal instead of a
     socket: keystrokes up, everything the terminal paints down, tied by the id the
-    caller mints. Unlike a forward it takes a node, because a shell is somebody
+    caller mints. Unlike a forward it takes a rank, because a shell is somebody
     sitting at one machine — picking a different one per connection would be the
     wrong answer to every question they ask it.
+
+    The machine does not have to be ready. A terminal is how a bootstrap is watched
+    while it happens, so it is offered on every machine the daemon holds a link to,
+    which is every machine that has answered SSH.
     """
 
     async def up(
         self,
         compute_id: str,
         cid: str,
-        node_id: str | None,
+        rank: int | None,
         command: str | None,
         term: str,
         size: tuple[int, int],
         chunks: AsyncIterator[bytes],
     ) -> None:
-        """Open a terminal on a node and pump the caller's keystrokes into it."""
+        """Open a terminal on the machine at ``rank`` and pump the caller's keystrokes into it."""
         ...
 
-    def down(self, cid: str) -> AsyncIterator[bytes]:
-        """What the terminal paints, for the ``up`` that opened this id."""
+    async def down(self, cid: str) -> AsyncIterator[bytes]:
+        """What the terminal paints, for the ``up`` that opened this id.
+
+        Waits for the terminal and then hands back the stream, so a refusal is an
+        answer with a status on it rather than a body that stops mid-chunk.
+        """
         ...
 
 

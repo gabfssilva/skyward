@@ -48,6 +48,8 @@ class ForwardController(Controller):
         description=(
             "The node's bytes back to the caller, as a raw byte stream — no framing, because a byte proxy has no frames. "
             "Waits for the matching `up` to open the channel, then follows it until the node closes its side.\n\n"
+            "The wait is before the answer, not inside it: a channel that cannot be opened is refused here with a "
+            "status, rather than answered 200 and cut off part-way through the body.\n\n"
             "Not resumable. A dropped stream is a dead connection; open another."
         ),
         responses={
@@ -57,7 +59,7 @@ class ForwardController(Controller):
                 description="Whatever the node sends back, unframed, until it closes its side",
                 generate_examples=False,
             ),
-            **failures(404, 422),
+            **failures(404, 409, 422),
         },
     )
     async def down(
@@ -66,4 +68,4 @@ class ForwardController(Controller):
         forwarder: ports.Forwarder,
         cid: str = Parameter(query="cid", description="The connection id shared with `up`."),
     ) -> Stream:
-        return Stream(forwarder.down(cid), media_type=BYTES)
+        return Stream(await forwarder.down(cid), media_type=BYTES)

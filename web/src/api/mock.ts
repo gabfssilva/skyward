@@ -287,6 +287,9 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
 const fleet = (computeId: string, count: number, o: FleetOptions, quirks: Record<number, Quirk> = {}): Node[] =>
   Array.from({ length: count }, (_, rank) => mkNode(computeId, rank, o, quirks[rank] ?? {}))
 
+/** What a compute's machines cost per hour together, which is what its spend is derived from here as on the daemon. */
+const rateOf = (computeId: string): number => (nodes[computeId] ?? []).reduce((total, node) => total + (node.price_per_hour ?? 0), 0)
+
 const mkCompute = (
   id: string,
   name: string,
@@ -299,6 +302,7 @@ const mkCompute = (
   leaseIn: number,
   ended: Ending | null = null,
 ): Compute => ({
+  cost: ended ? ended.cost : (rateOf(id) * createdAgo) / 3.6e6,
   created_at: iso(now() - createdAgo),
   ended,
   generation,
@@ -929,9 +933,8 @@ function tick(): void {
 
   if (beat % 3 === 1)
     for (const c of computes) {
-      const rate = (nodes[c.id] ?? []).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
       const hours = (now() - Date.parse(c.created_at)) / 3.6e6
-      emit('compute.cost', { type: 'compute.cost', compute: c.id, cost: rate * hours, nodes: ready(c.id), at: iso(now()) })
+      emit('compute.cost', { type: 'compute.cost', compute: c.id, cost: rateOf(c.id) * hours, nodes: ready(c.id), at: iso(now()) })
     }
 
   if (beat % 9 === 0) {

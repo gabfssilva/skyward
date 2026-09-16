@@ -292,20 +292,24 @@ class Client:
         self,
         compute: str,
         cid: str,
-        node: str | None,
+        rank: int | None,
         command: str | None,
         term: str,
         size: tuple[int, int],
         chunks: AsyncIterator[bytes],
     ) -> None:
-        """Send one session's keystrokes up to a node's terminal, as a streaming body.
+        """Send one session's keystrokes up to a machine's terminal, as a streaming body.
 
         :meth:`forward_up` with a terminal on the far end: the request stands open for
         the life of the session, and the daemon opens the pseudo-terminal on the id
         this shares with :meth:`shell_down`.
+
+        The machine at ``rank`` need not be ready — a terminal is offered on every
+        machine the daemon has a link to — so one still booting leaves this waiting
+        until it answers.
         """
         columns, rows = size
-        node_at = {"node": node} if node else {}
+        node_at = {"node": str(rank)} if rank is not None else {}
         running = {"command": command} if command else {}
         response = await self._http.request(
             "POST",
