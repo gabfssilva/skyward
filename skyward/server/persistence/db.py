@@ -48,6 +48,12 @@ POOL_SIZE = 8
 """Connections kept, total. WAL admits one writer at a time, so more connections
 buy read concurrency only, and eight of those outrun the loop that feeds them."""
 
+WRITERS = 4
+"""Transactions holding a connection at once. They all write, and WAL lets one of
+them do it at a time; past a few, a transaction with a connection of its own is a
+thread and up to three descriptors spent waiting for that lock. The rest wait for
+a slot here instead, holding nothing."""
+
 MENDS = (
     "UPDATE computes SET spec = json_remove(json_set(spec, '$.nodes.initial', "
     "json_extract(spec, '$.nodes.desired')), '$.nodes.desired') "
@@ -185,7 +191,14 @@ class PooledSQLiteEngine(SQLiteEngine):
     Transactions still check a dedicated connection out of :meth:`get_connection`
     and close it, because a transaction's connection carries state the pool must
     never see; it is opened with the pool's pragmas, and the statements inside
-    run without piccolo's ``PRAGMA foreign_keys`` in front of each.
+    run without piccolo's ``PRAGMA foreign_keys`` in front of each. They are
+    bounded all the same, by ``WRITERS``: a burst of uploads is a burst of
+    transactions, and unbounded it was the same walk through the limit.
+
+    A connection that opened and then failed its pragmas is stopped on the spot.
+    Out of descriptors, that is the usual way to fail — the database file opens
+    and its WAL does not — and a connection left behind keeps its thread and its
+    descriptor for good, so a burst that ran out once never got them back.
     """
 
     def __init__(self, path: str, **connection_kwargs: Any) -> None:
@@ -193,6 +206,14 @@ class PooledSQLiteEngine(SQLiteEngine):
         self._pool: asyncio.Queue[aiosqlite.Connection | None] = asyncio.Queue()
         for _ in range(POOL_SIZE):
             self._pool.put_nowait(None)
+        self.writers = asyncio.Semaphore(WRITERS)
+
+    def transaction(
+        self,
+        transaction_type: TransactionType = TransactionType.deferred,
+        allow_nested: bool = True,
+    ) -> SQLiteTransaction:
+        return _Transaction(self, transaction_type, allow_nested)
 
     def dispose(self) -> None:
         """Stop every idle connection, without a loop.
@@ -213,14 +234,21 @@ class PooledSQLiteEngine(SQLiteEngine):
             return connection
 
         try:
-            fresh = aiosqlite.connect(**self.connection_kwargs)
-            fresh._thread.daemon = True  # a pooled connection lives until exit, and must not hold it up
-            await fresh
+            return await self._open()
+        except BaseException:
+            self._pool.put_nowait(None)  # the slot is the pool's; an open that failed does not keep it
+            raise
+
+    async def _open(self) -> aiosqlite.Connection:
+        fresh = aiosqlite.connect(**self.connection_kwargs)
+        fresh._thread.daemon = True  # a pooled connection lives until exit, and must not hold it up
+        await fresh
+        try:
             fresh.row_factory = dict_factory  # pyright: ignore[reportAttributeAccessIssue]
             await fresh.execute("PRAGMA foreign_keys = 1")
             await fresh.execute("PRAGMA synchronous = NORMAL")
         except BaseException:
-            self._pool.put_nowait(None)  # the slot is the pool's; an open that failed does not keep it
+            fresh.stop()
             raise
         return fresh
 
@@ -246,9 +274,7 @@ class PooledSQLiteEngine(SQLiteEngine):
 
     async def get_connection(self) -> aiosqlite.Connection:
         """A transaction's connection, set up like a pooled one."""
-        connection = await super().get_connection()
-        await connection.execute("PRAGMA synchronous = NORMAL")
-        return connection
+        return await self._open()
 
     async def _run_in_existing_connection(
         self,
@@ -265,6 +291,59 @@ class PooledSQLiteEngine(SQLiteEngine):
         """
         async with connection.execute(query, args or []) as cursor:
             return await cursor.fetchall()
+
+
+class _Transaction(SQLiteTransaction):
+    """Piccolo's transaction, holding one of the engine's writer slots for as long as its connection.
+
+    Piccolo's own gives nothing back when it fails at either end: a ``BEGIN`` that
+    raises leaves the connection open, and a ``COMMIT`` that raises leaves it open
+    and the transaction still current for its caller. Here both ends release the
+    connection and the slot whatever happened.
+    """
+
+    def __init__(self, engine: PooledSQLiteEngine, transaction_type: TransactionType, allow_nested: bool) -> None:
+        super().__init__(engine, transaction_type, allow_nested)
+        self._writers = engine.writers
+
+    async def __aenter__(self) -> SQLiteTransaction:
+        if self._parent is not None:
+            return self._parent
+
+        await self._writers.acquire()
+        try:
+            self.connection = await self.get_connection()
+        except BaseException:
+            self._writers.release()
+            raise
+        try:
+            await self.begin()
+        except BaseException:
+            await self._close()
+            raise
+        self.context = self.engine.current_transaction.set(self)
+        return self
+
+    async def __aexit__(self, exception_type: type[BaseException] | None, exception: BaseException | None, traceback: object) -> bool:
+        if self._parent is not None:
+            return exception is None
+
+        try:
+            if exception is not None:
+                if not self._rolled_back:
+                    await self.rollback()
+            elif not self._committed and not self._rolled_back:
+                await self.commit()
+        finally:
+            self.engine.current_transaction.reset(self.context)
+            await self._close()
+        return exception is None
+
+    async def _close(self) -> None:
+        try:
+            await self.connection.close()
+        finally:
+            self._writers.release()
 
 
 _current: PooledSQLiteEngine | None = None

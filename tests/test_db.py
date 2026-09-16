@@ -1,9 +1,13 @@
 """The store's connection pool, under the failures it exists to absorb."""
 
 import asyncio
+import hashlib
+import os
+import resource
 import sqlite3
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from skyward.server.persistence import db
@@ -45,6 +49,63 @@ def describe_the_connection_pool() -> None:
 
         async with asyncio.timeout(2):
             assert await ComputeRow.count() == 0
+
+
+def describe_many_writes_at_once() -> None:
+    async def a_burst_of_uploads_fits_in_a_few_dozen_descriptors(tmp_path: Path) -> None:
+        """What a daemon at macOS's default of 256 met: a transaction per upload, each on a connection of its own."""
+        await connect(tmp_path / "skyward.sqlite")
+        blobs = BlobStore()
+        payloads = [os.urandom(1024) for _ in range(100)]
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+        resource.setrlimit(resource.RLIMIT_NOFILE, (_descriptors() + 64, hard))
+        try:
+            created = await asyncio.gather(*(blobs.put(hashlib.sha256(payload).hexdigest(), payload) for payload in payloads))
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+        assert all(created)
+
+    @pytest.mark.parametrize("way", ["transaction", "statement"])
+    async def a_connection_whose_setup_fails_is_not_left_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, way: str) -> None:
+        """Out of descriptors, the open succeeds and a pragma after it does not — and a connection nobody closes keeps its own forever."""
+        await connect(tmp_path / "skyward.sqlite")
+        engine = db._current
+        assert engine is not None
+        engine.dispose()
+        for _ in range(POOL_SIZE):
+            engine._pool.put_nowait(None)
+        opened: list[aiosqlite.Connection] = []
+        connecting = aiosqlite.connect
+        executing = aiosqlite.Connection.execute
+
+        def recording(*args: object, **kwargs: object) -> aiosqlite.Connection:
+            opened.append(connection := connecting(*args, **kwargs))
+            return connection
+
+        def refusing(self: aiosqlite.Connection, sql: str, parameters: object = None) -> object:
+            if sql == "PRAGMA synchronous = NORMAL":
+                raise sqlite3.OperationalError("unable to open database file")
+            return executing(self, sql, parameters)
+
+        monkeypatch.setattr(aiosqlite, "connect", recording)
+        monkeypatch.setattr(aiosqlite.Connection, "execute", refusing)
+        with pytest.raises(sqlite3.OperationalError):
+            if way == "transaction":
+                async with db.transaction():
+                    pass
+            else:
+                await ComputeRow.count()
+
+        assert opened, "the failure came after a connection was opened, which is the case that leaks"
+        async with asyncio.timeout(2):
+            while any(connection._thread.is_alive() for connection in opened):
+                await asyncio.sleep(0.01)
+
+
+def _descriptors() -> int:
+    return len(os.listdir("/dev/fd"))
 
 
 def describe_integer_columns() -> None:
