@@ -51,11 +51,11 @@ export function Scale({ computeId }: { computeId: string }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="field">
               <label htmlFor="sc-initial">Nodes</label>
-              <input id="sc-initial" name="initial" type="number" min={1} defaultValue={targetOf(compute)} disabled={frozen} />
+              <input id="sc-initial" name="initial" type="number" min={0} defaultValue={targetOf(compute)} disabled={frozen} />
             </div>
             <div className="field">
               <label htmlFor="sc-min">Floor</label>
-              <input id="sc-min" name="min" type="number" min={1} defaultValue={compute.spec.nodes.min ?? compute.spec.nodes.initial} disabled={frozen} />
+              <input id="sc-min" name="min" type="number" min={0} defaultValue={compute.spec.nodes.min ?? compute.spec.nodes.initial} disabled={frozen} />
             </div>
           </div>
           <div className="sub">A resize opens generation {compute.generation + 1}; nodes already ready are kept.</div>

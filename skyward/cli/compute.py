@@ -425,12 +425,12 @@ def _nodes(value: str) -> NodeBounds:
     ``max``, and an ``initial`` moved on its own would be a write that changes nothing.
     """
     match value.split(":"):
-        case [count] if count.isdigit() and int(count) > 0:
+        case [count] if count.isdigit():
             return bounds(int(count))
-        case [minimum, maximum] if minimum.isdigit() and maximum.isdigit() and 0 < int(minimum) <= int(maximum):
+        case [minimum, maximum] if minimum.isdigit() and maximum.isdigit() and int(minimum) <= int(maximum):
             return bounds((int(minimum), int(maximum)))
         case _:
-            raise SystemExit(f"--nodes takes N, or MIN:MAX with 1 <= MIN <= MAX, not {value!r}")
+            raise SystemExit(f"--nodes takes N, or MIN:MAX with MIN <= MAX, not {value!r}")
 
 
 async def _conditional(client: Client, ref: str, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> Compute:

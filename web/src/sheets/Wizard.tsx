@@ -421,9 +421,9 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
         <div>
           <div className="cap">How many nodes</div>
           <div style={TRIO}>
-            <Num id="wiz-min" label="Floor" placeholder={String(w.initial)} optional value={w.min} onChange={(min) => patch({ min })} />
+            <Num id="wiz-min" label="Floor" min={0} placeholder={String(w.initial)} optional value={w.min} onChange={(min) => patch({ min })} />
             <Num id="wiz-max" label="Ceiling" placeholder="none" optional value={w.max} onChange={(max) => patch({ max })} />
-            <Num id="wiz-initial" label="Start at" value={w.initial} onChange={(initial) => patch({ initial })} />
+            <Num id="wiz-initial" label="Start at" min={0} value={w.initial} onChange={(initial) => patch({ initial })} />
           </div>
         </div>
       </div>

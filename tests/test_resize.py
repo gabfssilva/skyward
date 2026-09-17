@@ -67,7 +67,7 @@ def describe_a_compute_running_a_collective() -> None:
 
 
 def describe_spelling_a_size_on_the_command_line() -> None:
-    @pytest.mark.parametrize("nodes", ["8:2", "0", "banana", "2:", "2:8:16"])
+    @pytest.mark.parametrize("nodes", ["8:2", "-1", "banana", "2:", "2:8:16"])
     def it_is_refused_before_a_daemon_is_opened_at_all(nodes: str) -> None:
         ran = cli("compute", "scale", "absent", "--nodes", nodes)
 
@@ -75,8 +75,9 @@ def describe_spelling_a_size_on_the_command_line() -> None:
         assert "--nodes takes" in ran.err
         assert "Traceback" not in ran.err, "a refusal is an answer, not a crash"
 
-    def it_reaches_the_daemon_once_the_size_makes_sense(alone: str) -> None:
-        ran = cli("compute", "scale", "absent", "--nodes", "2:8", "--url", alone)
+    @pytest.mark.parametrize("nodes", ["2:8", "0", "0:4"])
+    def it_reaches_the_daemon_once_the_size_makes_sense(alone: str, nodes: str) -> None:
+        ran = cli("compute", "scale", "absent", "--nodes", nodes, "--url", alone)
 
         assert ran.code != 0
         assert "not_found" in ran.err, "the size parsed, and the compute is what was missing"
