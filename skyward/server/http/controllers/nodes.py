@@ -1,45 +1,54 @@
 from __future__ import annotations
 
 from litestar import Controller, Response, delete, get
+from litestar.di import Provide
 from litestar.params import Parameter
 
+from skyward.api import v1
 from skyward.server.application import ports
+from skyward.server.application.reading import Block, Reader
+from skyward.server.http import representation
 from skyward.server.http.exceptions import failures
-from skyward.shared.schemas import Node, Page
+from skyward.server.http.include import node_blocks
+
+NODE = "The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did."
 
 
 class NodeController(Controller):
     path = "/computes/{compute:str}/nodes"
     tags = ["nodes"]
+    dependencies = {"blocks": Provide(node_blocks)}
 
     @get(
         summary="List a compute's nodes",
         description=(
-            "Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until "
-            "the provider confirms termination — that is what stops an instance from going missing with nobody knowing."
+            "The node holding each rank, by rank — what a compute carries as `nodes`. `include=replaced` adds the ones "
+            "that held a rank before: a node that died stays until the provider confirms the machine is gone, which is "
+            "what stops an instance from going missing with nobody knowing. `include` takes the blocks a compute's "
+            "`nodes.` blocks are, without the prefix."
         ),
         responses=failures(404),
     )
-    async def list(
-        self,
-        compute_id: str,
-        nodes: ports.Nodes,
-        include_terminal: bool = True,
-        generation: int | None = None,
-    ) -> Page[Node]:
-        return await nodes.list(compute_id, include_terminal, generation)
+    async def list(self, compute_id: str, reader: Reader, blocks: frozenset[Block]) -> v1.Page[v1.NodeResource]:
+        return v1.Page(items=tuple(representation.node(each) for each in await reader.nodes(compute_id, blocks)), next_cursor=None, total=None)
 
     @get(
-        "/{node_id:str}",
+        "/{node:str}",
         summary="Read a node",
-        description="One machine as the control plane knows it, including the `provider_binding` it was launched under.",
+        description="One machine as the control plane knows it, reached by rank or by id.",
         responses=failures(404),
     )
-    async def read(self, compute_id: str, node_id: str, nodes: ports.Nodes) -> Node:
-        return await nodes.get(compute_id, node_id)
+    async def read(
+        self,
+        compute_id: str,
+        reader: Reader,
+        blocks: frozenset[Block],
+        node: str = Parameter(description=NODE),
+    ) -> v1.NodeResource:
+        return representation.node(await reader.node(compute_id, node, blocks))
 
     @delete(
-        "/{node_id:str}",
+        "/{node:str}",
         status_code=202,
         summary="Drain and replace a node",
         description=(
@@ -54,9 +63,11 @@ class NodeController(Controller):
     async def drain(
         self,
         compute_id: str,
-        node_id: str,
         nodes: ports.Nodes,
+        reader: Reader,
+        node: str = Parameter(description=NODE),
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Node]:
-        node = await nodes.drain(compute_id, node_id, idempotency_key)
-        return Response(node, status_code=202)
+    ) -> Response[v1.NodeResource]:
+        condemned = (await reader.node(compute_id, node)).node
+        await nodes.drain(compute_id, condemned.id, idempotency_key)
+        return Response(representation.node(await reader.node(compute_id, condemned.id)), status_code=202)

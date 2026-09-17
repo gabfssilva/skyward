@@ -89,7 +89,9 @@ export interface paths {
         };
         /**
          * Read a compute
-         * @description Accepts an id or a name. The response always carries both.
+         * @description Accepts an id or a name. The response always carries both, and the node holding each rank.
+         *
+         *     `include` adds what is not carried by default, comma-separated: `nodes.metrics` (each node's newest reading of each metric), `nodes.phases` (where each step of its bootstrap got to), `nodes.running` (what each node is holding, and whose code), `nodes.tail` (the last lines each node printed), `nodes.replaced` (the nodes that held a rank before), `tasks.latest` (the last task to succeed and the last to fail), `tasks.pace` (how much finished in the last hour) and `utilization` (the fleet's average GPU and CPU over the last minutes). A block that was not asked for is absent; one that was asked for and has nothing is empty.
          */
         get: operations["V1ComputesRead"];
         put?: never;
@@ -361,7 +363,7 @@ export interface paths {
         };
         /**
          * List a compute's nodes
-         * @description Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until the provider confirms termination — that is what stops an instance from going missing with nobody knowing.
+         * @description The node holding each rank, by rank — what a compute carries as `nodes`. `include=replaced` adds the ones that held a rank before: a node that died stays until the provider confirms the machine is gone, which is what stops an instance from going missing with nobody knowing. `include` takes the blocks a compute's `nodes.` blocks are, without the prefix.
          */
         get: operations["V1ComputesNodesList"];
         put?: never;
@@ -372,7 +374,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute}/nodes/{node_id}": {
+    "/v1/computes/{compute}/nodes/{node}": {
         parameters: {
             query?: never;
             header?: never;
@@ -381,9 +383,9 @@ export interface paths {
         };
         /**
          * Read a node
-         * @description One machine as the control plane knows it, including the `provider_binding` it was launched under.
+         * @description One machine as the control plane knows it, reached by rank or by id.
          */
-        get: operations["V1ComputesNodesNodeIdRead"];
+        get: operations["V1ComputesNodesRead"];
         put?: never;
         post?: never;
         /**
@@ -392,7 +394,7 @@ export interface paths {
          *
          *     If the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with a new `id`. The old node's tombstone remains.
          */
-        delete: operations["V1ComputesNodesNodeIdDrain"];
+        delete: operations["V1ComputesNodesDrain"];
         options?: never;
         head?: never;
         patch?: never;
@@ -911,32 +913,28 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** Accelerator */
-        Accelerator: {
-            /** @default  */
+        /**
+         * AcceleratorResource
+         * @description One accelerator the catalog knows, and the card behind the name.
+         */
+        AcceleratorResource: {
             architecture: string;
-            /** @default  */
             cuda_max: string;
-            /** @default  */
             cuda_min: string;
-            /** @default  */
             manufacturer: string;
             name: string;
             vram: number;
         };
         /**
+         * AttachExcerptResource
+         * @description The text of a function already registered as a pickle, as the console shows it.
+         */
+        AttachExcerptResource: {
+            text: string;
+        };
+        /**
          * Call
-         * @description A call's arguments written as JSON, for a caller that cannot pickle them.
-         *
-         *     A worker takes a pickle, and a browser has no Python to make one with — so the
-         *     values are handed over as themselves and encoded at the edge. What fits is
-         *     what JSON has: numbers, strings, booleans, null, lists and objects. An
-         *     argument that is a dataframe or a model is an argument that has to be built
-         *     where Python is.
-         *
-         *     Both fields are untyped past their own shape, because what is inside them
-         *     belongs to the callee: the only thing true of every function's arguments is
-         *     that they are values.
+         * @description A call's arguments as JSON, for a caller that cannot pickle them.
          */
         Call: {
             args?: unknown[] | null;
@@ -944,35 +942,25 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /**
-         * Compute
-         * @description A set of machines held under one intention, as the API serves it.
-         *
-         *     ``spec`` is what was asked for and ``status`` is what was observed, written by
-         *     different actors and kept in one resource so that reading both is one call.
-         *     ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
-         *     ``generation`` counts definitions, not writes. ``offer`` is what the spec
-         *     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
-         *     ``tasks`` counts every task it was given, by state, from the task rows on each
-         *     read — not the page of them a listing returns.
-         */
-        Compute: {
-            cost: number;
-            /** Format: date-time */
-            created_at: string;
-            ended?: components["schemas"]["Ending"] | null;
-            generation: number;
-            id: string;
-            lease: components["schemas"]["Lease"];
-            name: string | null;
-            offer?: components["schemas"]["Offer"] | null;
-            revision: number;
-            spec: components["schemas"]["ComputeSpec"];
-            status: components["schemas"]["ComputeStatus"];
-            tasks: components["schemas"]["TaskCounts"];
+        /** ClaimLeaseResource */
+        ClaimLeaseResource: {
+            owner: string;
+            ttl_seconds: number;
         };
-        /** ComputeAbandoned */
-        ComputeAbandoned: {
+        /**
+         * CommandResultResource
+         * @description What one command said on one machine.
+         */
+        CommandResultResource: {
+            exit_code: number;
+            stderr: string;
+            stdout: string;
+        };
+        /**
+         * ComputeAbandonedEvent
+         * @description Nothing renewed the lease and ``delete_on_exit`` was set, so the compute is going away.
+         */
+        ComputeAbandonedEvent: {
             compute: string;
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -980,8 +968,11 @@ export interface components {
              */
             type: "compute.abandoned";
         };
-        /** ComputeAdopted */
-        ComputeAdopted: {
+        /**
+         * ComputeAdoptedEvent
+         * @description Another daemon bound the compute first, and this one carries on under its binding.
+         */
+        ComputeAdoptedEvent: {
             compute: string;
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -989,8 +980,11 @@ export interface components {
              */
             type: "compute.adopted";
         };
-        /** ComputeBound */
-        ComputeBound: {
+        /**
+         * ComputeBoundEvent
+         * @description The compute was given an offer, a region and the markets to buy on. ``previous`` is the offer it left.
+         */
+        ComputeBoundEvent: {
             compute: string;
             instance_type: string;
             markets: ("spot" | "on_demand")[];
@@ -1004,15 +998,26 @@ export interface components {
             type: "compute.bound";
         };
         /**
-         * ComputeCreate
-         * @description What it takes to ask for a compute: a definition, and optionally a name to find it by.
+         * ComputeCostEvent
+         * @description What the compute has cost so far, over how many live machines. Streamed, never logged.
          */
-        ComputeCreate: {
-            name?: string | null;
-            spec: components["schemas"]["ComputeSpec"];
+        ComputeCostEvent: {
+            /** Format: date-time */
+            at: string;
+            compute: string;
+            cost: number;
+            nodes: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "compute.cost";
         };
-        /** ComputeCreated */
-        ComputeCreated: {
+        /**
+         * ComputeCreatedEvent
+         * @description The definition was accepted. The compute exists and owns nothing yet.
+         */
+        ComputeCreatedEvent: {
             compute: string;
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1020,8 +1025,11 @@ export interface components {
              */
             type: "compute.created";
         };
-        /** ComputeDegraded */
-        ComputeDegraded: {
+        /**
+         * ComputeDegradedEvent
+         * @description A reconcile pass broke on the compute. The next pass tries again.
+         */
+        ComputeDegradedEvent: {
             /**
              * @default reconcile_failed
              * @enum {string}
@@ -1035,8 +1043,11 @@ export interface components {
              */
             type: "compute.degraded";
         };
-        /** ComputeDeleted */
-        ComputeDeleted: {
+        /**
+         * ComputeDeletedEvent
+         * @description Every machine is gone and the binding is released. Nothing bills any more.
+         */
+        ComputeDeletedEvent: {
             compute: string;
             /** @default 0 */
             nodes_ready: number;
@@ -1048,8 +1059,8 @@ export interface components {
              */
             type: "compute.deleted";
         };
-        /** ComputeDeleting */
-        ComputeDeleting: {
+        /** ComputeDeletingEvent */
+        ComputeDeletingEvent: {
             compute: string;
             nodes_ready: number;
             nodes_total: number;
@@ -1059,8 +1070,11 @@ export interface components {
              */
             type: "compute.deleting";
         };
-        /** ComputeDeletionFailed */
-        ComputeDeletionFailed: {
+        /**
+         * ComputeDeletionFailedEvent
+         * @description A teardown pass broke. The next one carries on giving the machines back.
+         */
+        ComputeDeletionFailedEvent: {
             /**
              * @default reconcile_failed
              * @enum {string}
@@ -1074,8 +1088,56 @@ export interface components {
              */
             type: "compute.deletion_failed";
         };
-        /** ComputeProvisioning */
-        ComputeProvisioning: {
+        /**
+         * ComputeGenerationAppliedEvent
+         * @description The machines now reflect this definition.
+         */
+        ComputeGenerationAppliedEvent: {
+            compute: string;
+            number: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "compute.generation.applied";
+        };
+        /**
+         * ComputeGenerationCreatedEvent
+         * @description A new definition was frozen: a resize, or an earlier generation brought back.
+         */
+        ComputeGenerationCreatedEvent: {
+            compute: string;
+            number: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "compute.generation.created";
+        };
+        /** ComputeLeaseClaimedEvent */
+        ComputeLeaseClaimedEvent: {
+            compute: string;
+            owner: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "compute.lease.claimed";
+        };
+        /** ComputeLeaseReleasedEvent */
+        ComputeLeaseReleasedEvent: {
+            compute: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "compute.lease.released";
+        };
+        /**
+         * ComputeProvisioningEvent
+         * @description Fewer machines answer than the floor asks for.
+         */
+        ComputeProvisioningEvent: {
             compute: string;
             generation: number;
             nodes_ready: number;
@@ -1086,8 +1148,11 @@ export interface components {
              */
             type: "compute.provisioning";
         };
-        /** ComputeReady */
-        ComputeReady: {
+        /**
+         * ComputeReadyEvent
+         * @description Enough machines answer to satisfy the floor.
+         */
+        ComputeReadyEvent: {
             compute: string;
             generation: number;
             nodes_ready: number;
@@ -1099,13 +1164,34 @@ export interface components {
             type: "compute.ready";
         };
         /**
-         * ComputeSpec
-         * @description Everything a compute was asked to be. Intent, never observation.
+         * ComputeResource
+         * @description A set of machines held under one intention, and the machines holding each rank of it.
          *
-         *     Only a client writes it, and only through ``PATCH``. Of its fields exactly one
-         *     is mutable in place — ``nodes``, which resizes. The rest is fixed for the life
-         *     of the compute: a different image or provider is a different compute.
+         *     ``spec`` is what was asked for and ``status`` what was observed. ``nodes`` is the
+         *     node currently holding each rank, and ``include=nodes.replaced`` adds the ones that
+         *     held a rank before.
          */
+        ComputeResource: {
+            cost: number;
+            /** Format: date-time */
+            created_at: string;
+            ended: components["schemas"]["Ending"] | null;
+            generation: number;
+            id: string;
+            lease: components["schemas"]["LeaseResource"];
+            name: string | null;
+            nodes: components["schemas"]["NodeResource"][];
+            offer: components["schemas"]["OfferResource"] | null;
+            placement: components["schemas"]["Refusal"] | null;
+            provider: components["schemas"]["ProviderSummary"] | null;
+            rate: number;
+            revision: number;
+            spec: components["schemas"]["ComputeSpec"];
+            status: components["schemas"]["ComputeStatus"];
+            tasks: components["schemas"]["TaskCounts"];
+            utilization?: components["schemas"]["Utilization"];
+        };
+        /** ComputeSpec */
         ComputeSpec: {
             /**
              * @default spot_if_available
@@ -1137,62 +1223,85 @@ export interface components {
             volumes: components["schemas"]["Volume"][];
             worker?: components["schemas"]["Worker"];
         };
-        /**
-         * ComputeSpecPatch
-         * @description The one field of a spec that can change without replacing machines.
-         */
-        ComputeSpecPatch: {
-            nodes: components["schemas"]["NodeBounds"];
-        };
-        /**
-         * ComputeStatus
-         * @description What the reconciler has observed. Never written by a client.
-         *
-         *     ``observed_generation`` against the compute's ``generation`` is the progress:
-         *     the gap between them *is* the pending work, which is why there is no operation
-         *     resource to poll.
-         */
+        /** ComputeStatus */
         ComputeStatus: {
-            last_error?: components["schemas"]["Error"] | null;
-            nodes_ready: number;
-            nodes_total: number;
+            last_error: components["schemas"]["Error"] | null;
             observed_generation: number;
             /** @enum {string} */
             state: "requested" | "provisioning" | "ready" | "degraded" | "deleting" | "deleted";
         };
-        /** ConsoleEvent */
-        ConsoleEvent: {
+        /**
+         * ComputeStraysTerminatedEvent
+         * @description Machines the provider held under the compute, and that no node owned, were terminated.
+         */
+        ComputeStraysTerminatedEvent: {
             compute: string;
-            content: string;
-            execution?: string | null;
-            node: string;
-            task?: string | null;
+            machines: string[];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            type: "node.console";
+            type: "compute.strays_terminated";
         };
-        /** CostEvent */
-        CostEvent: {
-            /** Format: date-time */
-            at: string;
-            compute: string;
-            cost: number;
-            nodes: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.cost";
+        /** ComputeSummary */
+        ComputeSummary: {
+            id: string;
+            name: string | null;
+        };
+        /** CreateComputeResource */
+        CreateComputeResource: {
+            name?: string | null;
+            spec: components["schemas"]["ComputeSpec"];
         };
         /**
-         * Ending
-         * @description How a compute ended: when its last machine was gone, why, and what the run came to.
-         *
-         *     Only a deleted compute has one. ``cost`` is derived from the node rows each time
-         *     the compute is read, the way the meter derives a live compute's cost.
+         * CreateExecutionResource
+         * @description A retry. An indeterminate outcome is retried only with ``acknowledge_duplication``, since it may run twice.
          */
+        CreateExecutionResource: {
+            /** @default false */
+            acknowledge_duplication: boolean;
+            ranks?: number[] | null;
+        };
+        /**
+         * CreateGenerationResource
+         * @description An earlier generation's definition made current again, as a new generation.
+         */
+        CreateGenerationResource: {
+            source: number;
+        };
+        /**
+         * CreateProviderResource
+         * @description An account, and what opens it. Also what replaces one wholesale; ``credentials`` are never read back.
+         */
+        CreateProviderResource: {
+            config?: {
+                [key: string]: unknown;
+            };
+            credentials?: {
+                [key: string]: string;
+            };
+            kind: string;
+            name: string;
+        };
+        /**
+         * CreateTaskResource
+         * @description One call to place. The arguments are exactly one of ``args_inline``, ``args_sha256`` and ``call``.
+         */
+        CreateTaskResource: {
+            args_inline?: string | null;
+            args_sha256?: string | null;
+            call?: components["schemas"]["Call"] | null;
+            compute: string;
+            correlation_id?: string | null;
+            /** @enum {string} */
+            dispatch: "one" | "all" | "stream";
+            function: string;
+            queue_timeout_seconds?: number | null;
+            rank?: number | null;
+            retry?: string | null;
+            run_timeout_seconds?: number | null;
+        };
+        /** Ending */
         Ending: {
             /** Format: date-time */
             at: string;
@@ -1200,132 +1309,76 @@ export interface components {
             cause: "requested" | "abandoned";
             cost: number;
         };
-        /**
-         * Error
-         * @description Every failure, in one shape, whatever produced it.
-         *
-         *     ``code`` is the closed set a client matches on, so nobody parses prose.
-         *     ``retryable`` is a property of the failure rather than a guess left to the
-         *     caller: a revision conflict is worth re-reading and re-sending, and a spec no
-         *     provider can satisfy is not.
-         */
+        /** Error */
         Error: {
             /** @enum {string} */
             code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
-            details?: {
+            details: {
                 [key: string]: unknown;
             } | null;
             message: string;
-            request_id?: string | null;
+            request_id: string | null;
             retryable: boolean;
         };
         /**
-         * Execution
-         * @description One physical attempt at a task.
-         *
-         *     ``ordinal`` counts the attempts and ``rank`` says which node took it. A retry
-         *     is another execution pointing ``retry_of`` at the last one — never another
-         *     task, because the task id is the handle the caller is holding.
+         * ExecutionResource
+         * @description One physical attempt at a task. A retry is another execution, never another task.
          */
-        Execution: {
-            deadline_at?: string | null;
-            error?: components["schemas"]["Error"] | null;
-            finished_at?: string | null;
+        ExecutionResource: {
+            deadline_at: string | null;
+            error: components["schemas"]["Error"] | null;
+            finished_at: string | null;
             id: string;
-            node_id?: string | null;
+            node_id: string | null;
             ordinal: number;
             rank: number;
-            result_sha256?: string | null;
-            retry_of?: string | null;
-            started_at?: string | null;
+            result_sha256: string | null;
+            retry_of: string | null;
+            started_at: string | null;
             /** @enum {string} */
             state: "created" | "assigned" | "dispatching" | "accepted" | "started" | "cancel_requested" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
-            /** @default false */
             stopping: boolean;
         };
         /**
-         * ExecutionCreate
-         * @description A retry, and the admission that it may be a second run.
-         *
-         *     ``acknowledge_duplication`` is required to retry an indeterminate outcome: the
-         *     system does not know whether the previous attempt had side effects, and the
-         *     caller is the only one in a position to say that running twice is acceptable.
-         */
-        ExecutionCreate: {
-            /** @default false */
-            acknowledge_duplication: boolean;
-            ranks?: number[] | null;
-        };
-        /**
-         * Function
+         * FunctionResource
          * @description A registered piece of code, named by the hash of its serialized bytes.
          *
-         *     The metadata only. The code is a blob, fetched as one — which is what lets a
-         *     task name its function without carrying it.
-         *
-         *     One function is many uploads. ``lineage`` names the function — the same name
-         *     and qualname in the same file — and ``version`` counts the changes to its code
-         *     along that lineage, in order. An upload that differs only in where the function
-         *     sits in its file, or in what a run captured, is the same version: a function
-         *     that closes over a job id is uploaded once per job and edited far less often.
-         *
-         *     The text comes one of two ways, because the pickle has none. ``source`` is a
-         *     function written in the console, and it is what the function was built from.
-         *     ``excerpt`` is one the SDK uploaded: the function and what it uses from its
-         *     module, read off the file where it was defined — a transcript for reading,
-         *     absent when there was no file to read.
+         *     ``lineage`` is one function — the same name in the same file — and ``version``
+         *     counts the changes to its code along it.
          */
-        Function: {
+        FunctionResource: {
             codec: string;
             /** Format: date-time */
             created_at: string;
-            excerpt?: string | null;
+            excerpt: string | null;
             lineage: string;
-            name?: string | null;
-            origin?: string | null;
-            qualname?: string | null;
+            name: string | null;
+            origin: string | null;
+            qualname: string | null;
             sha256: string;
             size_bytes: number;
-            source?: string | null;
+            source: string | null;
             version: number;
         };
         /**
-         * FunctionExcerpt
-         * @description The text of a function the SDK uploaded, sent after the pickle it describes.
-         *
-         *     The imports, constants, functions and classes of its module that it uses, then
-         *     the function, in the order of the file. Nothing runs it: it is what the console
-         *     shows where a pickle would otherwise show nothing.
+         * FunctionSummary
+         * @description The code a task names. ``name`` and ``version`` are null for code the daemon holds no record of.
          */
-        FunctionExcerpt: {
-            text: string;
+        FunctionSummary: {
+            name: string | null;
+            sha256: string;
+            version: number | null;
+        };
+        /** Gauge */
+        Gauge: {
+            at: number;
+            value: number;
         };
         /**
-         * FunctionSource
-         * @description A function written out, for a caller with no interpreter to pickle one with.
-         *
-         *     The module a node will run and the name in it to call. The text is not
-         *     executed here — it is captured, so what is stored is the same pickled callable
-         *     the SDK would have uploaded, and the machine is still the only place any of it
-         *     runs.
-         *
-         *     The name is checked against the source rather than trusted: a module that does
-         *     not bind it is a function that cannot be called, and finding that out at
-         *     registration costs a parse, where finding it out at dispatch costs a machine.
+         * GenerationResource
+         * @description One frozen definition of a compute, and whether the machines were built to it.
          */
-        FunctionSource: {
-            name: string;
-            source: string;
-        };
-        /**
-         * Generation
-         * @description One frozen definition of a compute, and whether the machines match it yet.
-         *
-         *     History is kept rather than overwritten, because a rollback is a generation
-         *     too — it is a new number carrying an old spec, not an erasure of what happened
-         *     in between.
-         */
-        Generation: {
+        GenerationResource: {
             applied: boolean;
             /** Format: date-time */
             created_at: string;
@@ -1333,46 +1386,7 @@ export interface components {
             number: number;
             spec: components["schemas"]["ComputeSpec"];
         };
-        /** GenerationApplied */
-        GenerationApplied: {
-            compute: string;
-            number: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.generation.applied";
-        };
-        /**
-         * GenerationCreate
-         * @description Make an earlier generation's definition current again, as a new generation.
-         *
-         *     The machines already up are not replaced: a size that differs is reconciled
-         *     as a resize would be, and a machine bought from now on is built to the
-         *     definition now current.
-         */
-        GenerationCreate: {
-            source: number;
-        };
-        /** GenerationCreated */
-        GenerationCreated: {
-            compute: string;
-            number: number;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.generation.created";
-        };
-        /**
-         * Image
-         * @description The environment a node builds before it runs anything.
-         *
-         *     The base, the interpreter, the packages and where they resolve from. What the
-         *     user shipped from their own machine is not here — ``includes`` is packed into
-         *     a blob client-side and only its hash travels, because a spec is written to the
-         *     compute row and served back by the API.
-         */
+        /** Image */
         Image: {
             /** @default [] */
             apt: string[];
@@ -1404,72 +1418,94 @@ export interface components {
             /** @default false */
             warm: boolean;
         };
-        /**
-         * Lease
-         * @description Who currently owns the compute, and until when.
-         *
-         *     A liveness signal the owning process renews, not a lock on the resource. Zero
-         *     owners is legitimate and temporary — a daemon restarting, a script killed —
-         *     and only the holder opens SSH connections to the machines. Losing it destroys
-         *     nothing by itself.
-         */
-        Lease: {
-            expires_at?: string | null;
-            owner?: string | null;
+        /** LatestTasks */
+        LatestTasks: {
+            failed: components["schemas"]["TaskSummary"] | null;
+            succeeded: components["schemas"]["TaskSummary"] | null;
         };
         /**
-         * LeaseClaim
-         * @description A bid for ownership: who is claiming, and for how long before it lapses.
+         * LeaseResource
+         * @description Who owns the compute, and until when. Zero owners is legitimate and temporary.
          */
-        LeaseClaim: {
-            owner: string;
-            ttl_seconds: number;
+        LeaseResource: {
+            expires_at: string | null;
+            owner: string | null;
         };
-        /** LeaseClaimed */
-        LeaseClaimed: {
-            compute: string;
-            owner: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.lease.claimed";
-        };
-        /** LeaseReleased */
-        LeaseReleased: {
-            compute: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.lease.released";
-        };
-        /**
-         * Liveness
-         * @description Whether the process answers, and what it is running.
-         *
-         *     Says nothing about the store or the providers. The version rides along because
-         *     it answers the second half of the only question a client asks before trusting a
-         *     daemon it did not start: something is there, and it speaks this wire.
-         *
-         *     The default is for decoding, not for answering — a daemon always says which
-         *     skyward it is, and one that says nothing is one from before it could.
-         */
-        Liveness: {
+        /** LivenessResource */
+        LivenessResource: {
             live: boolean;
-            /** @default  */
             version: string;
         };
-        /** LogEntry */
-        LogEntry: {
+        /**
+         * LogEntryResource
+         * @description One recorded event. ``sequence`` is the stream's ``id:`` for the same event; ``at`` is when the daemon recorded it.
+         */
+        LogEntryResource: {
             /** Format: date-time */
             at: string;
-            data: components["schemas"]["ComputeCreated"] | components["schemas"]["ComputeBound"] | components["schemas"]["ComputeAdopted"] | components["schemas"]["ComputeProvisioning"] | components["schemas"]["ComputeReady"] | components["schemas"]["ComputeDegraded"] | components["schemas"]["GenerationCreated"] | components["schemas"]["GenerationApplied"] | components["schemas"]["LeaseClaimed"] | components["schemas"]["LeaseReleased"] | components["schemas"]["ComputeAbandoned"] | components["schemas"]["ComputeDeleting"] | components["schemas"]["ComputeDeletionFailed"] | components["schemas"]["StraysTerminated"] | components["schemas"]["ComputeDeleted"] | components["schemas"]["CostEvent"] | components["schemas"]["NodeEvent"] | components["schemas"]["ProgressEvent"] | components["schemas"]["ConsoleEvent"] | components["schemas"]["PhaseEvent"] | components["schemas"]["MetricEvent"] | components["schemas"]["TaskEvent"];
+            data: components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
             sequence: number;
             type: string;
         };
-        /** MetricEvent */
-        MetricEvent: {
+        /**
+         * MetricHistoryResource
+         * @description A compute's metrics over a range or since a cursor. ``reset`` says the cursor fell behind compaction.
+         */
+        MetricHistoryResource: {
+            cursor: string;
+            reset: boolean;
+            series: components["schemas"]["MetricSeries"][];
+        };
+        /**
+         * MetricSampleResource
+         * @description One reading off one node. ``at`` is milliseconds since the epoch, on the node's clock.
+         */
+        MetricSampleResource: {
+            at: number;
+            name: string;
+            node: string;
+            value: number;
+        };
+        /** MetricSeries */
+        MetricSeries: {
+            at: number[];
+            name: string;
+            node: string;
+            values: number[];
+        };
+        /** MetricSpec */
+        MetricSpec: {
+            command: string;
+            interval: number;
+            name: string;
+        };
+        /** NodeBounds */
+        NodeBounds: {
+            initial: number;
+            max?: number | null;
+            min?: number | null;
+        };
+        /**
+         * NodeConsoleEvent
+         * @description A line a node printed, and the task and attempt it belongs to when it belongs to one.
+         */
+        NodeConsoleEvent: {
+            compute: string;
+            content: string;
+            execution?: string | null;
+            node: string;
+            task?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "node.console";
+        };
+        /**
+         * NodeMetricsEvent
+         * @description One reading off one node. Streamed, never logged.
+         */
+        NodeMetricsEvent: {
             compute: string;
             name: string;
             node: string;
@@ -1481,109 +1517,77 @@ export interface components {
             value: number;
         };
         /**
-         * MetricHistory
-         * @description A compute's metrics over a range, or since a cursor, and the cursor that continues them.
-         *
-         *     ``cursor`` is opaque. Handed back as ``after``, it answers with what was recorded
-         *     since this answer was read — including samples measured earlier and delivered late —
-         *     and nothing this answer already held. ``reset`` says that some of what was recorded
-         *     since has already been folded into the compacted history, where a cursor cannot
-         *     reach: read the range again.
+         * NodePhaseEvent
+         * @description A bootstrap phase opened, closed or broke.
          */
-        MetricHistory: {
-            cursor: string;
-            /** @default false */
-            reset: boolean;
-            series: components["schemas"]["MetricSeries"][];
-        };
-        /**
-         * MetricSample
-         * @description One reading off one node: what it measured, when, and the number.
-         *
-         *     ``at`` is milliseconds since the epoch on the node's own clock — the moment the
-         *     sample was taken, not the moment it reached the daemon, which a dropped link can
-         *     put minutes later.
-         */
-        MetricSample: {
-            at: number;
-            name: string;
+        NodePhaseEvent: {
+            /** Format: date-time */
+            at: string;
+            compute: string;
+            error?: string | null;
+            /** @enum {string} */
+            event: "started" | "completed" | "failed";
             node: string;
-            value: number;
+            phase: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "node.phase";
         };
         /**
-         * MetricSeries
-         * @description One metric of one node over time, as two columns of the same length.
+         * NodeProgressEvent
+         * @description What a machine without an address yet is doing. Streamed, never logged.
          */
-        MetricSeries: {
-            at: number[];
-            name: string;
+        NodeProgressEvent: {
+            completion?: number | null;
+            compute: string;
             node: string;
-            values: number[];
+            progress: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "node.progress";
         };
         /**
-         * MetricSpec
-         * @description One reading a node takes about itself: a shell command, sampled on a period.
-         *
-         *     The command must print a bare number; anything else is dropped rather than
-         *     reported. ``interval`` is in seconds.
+         * NodeResource
+         * @description One machine holding one rank of a compute.
          */
-        MetricSpec: {
-            command: string;
-            interval: number;
-            name: string;
-        };
-        /**
-         * Node
-         * @description One machine, ranked, as the control plane knows it.
-         *
-         *     The row exists before the provider is asked for a machine, which is what makes
-         *     provisioning idempotent — ``machine`` is null until there is one to name. A
-         *     node that died keeps its row and its ``provider_binding`` until the provider
-         *     confirms the instance is gone, so nothing goes missing unnoticed.
-         */
-        Node: {
-            accelerator?: string | null;
-            address?: string | null;
-            billing_unit?: ("second" | "minute" | "hour") | null;
-            compute_id: string;
+        NodeResource: {
+            accelerator: string | null;
+            address: string | null;
+            billing_unit: ("second" | "minute" | "hour") | null;
+            busy: number;
             /** Format: date-time */
             created_at: string;
             /** @enum {string} */
             desired: "present" | "deleted";
             generation: number;
             id: string;
-            last_error?: components["schemas"]["Error"] | null;
-            launched_at?: string | null;
-            machine?: string | null;
-            market?: ("spot" | "on_demand") | null;
-            price_per_hour?: number | null;
-            provider_binding: {
-                [key: string]: unknown;
+            last_error: components["schemas"]["Error"] | null;
+            launched_at: string | null;
+            machine: string | null;
+            market: ("spot" | "on_demand") | null;
+            metrics?: {
+                [key: string]: components["schemas"]["Gauge"];
             };
+            phases?: components["schemas"]["Phase"][];
+            price_per_hour: number | null;
+            progress: components["schemas"]["Progress"] | null;
             rank: number;
-            revision: number;
+            running?: components["schemas"]["Running"][];
+            ssh: components["schemas"]["Ssh"] | null;
             /** @enum {string} */
             state: "requested" | "provisioning" | "connecting" | "bootstrapping" | "ready" | "draining" | "lost" | "deleting" | "deleted" | "failed";
-            terminated_at?: string | null;
+            tail?: string[];
+            terminated_at: string | null;
         };
         /**
-         * NodeBounds
-         * @description How many machines to open with, and how much of that is negotiable.
-         *
-         *     ``initial`` is the size the pool asks for once, when it starts. ``min`` is the
-         *     count it is willing to live at: what lets a job of eight begin on four, and the
-         *     only floor the pool is held to afterwards — a machine the opening request never
-         *     got is not asked for again. ``max`` is the ceiling autoscaling may reach, and
-         *     setting it is what makes the pool elastic at all. Both unset means the pool
-         *     opens at ``initial`` and stays there.
+         * NodeStateEvent
+         * @description A node's state moved. Its stream frame is named ``node.{state}``.
          */
-        NodeBounds: {
-            initial: number;
-            max?: number | null;
-            min?: number | null;
-        };
-        /** NodeEvent */
-        NodeEvent: {
+        NodeStateEvent: {
             compute: string;
             error?: string | null;
             node: string;
@@ -1596,27 +1600,18 @@ export interface components {
             type: "node.state";
         };
         /**
-         * Offer
-         * @description One buyable machine shape from one account, normalized.
-         *
-         *     The accelerator name and its VRAM are parsed into the shared vocabulary here
-         *     rather than in each adapter, which is what stops the same GPU from being two
-         *     different accelerators depending on who is selling it. ``price`` is the
-         *     cheapest the offer can be had for, and it is what ordering and budget filters
-         *     compare on.
+         * OfferResource
+         * @description One machine shape one account sells. ``price`` is the cheapest it can be had for.
          */
-        Offer: {
-            accelerator?: string | null;
+        OfferResource: {
+            accelerator: string | null;
             accelerator_count: number;
-            architecture?: string | null;
-            available?: number | null;
-            /**
-             * @default hour
-             * @enum {string}
-             */
+            architecture: ("x86_64" | "arm64") | null;
+            available: number | null;
+            /** @enum {string} */
             billing_unit: "second" | "minute" | "hour";
             cpus: number;
-            disk_gb?: number | null;
+            disk_gb: number | null;
             /** Format: date-time */
             expires_at: string;
             /** Format: date-time */
@@ -1625,26 +1620,19 @@ export interface components {
             instance_type: string;
             kind: string;
             memory_gb: number;
-            on_demand_price?: number | null;
-            price?: number | null;
+            on_demand_price: number | null;
+            price: number | null;
             provider_id: string;
             provider_name: string;
-            region?: string | null;
-            specific?: {
+            region: string | null;
+            specific: {
                 [key: string]: unknown;
             };
-            spot_price?: number | null;
-            vram?: number | null;
+            spot_price: number | null;
+            vram: number | null;
         };
         /**
          * Options
-         * @description Operational knobs the daemon reads off the spec.
-         *
-         *     Each defaults to the value the runtime hard-coded before the knob existed, so a
-         *     spec built without options behaves exactly as one built with ``Options()``. The
-         *     client-side timeouts are not here: they govern how long the owning process waits
-         *     for its own pool, never leave it, and so ride the SDK's ``Options`` rather than
-         *     the wire.
          * @default {
          *       "autoscale_cooldown": 0,
          *       "autoscale_idle_timeout": 120,
@@ -1695,240 +1683,147 @@ export interface components {
             /** @default 180 */
             worker_timeout: number;
         };
-        /**
-         * Page[LogEntry]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
-         */
-        "Page_skyward.shared.events.LogEntry_": {
-            items: components["schemas"]["LogEntry"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        /** Pace */
+        Pace: {
+            finished_last_hour: number;
+            mean_seconds: number | null;
         };
         /**
-         * Page[Compute]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[ComputeResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Compute_": {
-            items: components["schemas"]["Compute"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.ComputeResource_": {
+            items: components["schemas"]["ComputeResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Execution]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[ExecutionResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Execution_": {
-            items: components["schemas"]["Execution"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.ExecutionResource_": {
+            items: components["schemas"]["ExecutionResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Function]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[FunctionResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Function_": {
-            items: components["schemas"]["Function"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.FunctionResource_": {
+            items: components["schemas"]["FunctionResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Generation]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[GenerationResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Generation_": {
-            items: components["schemas"]["Generation"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.GenerationResource_": {
+            items: components["schemas"]["GenerationResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[MetricSample]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[LogEntryResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.MetricSample_": {
-            items: components["schemas"]["MetricSample"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.LogEntryResource_": {
+            items: components["schemas"]["LogEntryResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Node]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[MetricSampleResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Node_": {
-            items: components["schemas"]["Node"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.MetricSampleResource_": {
+            items: components["schemas"]["MetricSampleResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Offer]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[NodeResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Offer_": {
-            items: components["schemas"]["Offer"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.NodeResource_": {
+            items: components["schemas"]["NodeResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Provider]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[OfferResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Provider_": {
-            items: components["schemas"]["Provider"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.OfferResource_": {
+            items: components["schemas"]["OfferResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
         /**
-         * Page[Task]
-         * @description A slice of a listing, and the cursor that continues it.
-         *
-         *     ``next_cursor`` is null on the last page. Cursors are opaque and are not
-         *     offsets — a row inserted mid-walk does not shift what a held cursor returns.
-         *
-         *     ``total`` is how many rows the filters match, counted for the listings where
-         *     counting is one more read of an index: fifty of fifty is a different answer
-         *     from fifty of nine thousand, and a reader cannot tell them apart from a page.
-         *     It is null where nothing counted.
+         * Page[ProviderResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
          */
-        "Page_skyward.shared.schemas.Task_": {
-            items: components["schemas"]["Task"][];
-            next_cursor?: string | null;
-            total?: number | null;
+        "Page_skyward.api.v1.ProviderResource_": {
+            items: components["schemas"]["ProviderResource"][];
+            next_cursor: string | null;
+            total: number | null;
         };
-        /** PhaseEvent */
-        PhaseEvent: {
+        /**
+         * Page[TaskResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
+         */
+        "Page_skyward.api.v1.TaskResource_": {
+            items: components["schemas"]["TaskResource"][];
+            next_cursor: string | null;
+            total: number | null;
+        };
+        /** Phase */
+        Phase: {
             /** Format: date-time */
             at: string;
-            compute: string;
-            error?: string | null;
+            error: string | null;
+            name: string;
             /** @enum {string} */
-            event: "started" | "completed" | "failed";
-            node: string;
-            phase: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "node.phase";
+            state: "started" | "completed" | "failed";
         };
-        /**
-         * PipIndex
-         * @description A package index the resolver should reach for, and what it may serve.
-         *
-         *     ``packages`` is the scope: only those names resolve from ``url`` (uv's
-         *     ``explicit = true``), so a private index cannot silently answer for a public
-         *     package. An empty scope makes it an ordinary extra index.
-         */
+        /** PipIndex */
         PipIndex: {
             /** @default [] */
             packages: string[];
             url: string;
         };
-        /**
-         * PluginRef
-         * @description A plugin as it travels: a name and its parameters, never an object.
-         *
-         *     A plugin is rebuilt on the node from exactly this, which is why it cannot hold
-         *     a closure or a live handle. Its behaviour is its class's methods; its identity
-         *     is ``kind``.
-         */
+        /** PluginRef */
         PluginRef: {
             kind: string;
             params?: {
                 [key: string]: unknown;
             };
         };
-        /** ProgressEvent */
-        ProgressEvent: {
-            completion?: number | null;
-            compute: string;
-            node: string;
-            progress: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "node.progress";
+        /** Progress */
+        Progress: {
+            completion: number | null;
+            step: string;
         };
         /**
-         * Provider
-         * @description A registered account, as the API serves it — which is to say, without its secrets.
-         *
-         *     ``offers_fetched_at`` and ``offers_count`` describe the cached catalog behind
-         *     it, and ``last_error`` is why the last refresh failed. A failed refresh leaves
-         *     the stale offers in place: stale offers beat no offers.
+         * ProviderKindResource
+         * @description A kind of cloud this daemon can talk to, and what registering one takes.
          */
-        Provider: {
+        ProviderKindResource: {
+            credential_fields: string[];
+            kind: string;
+            offers_ttl_seconds: number;
+        };
+        /** ProviderRef */
+        ProviderRef: {
+            kind: string;
+            name?: string | null;
+        };
+        /**
+         * ProviderResource
+         * @description A registered account, without its credentials.
+         */
+        ProviderResource: {
             config: {
                 [key: string]: unknown;
             };
@@ -1936,84 +1831,36 @@ export interface components {
             created_at: string;
             id: string;
             kind: string;
-            last_error?: components["schemas"]["Error"] | null;
+            last_error: components["schemas"]["Error"] | null;
             name: string;
-            /** @default 0 */
             offers_count: number;
-            offers_fetched_at?: string | null;
+            offers_fetched_at: string | null;
             offers_ttl_seconds: number;
         };
-        /**
-         * ProviderCreate
-         * @description An account to register: what to call it, which cloud it is, and what opens it.
-         *
-         *     ``credentials`` are validated against the kind's declared fields before the
-         *     row is written, and no read path returns them afterwards.
-         */
-        ProviderCreate: {
-            config?: {
-                [key: string]: unknown;
-            };
-            credentials?: {
-                [key: string]: string;
-            };
+        /** ProviderSummary */
+        ProviderSummary: {
+            id: string;
             kind: string;
             name: string;
         };
-        /**
-         * ProviderKind
-         * @description A kind of cloud this build can talk to, and what registering one needs.
-         *
-         *     Capability negotiation, before anything is created: a kind absent from this
-         *     list cannot be registered, usually because its SDK is not installed.
-         */
-        ProviderKind: {
-            credential_fields: string[];
-            kind: string;
-            offers_ttl_seconds: number;
-        };
-        /**
-         * ProviderRef
-         * @description Which account a spec wants to buy from.
-         *
-         *     A kind and a name, and nothing else: how the account is configured belongs to
-         *     the provider row, which is what the daemon builds its adapter from. A copy of
-         *     the settings riding on the spec would be a second answer to the same question,
-         *     and the one nobody reads — so a spec names the row, and ``sky providers set``
-         *     or the SDK's own account object is what says what that row means here.
-         *
-         *     ``name`` is the row's; two accounts of one kind are two rows with two names,
-         *     and the market buys from the one named. Left out, any row of the kind will do.
-         */
-        ProviderRef: {
-            kind: string;
-            name?: string | null;
-        };
-        /**
-         * Readiness
-         * @description Whether the daemon can serve: schema in place, recovery done.
-         */
-        Readiness: {
+        /** ReadinessResource */
+        ReadinessResource: {
             ready: boolean;
         };
-        /**
-         * Result
-         * @description What one command said on one machine: its exit code and both its streams.
-         */
-        Result: {
-            exit_code: number;
-            stderr: string;
-            stdout: string;
+        /** Refusal */
+        Refusal: {
+            reason: string;
+            /** Format: date-time */
+            retry_at: string;
         };
-        /**
-         * Spec
-         * @description One shape of machine that would do, from one account.
-         *
-         *     A compute carries several of these as a preference list and buys exactly one:
-         *     everything here is what the market filters offers on, and everything that must
-         *     be true of the whole fleet — volumes, plugins, node counts — is on the compute
-         *     instead.
-         */
+        /** Running */
+        Running: {
+            function: components["schemas"]["FunctionSummary"];
+            ordinal: number;
+            started_at: string | null;
+            task: string;
+        };
+        /** Spec */
         Spec: {
             accelerator?: string | null;
             /** @default 1 */
@@ -2026,84 +1873,54 @@ export interface components {
             provider: components["schemas"]["ProviderRef"];
             region?: string | null;
         };
-        /** StraysTerminated */
-        StraysTerminated: {
-            compute: string;
-            machines: string[];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "compute.strays_terminated";
+        /** Ssh */
+        Ssh: {
+            host: string;
+            port: number;
+            user: string;
         };
-        /**
-         * Task
-         * @description One call — function plus arguments — and its one terminal outcome.
-         *
-         *     Append-only. ``state`` is derived from the executions rather than written
-         *     beside them, and is stored only so that listing by state is a query instead of
-         *     a scan. ``correlation_id`` is how the tasks of one ``&``, ``gather`` or ``map``
-         *     are found together: a field on each of them, not a resource of their own.
-         */
-        Task: {
-            args_sha256: string;
-            compute_id: string;
-            correlation_id?: string | null;
-            /** @enum {string} */
-            dispatch: "one" | "all" | "stream";
-            executions: components["schemas"]["Execution"][];
-            finished_at?: string | null;
-            function: string;
-            generation: number;
-            id: string;
-            queue_timeout_seconds?: number | null;
-            rank?: number | null;
-            result_sha256?: string | null;
-            retry: string | null;
-            run_timeout_seconds?: number | null;
-            /** @enum {string} */
-            state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
-            /** Format: date-time */
-            submitted_at: string;
-        };
-        /**
-         * TaskCounts
-         * @description How many of a compute's tasks are in each state, one field per :data:`TaskState`.
-         */
+        /** TaskCounts */
         TaskCounts: {
             cancelled: number;
             failed: number;
             indeterminate: number;
+            latest?: components["schemas"]["LatestTasks"];
+            pace?: components["schemas"]["Pace"];
             queued: number;
             running: number;
             succeeded: number;
             timed_out: number;
         };
         /**
-         * TaskCreate
-         * @description One call to place: the code, its arguments, and how widely to run it.
-         *
-         *     Arguments travel inline below a size threshold and as a blob above it, which
-         *     is why there are fields for both and exactly one is set. ``call`` is the third
-         *     way to say the same thing, for a caller with no interpreter: the values in
-         *     JSON, encoded here into the pickle the other two already carry.
+         * TaskResource
+         * @description One call — a function and its arguments — and its one terminal outcome.
          */
-        TaskCreate: {
-            args_inline?: string | null;
-            args_sha256?: string | null;
-            call?: components["schemas"]["Call"] | null;
-            compute: string;
-            correlation_id?: string | null;
+        TaskResource: {
+            args_sha256: string;
+            compute: components["schemas"]["ComputeSummary"];
+            correlation_id: string | null;
             /** @enum {string} */
             dispatch: "one" | "all" | "stream";
-            function: string;
-            queue_timeout_seconds?: number | null;
-            rank?: number | null;
-            retry?: string | null;
-            run_timeout_seconds?: number | null;
+            executions: components["schemas"]["ExecutionResource"][];
+            finished_at: string | null;
+            function: components["schemas"]["FunctionSummary"];
+            generation: number;
+            id: string;
+            queue_timeout_seconds: number | null;
+            rank: number | null;
+            result_sha256: string | null;
+            retry: string | null;
+            run_timeout_seconds: number | null;
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
+            /** Format: date-time */
+            submitted_at: string;
         };
-        /** TaskEvent */
-        TaskEvent: {
+        /**
+         * TaskStateEvent
+         * @description A task started, is being retried, or ended. Its stream frame is named ``task.{state}``.
+         */
+        TaskStateEvent: {
             /** @default 1 */
             attempt: number;
             compute: string;
@@ -2116,22 +1933,33 @@ export interface components {
              */
             type: "task.state";
         };
+        /** TaskSummary */
+        TaskSummary: {
+            error: components["schemas"]["Error"] | null;
+            finished_at: string | null;
+            function: components["schemas"]["FunctionSummary"];
+            id: string;
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
+        };
         /**
-         * Volume
-         * @description A bucket the nodes read and write as a directory.
-         *
-         *     ``bucket`` names an object-storage bucket, except on providers that attach a
-         *     volume of their own rather than mounting one — RunPod reads it as the id or
-         *     name of a network volume.
-         *
-         *     Where the credentials come from is what ``storage_sha256`` decides, and it is
-         *     the only reason the field exists. ``None`` means the daemon resolves them from
-         *     the provider record it already holds, and nothing about the bucket's access
-         *     ever reaches this struct. A digest means the client brought its own, put them
-         *     in the blob store, and left only the hash here — because a spec is written to
-         *     the compute row and served back by the compute API, and a secret written there
-         *     is a secret published.
+         * UpdateComputeResource
+         * @description A resize: ``nodes`` is the one part of a spec that changes without replacing the machines.
          */
+        UpdateComputeResource: {
+            nodes: components["schemas"]["NodeBounds"];
+        };
+        /**
+         * Utilization
+         * @description The average across the compute's nodes, one value per ``step`` milliseconds since ``since``. Null is a step nobody reported.
+         */
+        Utilization: {
+            cpu: (number | null)[];
+            gpu: (number | null)[];
+            since: number;
+            step: number;
+        };
+        /** Volume */
         Volume: {
             bucket: string;
             mount: string;
@@ -2143,11 +1971,6 @@ export interface components {
         };
         /**
          * Worker
-         * @description How much work a node takes at once, and what runs it.
-         *
-         *     ``concurrency`` unset lets the node decide from what it has. The executor is
-         *     the backend the tasks run on: threads by default, processes or loky when the
-         *     work holds the GIL.
          * @default {
          *       "buffer": 0,
          *       "concurrency": null,
@@ -2166,6 +1989,14 @@ export interface components {
             executor: "thread" | "process" | "loky";
             /** @default true */
             reuse: boolean;
+        };
+        /**
+         * WriteFunctionResource
+         * @description A function as text: a module, and the name in it to call.
+         */
+        WriteFunctionResource: {
+            name: string;
+            source: string;
         };
     };
     responses: never;
@@ -2191,7 +2022,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Accelerator"][];
+                    "application/json": components["schemas"]["AcceleratorResource"][];
                 };
             };
         };
@@ -2332,6 +2163,8 @@ export interface operations {
     V1ComputesList: {
         parameters: {
             query?: {
+                /** @description Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization. */
+                include?: string | null;
                 cursor?: string | null;
                 limit?: number;
                 state?: ("requested" | "provisioning" | "ready" | "degraded" | "deleting" | "deleted") | null;
@@ -2354,7 +2187,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Compute_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.ComputeResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -2394,7 +2227,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ComputeCreate"];
+                "application/json": components["schemas"]["CreateComputeResource"];
             };
         };
         responses: {
@@ -2404,7 +2237,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Compute"];
+                    "application/json": components["schemas"]["ComputeResource"];
                 };
             };
             /** @description Document created, URL follows */
@@ -2413,7 +2246,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Compute"];
+                    "application/json": components["schemas"]["ComputeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -2453,7 +2286,10 @@ export interface operations {
     };
     V1ComputesRead: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization. */
+                include?: string | null;
+            };
             header?: never;
             path: {
                 /** @description The compute's name or id. */
@@ -2469,7 +2305,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Compute"];
+                    "application/json": components["schemas"]["ComputeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -2519,7 +2355,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Compute"];
+                    "application/json": components["schemas"]["ComputeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -2580,7 +2416,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ComputeSpecPatch"];
+                "application/json": components["schemas"]["UpdateComputeResource"];
             };
         };
         responses: {
@@ -2590,7 +2426,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Compute"];
+                    "application/json": components["schemas"]["ComputeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -2661,7 +2497,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: components["schemas"]["Result"];
+                        [key: string]: components["schemas"]["CommandResultResource"];
                     };
                 };
             };
@@ -2733,7 +2569,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: components["schemas"]["Result"];
+                        [key: string]: components["schemas"]["CommandResultResource"];
                     };
                 };
             };
@@ -2877,7 +2713,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: components["schemas"]["Result"];
+                        [key: string]: components["schemas"]["CommandResultResource"];
                     };
                 };
             };
@@ -3141,7 +2977,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Generation_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.GenerationResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3185,7 +3021,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GenerationCreate"];
+                "application/json": components["schemas"]["CreateGenerationResource"];
             };
         };
         responses: {
@@ -3195,7 +3031,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Generation"];
+                    "application/json": components["schemas"]["GenerationResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3270,7 +3106,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Generation"];
+                    "application/json": components["schemas"]["GenerationResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3311,7 +3147,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["LeaseClaim"];
+                "application/json": components["schemas"]["ClaimLeaseResource"];
             };
         };
         responses: {
@@ -3321,7 +3157,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Lease"];
+                    "application/json": components["schemas"]["LeaseResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3437,7 +3273,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricHistory"];
+                    "application/json": components["schemas"]["MetricHistoryResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3489,7 +3325,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.MetricSample_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.MetricSampleResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3521,8 +3357,8 @@ export interface operations {
     V1ComputesNodesList: {
         parameters: {
             query?: {
-                include_terminal?: boolean;
-                generation?: number | null;
+                /** @description Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced. */
+                include?: string | null;
             };
             header?: never;
             path: {
@@ -3539,7 +3375,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Node_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.NodeResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3568,14 +3404,18 @@ export interface operations {
             };
         };
     };
-    V1ComputesNodesNodeIdRead: {
+    V1ComputesNodesRead: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced. */
+                include?: string | null;
+            };
             header?: never;
             path: {
                 /** @description The compute's name or id. */
                 compute: string;
-                node_id: string;
+                /** @description The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did. */
+                node: string;
             };
             cookie?: never;
         };
@@ -3587,7 +3427,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Node"];
+                    "application/json": components["schemas"]["NodeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3616,7 +3456,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesNodesNodeIdDrain: {
+    V1ComputesNodesDrain: {
         parameters: {
             query?: never;
             header: {
@@ -3625,7 +3465,8 @@ export interface operations {
             path: {
                 /** @description The compute's name or id. */
                 compute: string;
-                node_id: string;
+                /** @description The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did. */
+                node: string;
             };
             cookie?: never;
         };
@@ -3637,7 +3478,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Node"];
+                    "application/json": components["schemas"]["NodeResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3841,7 +3682,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["ComputeCreated"] | components["schemas"]["ComputeBound"] | components["schemas"]["ComputeAdopted"] | components["schemas"]["ComputeProvisioning"] | components["schemas"]["ComputeReady"] | components["schemas"]["ComputeDegraded"] | components["schemas"]["GenerationCreated"] | components["schemas"]["GenerationApplied"] | components["schemas"]["LeaseClaimed"] | components["schemas"]["LeaseReleased"] | components["schemas"]["ComputeAbandoned"] | components["schemas"]["ComputeDeleting"] | components["schemas"]["ComputeDeletionFailed"] | components["schemas"]["StraysTerminated"] | components["schemas"]["ComputeDeleted"] | components["schemas"]["CostEvent"] | components["schemas"]["NodeEvent"] | components["schemas"]["ProgressEvent"] | components["schemas"]["ConsoleEvent"] | components["schemas"]["PhaseEvent"] | components["schemas"]["MetricEvent"] | components["schemas"]["TaskEvent"];
+                    "text/event-stream": components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3886,7 +3727,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.events.LogEntry_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.LogEntryResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3928,7 +3769,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Function_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.FunctionResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -3957,7 +3798,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FunctionSource"];
+                "application/json": components["schemas"]["WriteFunctionResource"];
             };
         };
         responses: {
@@ -3967,7 +3808,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Document created, URL follows */
@@ -3976,7 +3817,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4022,7 +3863,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4075,7 +3916,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Document created, URL follows */
@@ -4084,7 +3925,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Content does not hash to the name it was given — `hash_mismatch` */
@@ -4153,7 +3994,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FunctionExcerpt"];
+                "application/json": components["schemas"]["AttachExcerptResource"];
             };
         };
         responses: {
@@ -4163,7 +4004,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Function"];
+                    "application/json": components["schemas"]["FunctionResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4229,7 +4070,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Liveness"];
+                    "application/json": components["schemas"]["LivenessResource"];
                 };
             };
         };
@@ -4249,7 +4090,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Readiness"];
+                    "application/json": components["schemas"]["ReadinessResource"];
                 };
             };
         };
@@ -4284,7 +4125,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Offer_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.OfferResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4328,7 +4169,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderKind"][];
+                    "application/json": components["schemas"]["ProviderKindResource"][];
                 };
             };
         };
@@ -4348,7 +4189,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Provider_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.ProviderResource_"];
                 };
             };
         };
@@ -4362,7 +4203,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProviderCreate"];
+                "application/json": components["schemas"]["CreateProviderResource"];
             };
         };
         responses: {
@@ -4372,7 +4213,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Provider"];
+                    "application/json": components["schemas"]["ProviderResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4427,7 +4268,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Provider"];
+                    "application/json": components["schemas"]["ProviderResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4467,7 +4308,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProviderCreate"];
+                "application/json": components["schemas"]["CreateProviderResource"];
             };
         };
         responses: {
@@ -4477,7 +4318,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Provider"];
+                    "application/json": components["schemas"]["ProviderResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4595,7 +4436,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Task_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.TaskResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4626,7 +4467,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TaskCreate"];
+                "application/json": components["schemas"]["CreateTaskResource"];
             };
         };
         responses: {
@@ -4636,7 +4477,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Task"];
+                    "application/json": components["schemas"]["TaskResource"];
                 };
             };
             /** @description Document created, URL follows */
@@ -4645,7 +4486,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Task"];
+                    "application/json": components["schemas"]["TaskResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4709,7 +4550,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Task"];
+                    "application/json": components["schemas"]["TaskResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4757,7 +4598,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Task"];
+                    "application/json": components["schemas"]["TaskResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4812,7 +4653,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_skyward.shared.schemas.Execution_"];
+                    "application/json": components["schemas"]["Page_skyward.api.v1.ExecutionResource_"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4854,7 +4695,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ExecutionCreate"];
+                "application/json": components["schemas"]["CreateExecutionResource"];
             };
         };
         responses: {
@@ -4864,7 +4705,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Task"];
+                    "application/json": components["schemas"]["TaskResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */
@@ -4920,7 +4761,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Execution"];
+                    "application/json": components["schemas"]["ExecutionResource"];
                 };
             };
             /** @description Bad request syntax or unsupported method */

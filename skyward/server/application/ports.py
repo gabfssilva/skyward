@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Sequence
-from typing import Literal, Protocol, runtime_checkable
+from collections.abc import AsyncIterator, Collection, Iterable, Sequence
+from datetime import datetime
+from typing import Literal, NamedTuple, Protocol, runtime_checkable
 
 from skyward.server.application.ssh import Pty, Result
 from skyward.shared.events import LogEntry
@@ -46,6 +47,23 @@ zero is where a caller with no opinion lands and means nothing more than that.
 """
 
 
+class Held(NamedTuple):
+    """One attempt a machine is holding: placed and not yet answered for, or answered for and not yet let go of."""
+
+    node: str
+    task: str
+    ordinal: int
+    function: str
+    started_at: datetime | None
+
+
+class Pace(NamedTuple):
+    """How many tasks finished over a while, and how long they took on average from their first attempt starting."""
+
+    finished: int
+    mean_seconds: float | None
+
+
 @runtime_checkable
 class Computes(Protocol):
     async def create(self, body: ComputeCreate, idempotency_key: str) -> tuple[Compute, bool]:
@@ -56,6 +74,10 @@ class Computes(Protocol):
 
     async def identify(self, ref: str) -> str:
         """The id behind a name or an id, which is what every other store is keyed by."""
+        ...
+
+    async def named(self, ids: Collection[str]) -> dict[str, str | None]:
+        """The name each of these computes goes by, or None for one that has none."""
         ...
 
     async def list(
@@ -90,9 +112,9 @@ class Generations(Protocol):
 
 @runtime_checkable
 class Nodes(Protocol):
-    async def list(self, compute: str, include_terminal: bool, generation: int | None) -> Page[Node]: ...
-
-    async def get(self, compute: str, node_id: str) -> Node: ...
+    async def of(self, compute: str) -> tuple[Node, ...]:
+        """Every node the compute ever had, replaced ones included."""
+        ...
 
     async def drain(self, compute: str, node_id: str, idempotency_key: str) -> Node: ...
 
@@ -160,6 +182,13 @@ class Tasks(Protocol):
         """End every wait in :meth:`result` now: the daemon is going away."""
         ...
 
+    async def held(self, compute: str) -> tuple[Held, ...]:
+        """The attempts this compute's machines are holding, the earliest started first."""
+        ...
+
+    async def pace(self, compute: str, since: datetime) -> Pace:
+        """How many of this compute's tasks finished since ``since``, and how long they took."""
+        ...
 
 
 @runtime_checkable

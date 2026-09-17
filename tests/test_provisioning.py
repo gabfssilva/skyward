@@ -17,6 +17,7 @@ from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.provider import Binding, Machine
 from skyward.shared.schemas import ComputeCreate, ComputeSpec, Image, Market, NodeBounds, Offer, Page, ProviderRef, Spec, Worker
@@ -375,6 +376,40 @@ async def refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Refused:
     return Refused(machines, provider, compute.id, list(dict.fromkeys(requested)), clock)
 
 
+class Unreachable(Refusing):
+    """A provider whose account cannot even be opened — the cloud's API is not answering at all."""
+
+    kind: ClassVar[str] = "unreachable"
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        raise RuntimeError("failed to connect to the docker API")
+
+
+def describe_a_compute_whose_provider_cannot_be_reached() -> None:
+    async def it_says_so_on_the_compute_rather_than_only_in_the_log(tmp_path: Path) -> None:
+        """A launch is not where every purchase fails: one that fails before it is still a machine nobody bought."""
+        await connect(tmp_path / "skyward.sqlite")
+        events = EventStore()
+        nodes, blobs = NodeStore(), BlobStore()
+        computes = ComputeStore(events, nodes)
+        machines = Machines(computes, nodes, Providers(Unreachable()), OneOffer(), blobs, events)  # type: ignore[arg-type]
+        spec = ComputeSpec(
+            specs=(Spec(provider=ProviderRef(kind="unreachable"), accelerator="a100"),),
+            nodes=NodeBounds(initial=1),
+            image=Image(python="3.13"),
+        )
+        compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="unreachable")
+        node = await nodes.request(compute.id, compute.generation)
+
+        with pytest.raises(Exception, match="docker API"):
+            await machines.create(compute.id, node.id)
+
+        placement = (await computes.get(compute.id)).placement
+        assert placement is not None
+        assert "docker API" in placement.reason
+        assert placement.retry_at > now(), "a compute that cannot buy waits before asking again"
+
+
 def describe_a_compute_refused_by_every_market_and_region() -> None:
     async def it_does_not_call_the_provider_until_the_first_wait_has_passed(refused: Refused) -> None:
         await refused.refused()
@@ -413,6 +448,22 @@ def describe_a_compute_refused_by_every_market_and_region() -> None:
 
         assert await refused.attempt()
         assert await refused.window() == REFUSED_FIRST
+
+    async def it_says_on_the_compute_why_no_machine_could_be_bought(refused: Refused) -> None:
+        await refused.refused()
+
+        placement = (await ComputeStore(EventStore(), NodeStore()).get(refused.compute_id)).placement
+        assert placement is not None
+        assert "no capacity" in placement.reason, "the reason names what the provider said, not just that something failed"
+        assert placement.retry_at > now(), "a compute waiting to try again says when"
+
+    async def it_stops_saying_so_once_a_machine_is_bought(refused: Refused) -> None:
+        await refused.refused()
+        refused.provider.selling = True
+        refused.clock.now += REFUSED_FIRST
+        assert await refused.attempt()
+
+        assert (await ComputeStore(EventStore(), NodeStore()).get(refused.compute_id)).placement is None
 
     async def it_starts_over_after_release(refused: Refused) -> None:
         await refused.refused()

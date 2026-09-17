@@ -24,6 +24,7 @@ from typing import assert_never
 
 import msgspec
 
+from skyward.api.v1 import ComputeResource, ComputeState, NodeResource, NodeState, Page, Ssh, TaskEventState, TaskResource, TaskState
 from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
@@ -40,18 +41,6 @@ from skyward.shared.events import (
     PhaseEvent,
     ProgressEvent,
     TaskEvent,
-)
-from skyward.shared.schemas import (
-    Compute as ComputeResource,
-)
-from skyward.shared.schemas import (
-    ComputeState,
-    Node,
-    NodeState,
-    Page,
-    Task,
-    TaskEventState,
-    TaskState,
 )
 
 HISTORY = 12
@@ -92,7 +81,8 @@ class NodeView:
     error: str | None = None
     progress: str | None = None
     completion: float | None = None
-    binding: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+    ssh: Ssh | None = None
+    """Where the machine answers, once it has an address. The key is the daemon's and never leaves it."""
     phases: tuple[PhaseView, ...] = ()
     metrics: Mapping[str, tuple[float, ...]] = field(default_factory=lambda: MappingProxyType({}))
     tail: tuple[str, ...] = ()
@@ -182,15 +172,16 @@ def observe(view: ComputeView, event: Event) -> ComputeView:
     return view if state is None or state == view.state else replace(view, state=state)
 
 
-def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> ComputeView:
+def refresh(view: ComputeView, compute: ComputeResource) -> ComputeView:
     """Hydrate the fields only the API carries, keeping what only the stream saw.
 
-    A node's address, price, and binding are never events; a node's tail,
-    metrics, and phases are never resources. Each side keeps its half.
+    A node's address, price, and where it answers are never events; a node's tail,
+    metrics, and phases are never resources. Each side keeps its half. The nodes
+    come with the compute — one read is the whole fleet.
     """
     spec = compute.spec.specs[0] if compute.spec.specs else None
     previous = {node.id: node for node in view.nodes}
-    rows = tuple(_hydrated(node, previous.get(node.id, NodeView(node.id))) for node in nodes.items if node.state != "deleted")
+    rows = tuple(_hydrated(node, previous.get(node.id, NodeView(node.id))) for node in compute.nodes if node.state != "deleted")
     kept = {node.id for node in rows}
     hydrated = replace(
         view,
@@ -207,15 +198,15 @@ def refresh(view: ComputeView, compute: ComputeResource, nodes: Page[Node]) -> C
         minimum=compute.spec.nodes.min,
         maximum=compute.spec.nodes.max,
         created_at=compute.created_at,
-        nodes_total=compute.status.nodes_total,
+        nodes_total=len(rows),
         nodes=rows,
         tail=tuple(line for line in view.tail if line[0] in kept),
     )
     return _noted(hydrated, compute.status.last_error.message if compute.status.last_error else None)
 
 
-def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str]) -> ComputeView:
-    """The tasks as the API tells them, oldest first, with the function's real name when known.
+def refresh_tasks(view: ComputeView, tasks: Page[TaskResource]) -> ComputeView:
+    """The tasks as the API tells them, oldest first, each naming its own function.
 
     Oldest first whatever order the page came in, so that a task the stream adds
     lands after them and the window drops from the old end.
@@ -224,7 +215,7 @@ def refresh_tasks(view: ComputeView, tasks: Page[Task], names: Mapping[str, str]
         TaskView(
             id=task.id,
             state=task.state,
-            function=names.get(task.function) or task.function[:8],
+            function=task.function.name or task.function.sha256[:8],
             node=task.executions[-1].node_id if task.executions else None,
             submitted_at=task.submitted_at,
             started_at=task.executions[-1].started_at if task.executions else None,
@@ -334,8 +325,12 @@ def _tasked(view: ComputeView, task_id: str, state: TaskEventState) -> ComputeVi
     return replace(view, tasks=tuple(replace(task, state=landed) if task.id == task_id else task for task in view.tasks))
 
 
-def _hydrated(node: Node, seen: NodeView) -> NodeView:
-    """The API's half of a node over the stream's half: what only a resource says, keeping what only events said."""
+def _hydrated(node: NodeResource, seen: NodeView) -> NodeView:
+    """The API's half of a node over the stream's half: what only a resource says, keeping what only events said.
+
+    ``progress`` is both halves: the stream says it as it moves, and the resource
+    still says it to a client that arrived after it moved.
+    """
     return replace(
         seen,
         state=node.state,
@@ -346,7 +341,9 @@ def _hydrated(node: Node, seen: NodeView) -> NodeView:
         price_per_hour=node.price_per_hour,
         market=node.market,
         error=node.last_error.message if node.last_error else None,
-        binding=MappingProxyType(node.provider_binding),
+        ssh=node.ssh,
+        progress=node.progress.step if node.progress else seen.progress,
+        completion=node.progress.completion if node.progress else seen.completion,
     )
 
 

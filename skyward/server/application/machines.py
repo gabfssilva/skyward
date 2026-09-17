@@ -16,7 +16,7 @@ nobody will ever find and everybody will keep paying for.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import monotonic
 
 import msgspec
@@ -116,6 +116,12 @@ class Machines:
         The state is read once more after the binding, because a tick that fired
         while the binding was being made has offered the row to somebody who may
         already have bought on it.
+
+        Anything that stops the machine from being bought — an account the cloud will
+        not open, a region with no capacity left — is written on the compute and waited
+        out before the next attempt. A row that is asked for every tick and refused
+        every tick would otherwise be a provider called every five seconds with nothing
+        on the compute to say why it has no machines.
         """
         log = logger.bind(compute_id=compute_id, node_id=node_id)
         if (left := self._refusal(compute_id)) is not None:
@@ -127,21 +133,22 @@ class Machines:
             log.debug("not buying: the row is {}", node.state)
             return
 
-        infrastructure = await self.bind(compute)
-        adapter = await self.adapter(infrastructure.provider_id)
-
-        node = await self._nodes.get(compute_id, node_id)
-        if node.state != "requested":
-            log.debug("not buying: the row became {} while the compute was being bound", node.state)
-            return
-
-        log.debug("buying one machine on {}", adapter.kind)
         try:
+            infrastructure = await self.bind(compute)
+            adapter = await self.adapter(infrastructure.provider_id)
+
+            node = await self._nodes.get(compute_id, node_id)
+            if node.state != "requested":
+                log.debug("not buying: the row became {} while the compute was being bound", node.state)
+                return
+
+            log.debug("buying one machine on {}", adapter.kind)
             placed, machine, sold = await self._place(adapter, compute, infrastructure, claim(node_id))
-        except Exception:
-            self._refuse(compute_id)
+        except Exception as failure:
+            await self._refuse(compute_id, failure)
             raise
         self._refused.pop(compute_id, None)
+        await self._computes.placed(compute_id)
 
         await self._nodes.launched(node_id, machine, offer=placed.offer, market=sold)
         log.bind(instance_id=machine.id).info(
@@ -159,17 +166,24 @@ class Machines:
             case _:
                 return None
 
-    def _refuse(self, compute_id: str) -> None:
-        """Open the window a refused compute waits out, doubling the last one up to :data:`REFUSED_MAX`."""
-        now = monotonic()
+    async def _refuse(self, compute_id: str, failure: Exception) -> None:
+        """Open the window a refused compute waits out, doubling the last one up to :data:`REFUSED_MAX`.
+
+        The window is held here, on the monotonic clock, because it is this process
+        deciding when to call a provider again. What is written down is why and until
+        when, for a reader asking a compute that has been ``provisioning`` for ten
+        minutes what it is waiting for — the log is the only other answer there is.
+        """
+        monotonic_now = monotonic()
         match self._refused.get(compute_id):
-            case (until, _) if now < until:
+            case (until, _) if monotonic_now < until:
                 return
             case (_, delay):
                 delay = min(delay * 2, REFUSED_MAX)
             case None:
                 delay = REFUSED_FIRST
-        self._refused[compute_id] = (now + delay, delay)
+        self._refused[compute_id] = (monotonic_now + delay, delay)
+        await self._computes.refused(compute_id, _reason(failure), now() + timedelta(seconds=delay))
 
     async def _place(
         self, adapter: Provider, compute: Compute, infrastructure: Infrastructure, node: str
@@ -579,6 +593,7 @@ class Machines:
     async def release(self, compute_id: str) -> None:
         """Give back everything that was the compute's and not a machine's."""
         self._refused.pop(compute_id, None)
+        await self._computes.placed(compute_id)
         infrastructure = await self._computes.infrastructure(compute_id)
         if not infrastructure.provider_id:
             return
@@ -607,6 +622,7 @@ class Machines:
         if moved == seen:
             return False
         self._progress[node.id] = (moved, now())
+        await self._nodes.seen(node.id, machine)
         await self._progressed(node, machine)
         return True
 
@@ -681,6 +697,21 @@ def _moved(node: Node, machine: Machine) -> bool:
     """
     held = node.provider_binding
     return (machine.host, machine.private_host, machine.port) != (held.get("host"), held.get("private_host"), held.get("port"))
+
+
+def _reason(failure: Exception) -> str:
+    """What to tell a reader about a launch nobody would take, in one line.
+
+    A compound failure is what escapes when every market in every region refused,
+    and its own message says only that: the providers' words are in the group, and
+    they are the half a reader can act on.
+    """
+    match failure:
+        case ExceptionGroup(message=message, exceptions=refusals):
+            said = dict.fromkeys(str(refusal) for refusal in refusals if str(refusal))
+            return f"{message}: {', '.join(said)}" if said else message
+        case _:
+            return str(failure) or type(failure).__name__
 
 
 def _token(machine: Machine) -> str | None:

@@ -217,7 +217,7 @@ layers = [
     "skyward.server",
     "skyward.providers",
     "skyward.worker",
-    "skyward.shared",
+    "skyward.shared | skyward.api",
 ]
 ignore_imports = [
     # The embedded transport: the client hosts the daemon in-process when asked to.

@@ -11,11 +11,11 @@ from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
+from skyward.api import v1
 from skyward.server.application import ports
 from skyward.server.application.ssh import CHUNK, Pty
 from skyward.server.http.exceptions import failures
 from skyward.shared.errors import SkywardError
-from skyward.shared.schemas import Error, Resize
 
 BYTES = "application/octet-stream"
 
@@ -25,7 +25,7 @@ REFUSED = 4409
 Refusing the handshake would be the closer analogue, and it is the wrong one: a
 browser is told nothing about a rejected upgrade, since the WebSocket API hands
 ``onerror`` no status and no body. So the socket is accepted, the refusal is sent as
-the same :class:`Error` every other endpoint answers with, and only then is it closed
+the same ``Error`` every other endpoint answers with, and only then is it closed
 — the reason is in a frame, not in the close, which holds 123 bytes.
 """
 
@@ -119,13 +119,13 @@ class ShellController(Controller):
 
         Binary frames are the terminal itself: keystrokes up, whatever it paints
         down, unframed, because a terminal has no frames and one output. Text frames
-        up are a :class:`Resize` — the screen's new shape, which the halves can only
+        up are a ``ResizeFrame`` — the screen's new shape, which the halves can only
         say once and this can say whenever the window moves.
 
         The machine need not be ready: every machine that has answered SSH takes a
         terminal, and one still booting takes it the moment it does, so the socket
         may be open a while before the first byte comes back. One that cannot be
-        opened at all is an :class:`Error` in a text frame and then a close — and so is
+        opened at all is an ``Error`` in a text frame and then a close — and so is
         a compute nobody has, which is why the name is looked up after the socket is
         accepted rather than by the dependency every other route resolves it with.
         """
@@ -133,7 +133,8 @@ class ShellController(Controller):
         try:
             pty = await shell.open(await computes.identify(compute), node, command, term, (columns, rows))
         except SkywardError as refused:
-            await socket.send_json(Error(code=refused.code, message=refused.message, retryable=refused.retryable, details=refused.details or None))
+            error = v1.Error(code=refused.code, message=refused.message, retryable=refused.retryable, request_id=None, details=refused.details or None)
+            await socket.send_json(error)
             await socket.close(code=REFUSED, reason=refused.code)
             return
 
@@ -187,7 +188,7 @@ async def _type(socket: WebSocket, pty: Pty) -> None:
                 writer.write(typed)
             case {"text": str(control)} if control:
                 with suppress(msgspec.DecodeError, msgspec.ValidationError):
-                    shape = msgspec.json.decode(control, type=Resize)
+                    shape = msgspec.json.decode(control, type=v1.ResizeFrame)
                     pty.resize((shape.columns, shape.rows))
             case _:
                 pass

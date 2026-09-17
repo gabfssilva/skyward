@@ -84,6 +84,10 @@ class ComputeRow(Table, tablename="computes"):
     ``revision`` is the optimistic-concurrency token behind ``If-Match``. Every
     write bumps it; a write that expected an older one is refused.
 
+    ``placement_*`` is why the last launch was refused and when buying is tried
+    again — the one thing about a compute stuck in ``provisioning`` that no other
+    column says.
+
     ``deletion_cause`` and ``deleted_at`` are how the compute ended. The cause is
     written with the intent to delete, by whoever had it — a client, or the
     reconciler letting go of a lease nobody renews — and the moment by the move
@@ -107,9 +111,9 @@ class ComputeRow(Table, tablename="computes"):
 
     status_state = Varchar(index=True)
     status_observed_generation = Integer(default=0)
-    status_nodes_ready = Integer(default=0)
-    status_nodes_total = Integer(default=0)
     status_error = JSONB(null=True, default=None)
+    placement_reason = Varchar(null=True, default=None)
+    placement_retry_at = Timestamptz(null=True, default=None)
     deletion_cause = Varchar(null=True, default=None)
     deleted_at = Timestamptz(null=True, default=None)
 

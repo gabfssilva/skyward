@@ -568,9 +568,20 @@ class ComputeStatus(Struct, frozen=True):
 
     state: ComputeState
     observed_generation: int
-    nodes_ready: int
-    nodes_total: int
     last_error: Error | None = None
+
+
+class Refusal(Struct, frozen=True):
+    """Why the last machine could not be bought, and when buying is tried again.
+
+    Written when every market and region refuses a launch, and cleared by the next
+    one that sells. A compute sitting in ``provisioning`` with no machines arriving
+    has a reason, and this is where it is kept — the alternative is reading the
+    daemon's log.
+    """
+
+    reason: str
+    retry_at: datetime
 
 
 class Lease(Struct, frozen=True):
@@ -639,6 +650,7 @@ class Compute(Struct, frozen=True):
     """
     tasks: TaskCounts
     offer: "Offer | None" = None
+    placement: Refusal | None = None
     ended: Ending | None = None
 
 

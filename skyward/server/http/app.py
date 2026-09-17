@@ -19,6 +19,7 @@ from skyward.server.application.dispatcher import Dispatcher
 from skyward.server.application.health import Health
 from skyward.server.application.machines import Machines
 from skyward.server.application.metering import Meter
+from skyward.server.application.reading import Reader
 from skyward.server.application.reconciler import Reconciler, Wakeup
 from skyward.server.application.runtimes import Files, Forward, Runtimes, Terminal
 from skyward.server.http.controllers.blobs import BlobController
@@ -223,6 +224,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     under ``/v1``. Only a daemon somebody can open in a browser has a use for one.
     """
     svc = svc or mock_services()
+    reader = Reader(svc.computes, svc.nodes, svc.tasks, svc.functions, svc.events, svc.metrics)
 
     async def tick() -> None:
         """The clock, and the safety net that makes events optional for correctness.
@@ -324,6 +326,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             "providers": Provide(lambda: svc.providers, sync_to_thread=False),
             "offers": Provide(lambda: svc.offers, sync_to_thread=False),
             "health": Provide(lambda: svc.health, sync_to_thread=False),
+            "reader": Provide(lambda: reader, sync_to_thread=False),
             "reconciler": Provide(lambda: svc.reconciler, sync_to_thread=False),
             "dispatcher": Provide(lambda: svc.dispatcher, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),

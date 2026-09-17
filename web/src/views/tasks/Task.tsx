@@ -36,9 +36,9 @@ const once = (id: string, work: () => Promise<void>): Promise<void> => {
 /** File a task the page fetched where the store keeps tasks, its compute's list newest first. */
 function file(t: Task): void {
   const { tasks, setEntities } = useStore.getState()
-  const known = tasks[t.compute_id] ?? []
+  const known = tasks[t.compute.id] ?? []
   if (known.some((x) => x.id === t.id)) return
-  setEntities({ tasks: { ...tasks, [t.compute_id]: [t, ...known].sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at)) } })
+  setEntities({ tasks: { ...tasks, [t.compute.id]: [t, ...known].sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at)) } })
 }
 
 /**
@@ -64,7 +64,7 @@ function useTask(id: string | undefined): { found: Subject | null; looking: bool
     void once(id, async () => {
       const t = await api.task(id).catch(() => null)
       if (!t) return void missing.add(id)
-      await useStore.getState().learn([t.compute_id])
+      await useStore.getState().learn([t.compute.id])
       file(t)
     }).then(() => bump((n) => n + 1))
   }, [id, have])
@@ -105,7 +105,7 @@ export function TaskStage() {
             <Icon name="back" />
             Tasks
           </button>
-          <Fn sha={t.function} size={18} weight={700} />
+          <Fn sha={t.function.sha256} size={18} weight={700} />
           <Pill state={t.state} />
           <span className="sub">{t.dispatch === 'all' ? 'on every node of' : t.dispatch === 'stream' ? 'streaming from' : 'on one node of'}</span>
           <button className="row" style={{ gap: 6, fontWeight: 600 }} onClick={() => navigate(`/computes/${c.id}`)}>
@@ -228,7 +228,7 @@ export function TaskInspector() {
         <div style={{ marginTop: 6 }}>
           <div className="kv">
             <span className="faint">function</span>
-            <Fn sha={t.function} weight={400} />
+            <Fn sha={t.function.sha256} weight={400} />
           </div>
           <div className="kv">
             <span className="faint">compute</span>
@@ -319,7 +319,7 @@ export function TaskRail() {
         </button>
         <Pill state={c.status.state} />
         <span className="sep">/</span>
-        <Fn sha={t.function} />
+        <Fn sha={t.function.sha256} />
         <Pill state={t.state} />
       </div>
       <ComputeStats c={c} nodes={nodes} live={live} />

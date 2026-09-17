@@ -5,9 +5,9 @@ from litestar.exceptions import HTTPException
 from litestar.exceptions.responses import create_exception_response
 from litestar.openapi.datastructures import ResponseSpec
 
+from skyward.api.v1 import Error
 from skyward.shared.errors import SkywardError
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Error
 
 logger = logger.bind(component="http")
 

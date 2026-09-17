@@ -1,30 +1,26 @@
 from __future__ import annotations
 
 from litestar import Controller, Response, delete, get, patch, post, put
+from litestar.di import Provide
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 
+from skyward.api import v1
 from skyward.server.application import ports
+from skyward.server.application.reading import Block, Reader
 from skyward.server.application.reconciler import Wakeup
+from skyward.server.http import representation
 from skyward.server.http.exceptions import failures
 from skyward.server.http.headers import etag, revision_of
-from skyward.shared.schemas import (
-    Compute,
-    ComputeCreate,
-    ComputeSpecPatch,
-    ComputeState,
-    DeletionCause,
-    Generation,
-    GenerationCreate,
-    Lease,
-    LeaseClaim,
-    Page,
-)
+from skyward.server.http.include import compute_blocks
+from skyward.server.http.representation import recast
+from skyward.shared.schemas import ComputeCreate, ComputeSpecPatch, GenerationCreate, LeaseClaim
 
 
 class ComputeController(Controller):
     path = "/computes"
     tags = ["computes"]
+    dependencies = {"blocks": Provide(compute_blocks)}
 
     @get(
         summary="List computes",
@@ -39,15 +35,17 @@ class ComputeController(Controller):
     )
     async def list(
         self,
-        computes: ports.Computes,
+        reader: Reader,
+        blocks: frozenset[Block],
         cursor: str | None = None,
         limit: int = Parameter(default=50, ge=1),
-        compute_state: ComputeState | None = Parameter(query="state", default=None),
+        compute_state: v1.ComputeState | None = Parameter(query="state", default=None),
         owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes with no live owner."),
         live: bool | None = Parameter(default=None, description="`true` lists what is still running, `false` what is finished."),
-        cause: DeletionCause | None = Parameter(default=None, description="Why the compute ended — `requested` or `abandoned`."),
-    ) -> Page[Compute]:
-        return await computes.list(cursor, limit, compute_state, owned, live, cause)
+        cause: v1.DeletionCause | None = Parameter(default=None, description="Why the compute ended — `requested` or `abandoned`."),
+    ) -> v1.Page[v1.ComputeResource]:
+        page = await reader.computes(cursor, limit, compute_state, owned, live, cause, blocks)
+        return v1.Page(items=tuple(representation.compute(each) for each in page.items), next_cursor=page.next_cursor, total=page.total)
 
     @post(
         status_code=201,
@@ -59,28 +57,37 @@ class ComputeController(Controller):
             "event stream. There is no `operation` resource: `generation` vs `status.observed_generation` is the "
             "progress."
         ),
-        responses={**failures(409, 422), 200: ResponseSpec(Compute, description="The compute this key already created")},
+        responses={**failures(409, 422), 200: ResponseSpec(v1.ComputeResource, description="The compute this key already created")},
     )
     async def create(
         self,
-        data: ComputeCreate,
+        data: v1.CreateComputeResource,
         computes: ports.Computes,
+        reader: Reader,
         wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Compute]:
-        compute, created = await computes.create(data, idempotency_key)
+    ) -> Response[v1.ComputeResource]:
+        compute, created = await computes.create(recast(data, ComputeCreate), idempotency_key)
         wake("compute.changed", compute_id=compute.id)
-        return Response(compute, status_code=201 if created else 200, headers=etag(compute.revision))
+        return Response(representation.compute(await reader.compute(compute.id)), status_code=201 if created else 200, headers=etag(compute.revision))
 
     @get(
         "/{compute:str}",
         summary="Read a compute",
-        description="Accepts an id or a name. The response always carries both.",
+        description=(
+            "Accepts an id or a name. The response always carries both, and the node holding each rank.\n\n"
+            "`include` adds what is not carried by default, comma-separated: `nodes.metrics` (each node's newest reading "
+            "of each metric), `nodes.phases` (where each step of its bootstrap got to), `nodes.running` (what each node "
+            "is holding, and whose code), `nodes.tail` (the last lines each node printed), `nodes.replaced` (the nodes "
+            "that held a rank before), `tasks.latest` (the last task to succeed and the last to fail), `tasks.pace` "
+            "(how much finished in the last hour) and `utilization` (the fleet's average GPU and CPU over the last "
+            "minutes). A block that was not asked for is absent; one that was asked for and has nothing is empty."
+        ),
         responses=failures(404),
     )
-    async def read(self, compute_id: str, computes: ports.Computes) -> Response[Compute]:
-        compute = await computes.get(compute_id)
-        return Response(compute, headers=etag(compute.revision))
+    async def read(self, compute_id: str, reader: Reader, blocks: frozenset[Block]) -> Response[v1.ComputeResource]:
+        reading = await reader.compute(compute_id, blocks)
+        return Response(representation.compute(reading), headers=etag(reading.compute.revision))
 
     @patch(
         "/{compute:str}",
@@ -98,14 +105,15 @@ class ComputeController(Controller):
     async def update(
         self,
         compute_id: str,
-        data: ComputeSpecPatch,
+        data: v1.UpdateComputeResource,
         computes: ports.Computes,
+        reader: Reader,
         wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
-    ) -> Response[Compute]:
-        compute = await computes.patch(compute_id, data, revision_of(if_match))
+    ) -> Response[v1.ComputeResource]:
+        compute = await computes.patch(compute_id, recast(data, ComputeSpecPatch), revision_of(if_match))
         wake("compute.changed", compute_id=compute.id)
-        return Response(compute, headers=etag(compute.revision))
+        return Response(representation.compute(await reader.compute(compute.id)), headers=etag(compute.revision))
 
     @delete(
         "/{compute:str}",
@@ -122,13 +130,14 @@ class ComputeController(Controller):
         self,
         compute_id: str,
         computes: ports.Computes,
+        reader: Reader,
         wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Compute]:
+    ) -> Response[v1.ComputeResource]:
         compute = await computes.delete(compute_id, revision_of(if_match), idempotency_key)
         wake("compute.changed", compute_id=compute.id)
-        return Response(compute, status_code=202, headers=etag(compute.revision))
+        return Response(representation.compute(await reader.compute(compute.id)), status_code=202, headers=etag(compute.revision))
 
     @get(
         "/{compute:str}/generations",
@@ -136,8 +145,8 @@ class ComputeController(Controller):
         description="Every definition this compute has had, newest last. A rollback is a generation too, so this grows.",
         responses=failures(404),
     )
-    async def list_generations(self, compute_id: str, generations: ports.Generations) -> Page[Generation]:
-        return await generations.list(compute_id)
+    async def list_generations(self, compute_id: str, generations: ports.Generations) -> v1.Page[v1.GenerationResource]:
+        return recast(await generations.list(compute_id), v1.Page[v1.GenerationResource])
 
     @get(
         "/{compute:str}/generations/{number:int}",
@@ -145,8 +154,8 @@ class ComputeController(Controller):
         description="One definition as it was frozen, and whether the machines were ever built to match it.",
         responses=failures(404),
     )
-    async def get_generation(self, compute_id: str, number: int, generations: ports.Generations) -> Generation:
-        return await generations.get(compute_id, number)
+    async def get_generation(self, compute_id: str, number: int, generations: ports.Generations) -> v1.GenerationResource:
+        return recast(await generations.get(compute_id, number), v1.GenerationResource)
 
     @post(
         "/{compute:str}/generations",
@@ -163,15 +172,15 @@ class ComputeController(Controller):
     async def create_generation(
         self,
         compute_id: str,
-        data: GenerationCreate,
+        data: v1.CreateGenerationResource,
         generations: ports.Generations,
         wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Generation:
-        generation = await generations.create(compute_id, data, revision_of(if_match), idempotency_key)
+    ) -> v1.GenerationResource:
+        generation = await generations.create(compute_id, recast(data, GenerationCreate), revision_of(if_match), idempotency_key)
         wake("compute.changed", compute_id=compute_id)
-        return generation
+        return recast(generation, v1.GenerationResource)
 
     @put(
         "/{compute:str}/lease",
@@ -185,8 +194,8 @@ class ComputeController(Controller):
         ),
         responses=failures(404, 409),
     )
-    async def claim_lease(self, compute_id: str, data: LeaseClaim, computes: ports.Computes) -> Lease:
-        return await computes.claim_lease(compute_id, data)
+    async def claim_lease(self, compute_id: str, data: v1.ClaimLeaseResource, computes: ports.Computes) -> v1.LeaseResource:
+        return recast(await computes.claim_lease(compute_id, recast(data, LeaseClaim)), v1.LeaseResource)
 
     @delete(
         "/{compute:str}/lease",

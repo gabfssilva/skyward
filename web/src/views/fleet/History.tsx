@@ -15,7 +15,7 @@ const CAUSES: readonly (readonly [HistoryFilters['cause'], string])[] = [
 
 const boundOf = (c: Compute): Pick<Offer, 'kind' | 'accelerator' | 'accelerator_count' | 'region'> | null => {
   const s = c.spec.specs[0]
-  return c.offer ?? (s ? { ...s, kind: s.provider.kind } : null)
+  return c.offer ?? (s ? { accelerator: s.accelerator ?? null, accelerator_count: s.accelerator_count ?? 1, kind: s.provider.kind, region: s.region ?? null } : null)
 }
 
 const providerOf = (c: Compute): string => boundOf(c)?.kind ?? '—'

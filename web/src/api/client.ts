@@ -1,37 +1,40 @@
 import type { components, paths } from './schema'
 
 export type Schemas = components['schemas']
-export type Compute = Schemas['Compute']
-export type ComputeCreate = Schemas['ComputeCreate']
+export type Compute = Schemas['ComputeResource']
+export type ComputeCreate = Schemas['CreateComputeResource']
 export type ComputeSpec = Schemas['ComputeSpec']
-export type ComputeSpecPatch = Schemas['ComputeSpecPatch']
+export type ComputeSpecPatch = Schemas['UpdateComputeResource']
 export type ComputeStatus = Schemas['ComputeStatus']
 export type NodeBounds = Schemas['NodeBounds']
 export type Spec = Schemas['Spec']
 export type Image = Schemas['Image']
 export type Worker = Schemas['Worker']
 export type Options = Schemas['Options']
-export type Result = Schemas['Result']
+export type Result = Schemas['CommandResultResource']
 export type PluginRef = Schemas['PluginRef']
-export type Lease = Schemas['Lease']
+export type Lease = Schemas['LeaseResource']
 export type Ending = Schemas['Ending']
-export type Node = Schemas['Node']
-export type Task = Schemas['Task']
+export type Node = Schemas['NodeResource']
+export type Ssh = Schemas['Ssh']
+export type Progress = Schemas['Progress']
+export type Task = Schemas['TaskResource']
 export type TaskCounts = Schemas['TaskCounts']
-export type TaskCreate = Schemas['TaskCreate']
-export type Execution = Schemas['Execution']
-export type ExecutionCreate = Schemas['ExecutionCreate']
-export type Provider = Schemas['Provider']
-export type ProviderCreate = Schemas['ProviderCreate']
-export type ProviderKind = Schemas['ProviderKind']
-export type Offer = Schemas['Offer']
-export type Accelerator = Schemas['Accelerator']
-export type FunctionRef = Schemas['Function']
-export type FunctionSource = Schemas['FunctionSource']
+export type TaskCreate = Schemas['CreateTaskResource']
+export type FunctionSummary = Schemas['FunctionSummary']
+export type Execution = Schemas['ExecutionResource']
+export type ExecutionCreate = Schemas['CreateExecutionResource']
+export type Provider = Schemas['ProviderResource']
+export type ProviderCreate = Schemas['CreateProviderResource']
+export type ProviderKind = Schemas['ProviderKindResource']
+export type Offer = Schemas['OfferResource']
+export type Accelerator = Schemas['AcceleratorResource']
+export type FunctionRef = Schemas['FunctionResource']
+export type FunctionSource = Schemas['WriteFunctionResource']
 export type Call = Schemas['Call']
-export type Generation = Schemas['Generation']
-export type Liveness = Schemas['Liveness']
-export type LogEntry = Schemas['LogEntry']
+export type Generation = Schemas['GenerationResource']
+export type Liveness = Schemas['LivenessResource']
+export type LogEntry = Schemas['LogEntryResource']
 export type WireError = Schemas['Error']
 export type ErrorCode = WireError['code']
 
@@ -132,8 +135,9 @@ async function conditional<T>(id: string, init: RequestInit & { headers?: Record
   }
 }
 
-export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause'] }
-export type NodeQuery = { include_terminal?: boolean; generation?: number }
+export type ComputeQuery = { cursor?: string; limit?: number; state?: string; owned?: boolean; live?: boolean; cause?: Ending['cause']; include?: string }
+/** Blocks a compute carries beyond the default, comma-separated: what ``?include=`` takes. */
+export type NodeQuery = { include?: string }
 /** ``latest`` is one row per function, its newest upload; ``lineage`` is every upload of one function. */
 export type FunctionQuery = { cursor?: string; limit?: number; latest?: boolean; lineage?: string }
 export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string; order?: TaskOrder }
@@ -155,7 +159,7 @@ export const api = {
   health: (): Promise<Liveness> => request<Liveness>('/health/live'),
 
   computes: (query?: ComputeQuery): Promise<Page<Compute>> => request<Page<Compute>>(`/computes${qs(query)}`),
-  compute: (id: string): Promise<Compute> => request<Compute>(`/computes/${id}`),
+  compute: (id: string, include?: string): Promise<Compute> => request<Compute>(`/computes/${id}${qs({ include })}`),
   createCompute: (payload: ComputeCreate): Promise<Compute> => request<Compute>('/computes', { method: 'POST', ...body(payload), headers: once() }),
   patchCompute: (id: string, patch: ComputeSpecPatch): Promise<Compute> => conditional<Compute>(id, { method: 'PATCH', ...body(patch) }),
   scale: (id: string, nodes: NodeBounds): Promise<Compute> => conditional<Compute>(id, { method: 'PATCH', ...body({ nodes }) }),
@@ -166,8 +170,8 @@ export const api = {
   node: (computeId: string, nodeId: string): Promise<Node> => request<Node>(`/computes/${computeId}/nodes/${nodeId}`),
   drainNode: (computeId: string, nodeId: string): Promise<void> => request<void>(`/computes/${computeId}/nodes/${nodeId}`, { method: 'DELETE', headers: once() }),
 
-  exec: (computeId: string, command: string, node?: number): Promise<Schemas['Result']> =>
-    request<Schemas['Result']>(`/computes/${computeId}/exec${qs({ command, node })}`, { method: 'POST' }),
+  exec: (computeId: string, command: string, node?: number): Promise<Record<string, Result>> =>
+    request<Record<string, Result>>(`/computes/${computeId}/exec${qs({ command, node })}`, { method: 'POST' }),
 
   tasks: (query?: TaskQuery): Promise<Page<Task>> => request<Page<Task>>(`/tasks${qs(query)}`),
   submitTask: (payload: TaskCreate): Promise<Task> => request<Task>('/tasks', { method: 'POST', ...body(payload), headers: once() }),

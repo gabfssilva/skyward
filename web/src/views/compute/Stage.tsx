@@ -173,7 +173,7 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
   const lastDone = latest(['succeeded'])
   const lastErr = latest(['failed', 'timed_out'])
   const failed = failedOf(c)
-  const fnName = (sha: string) => state.functions[sha]?.name ?? sha.slice(0, 8)
+  const fnName = (fn: Task['function']) => fn.name ?? state.functions[fn.sha256]?.name ?? fn.sha256.slice(0, 8)
   const ranksOf = (t: Task) => new Set(execsOf(t, nodes).map((e) => e.rank)).size
   const cells = combNodes(id, nodes, metrics, state.progress)
 
@@ -398,7 +398,7 @@ function TasksBlock({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; n
                   return (
                     <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
                       <td>
-                        <Fn sha={t.function} weight={700} />
+                        <Fn sha={t.function.sha256} weight={700} />
                         <div className="mono faint">
                           {dispatchLine(t, nodes)}
                           {attempt > 1 ? ` · attempt ${attempt}` : ''}

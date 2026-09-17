@@ -5,9 +5,11 @@ from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
+from skyward.api import v1
 from skyward.server.application import ports
 from skyward.server.application.ssh import Result
 from skyward.server.http.exceptions import failures
+from skyward.server.http.representation import recast
 from skyward.shared.errors import CapabilityMismatchError
 
 BYTES = "application/octet-stream"
@@ -20,6 +22,11 @@ def _target(node: str) -> ports.Target:
     if node == "all":
         return "all"
     return _rank(node)
+
+
+def _said(results: tuple[tuple[str, Result], ...]) -> dict[str, v1.CommandResultResource]:
+    """What each node said, by node."""
+    return {node: recast(result, v1.CommandResultResource) for node, result in results}
 
 
 def _rank(node: str) -> int:
@@ -45,8 +52,8 @@ class FileController(Controller):
         files: ports.Files,
         path: str = Parameter(query="path", description="The path to list, on the node."),
         node: str = Parameter(query="node", default="0", description=NODE),
-    ) -> dict[str, Result]:
-        return dict(await files.ls(compute_id, _target(node), path))
+    ) -> dict[str, v1.CommandResultResource]:
+        return _said(await files.ls(compute_id, _target(node), path))
 
     @delete(
         "/files",
@@ -64,8 +71,8 @@ class FileController(Controller):
         files: ports.Files,
         path: str = Parameter(query="path", description="The path to remove, on the node."),
         node: str = Parameter(query="node", default="all", description=NODE),
-    ) -> dict[str, Result]:
-        return dict(await files.rm(compute_id, _target(node), path))
+    ) -> dict[str, v1.CommandResultResource]:
+        return _said(await files.rm(compute_id, _target(node), path))
 
     @put(
         "/files",
@@ -135,5 +142,5 @@ class FileController(Controller):
         files: ports.Files,
         command: str = Parameter(query="command", description="The command line, run by the node's shell."),
         node: str = Parameter(query="node", default="all", description=NODE),
-    ) -> dict[str, Result]:
-        return dict(await files.run(compute_id, _target(node), command))
+    ) -> dict[str, v1.CommandResultResource]:
+        return _said(await files.run(compute_id, _target(node), command))

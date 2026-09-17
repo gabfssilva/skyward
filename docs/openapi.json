@@ -1,22 +1,19 @@
 {
   "components": {
     "schemas": {
-      "Accelerator": {
+      "AcceleratorResource": {
+        "description": "One accelerator the catalog knows, and the card behind the name.",
         "properties": {
           "architecture": {
-            "default": "",
             "type": "string"
           },
           "cuda_max": {
-            "default": "",
             "type": "string"
           },
           "cuda_min": {
-            "default": "",
             "type": "string"
           },
           "manufacturer": {
-            "default": "",
             "type": "string"
           },
           "name": {
@@ -27,14 +24,31 @@
           }
         },
         "required": [
+          "architecture",
+          "cuda_max",
+          "cuda_min",
+          "manufacturer",
           "name",
           "vram"
         ],
-        "title": "Accelerator",
+        "title": "AcceleratorResource",
+        "type": "object"
+      },
+      "AttachExcerptResource": {
+        "description": "The text of a function already registered as a pickle, as the console shows it.",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AttachExcerptResource",
         "type": "object"
       },
       "Call": {
-        "description": "A call's arguments written as JSON, for a caller that cannot pickle them.\n\nA worker takes a pickle, and a browser has no Python to make one with \u2014 so the\nvalues are handed over as themselves and encoded at the edge. What fits is\nwhat JSON has: numbers, strings, booleans, null, lists and objects. An\nargument that is a dataframe or a model is an argument that has to be built\nwhere Python is.\n\nBoth fields are untyped past their own shape, because what is inside them\nbelongs to the callee: the only thing true of every function's arguments is\nthat they are values.",
+        "description": "A call's arguments as JSON, for a caller that cannot pickle them.",
         "properties": {
           "args": {
             "oneOf": [
@@ -63,84 +77,45 @@
         "title": "Call",
         "type": "object"
       },
-      "Compute": {
-        "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.\n``tasks`` counts every task it was given, by state, from the task rows on each\nread \u2014 not the page of them a listing returns.",
+      "ClaimLeaseResource": {
         "properties": {
-          "cost": {
-            "type": "number"
-          },
-          "created_at": {
-            "format": "date-time",
+          "owner": {
             "type": "string"
           },
-          "ended": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Ending"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "generation": {
+          "ttl_seconds": {
             "type": "integer"
-          },
-          "id": {
-            "type": "string"
-          },
-          "lease": {
-            "$ref": "#/components/schemas/Lease"
-          },
-          "name": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "offer": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Offer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "spec": {
-            "$ref": "#/components/schemas/ComputeSpec"
-          },
-          "status": {
-            "$ref": "#/components/schemas/ComputeStatus"
-          },
-          "tasks": {
-            "$ref": "#/components/schemas/TaskCounts"
           }
         },
         "required": [
-          "cost",
-          "created_at",
-          "generation",
-          "id",
-          "lease",
-          "name",
-          "revision",
-          "spec",
-          "status",
-          "tasks"
+          "owner",
+          "ttl_seconds"
         ],
-        "title": "Compute",
+        "title": "ClaimLeaseResource",
         "type": "object"
       },
-      "ComputeAbandoned": {
+      "CommandResultResource": {
+        "description": "What one command said on one machine.",
+        "properties": {
+          "exit_code": {
+            "type": "integer"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdout": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "stderr",
+          "stdout"
+        ],
+        "title": "CommandResultResource",
+        "type": "object"
+      },
+      "ComputeAbandonedEvent": {
+        "description": "Nothing renewed the lease and ``delete_on_exit`` was set, so the compute is going away.",
         "properties": {
           "compute": {
             "type": "string"
@@ -154,10 +129,11 @@
           "compute",
           "type"
         ],
-        "title": "ComputeAbandoned",
+        "title": "ComputeAbandonedEvent",
         "type": "object"
       },
-      "ComputeAdopted": {
+      "ComputeAdoptedEvent": {
+        "description": "Another daemon bound the compute first, and this one carries on under its binding.",
         "properties": {
           "compute": {
             "type": "string"
@@ -171,10 +147,11 @@
           "compute",
           "type"
         ],
-        "title": "ComputeAdopted",
+        "title": "ComputeAdoptedEvent",
         "type": "object"
       },
-      "ComputeBound": {
+      "ComputeBoundEvent": {
+        "description": "The compute was given an offer, a region and the markets to buy on. ``previous`` is the offer it left.",
         "properties": {
           "compute": {
             "type": "string"
@@ -228,33 +205,42 @@
           "region",
           "type"
         ],
-        "title": "ComputeBound",
+        "title": "ComputeBoundEvent",
         "type": "object"
       },
-      "ComputeCreate": {
-        "description": "What it takes to ask for a compute: a definition, and optionally a name to find it by.",
+      "ComputeCostEvent": {
+        "description": "What the compute has cost so far, over how many live machines. Streamed, never logged.",
         "properties": {
-          "name": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "at": {
+            "format": "date-time",
+            "type": "string"
           },
-          "spec": {
-            "$ref": "#/components/schemas/ComputeSpec"
+          "compute": {
+            "type": "string"
+          },
+          "cost": {
+            "type": "number"
+          },
+          "nodes": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.cost",
+            "type": "string"
           }
         },
         "required": [
-          "spec"
+          "at",
+          "compute",
+          "cost",
+          "nodes",
+          "type"
         ],
-        "title": "ComputeCreate",
+        "title": "ComputeCostEvent",
         "type": "object"
       },
-      "ComputeCreated": {
+      "ComputeCreatedEvent": {
+        "description": "The definition was accepted. The compute exists and owns nothing yet.",
         "properties": {
           "compute": {
             "type": "string"
@@ -268,10 +254,11 @@
           "compute",
           "type"
         ],
-        "title": "ComputeCreated",
+        "title": "ComputeCreatedEvent",
         "type": "object"
       },
-      "ComputeDegraded": {
+      "ComputeDegradedEvent": {
+        "description": "A reconcile pass broke on the compute. The next pass tries again.",
         "properties": {
           "code": {
             "default": "reconcile_failed",
@@ -314,10 +301,11 @@
           "error",
           "type"
         ],
-        "title": "ComputeDegraded",
+        "title": "ComputeDegradedEvent",
         "type": "object"
       },
-      "ComputeDeleted": {
+      "ComputeDeletedEvent": {
+        "description": "Every machine is gone and the binding is released. Nothing bills any more.",
         "properties": {
           "compute": {
             "type": "string"
@@ -339,10 +327,10 @@
           "compute",
           "type"
         ],
-        "title": "ComputeDeleted",
+        "title": "ComputeDeletedEvent",
         "type": "object"
       },
-      "ComputeDeleting": {
+      "ComputeDeletingEvent": {
         "properties": {
           "compute": {
             "type": "string"
@@ -364,10 +352,11 @@
           "nodes_total",
           "type"
         ],
-        "title": "ComputeDeleting",
+        "title": "ComputeDeletingEvent",
         "type": "object"
       },
-      "ComputeDeletionFailed": {
+      "ComputeDeletionFailedEvent": {
+        "description": "A teardown pass broke. The next one carries on giving the machines back.",
         "properties": {
           "code": {
             "default": "reconcile_failed",
@@ -410,10 +399,93 @@
           "error",
           "type"
         ],
-        "title": "ComputeDeletionFailed",
+        "title": "ComputeDeletionFailedEvent",
         "type": "object"
       },
-      "ComputeProvisioning": {
+      "ComputeGenerationAppliedEvent": {
+        "description": "The machines now reflect this definition.",
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.generation.applied",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "number",
+          "type"
+        ],
+        "title": "ComputeGenerationAppliedEvent",
+        "type": "object"
+      },
+      "ComputeGenerationCreatedEvent": {
+        "description": "A new definition was frozen: a resize, or an earlier generation brought back.",
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "compute.generation.created",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "number",
+          "type"
+        ],
+        "title": "ComputeGenerationCreatedEvent",
+        "type": "object"
+      },
+      "ComputeLeaseClaimedEvent": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.lease.claimed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "owner",
+          "type"
+        ],
+        "title": "ComputeLeaseClaimedEvent",
+        "type": "object"
+      },
+      "ComputeLeaseReleasedEvent": {
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compute.lease.released",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "type"
+        ],
+        "title": "ComputeLeaseReleasedEvent",
+        "type": "object"
+      },
+      "ComputeProvisioningEvent": {
+        "description": "Fewer machines answer than the floor asks for.",
         "properties": {
           "compute": {
             "type": "string"
@@ -439,10 +511,11 @@
           "nodes_total",
           "type"
         ],
-        "title": "ComputeProvisioning",
+        "title": "ComputeProvisioningEvent",
         "type": "object"
       },
-      "ComputeReady": {
+      "ComputeReadyEvent": {
+        "description": "Enough machines answer to satisfy the floor.",
         "properties": {
           "compute": {
             "type": "string"
@@ -468,11 +541,129 @@
           "nodes_total",
           "type"
         ],
-        "title": "ComputeReady",
+        "title": "ComputeReadyEvent",
+        "type": "object"
+      },
+      "ComputeResource": {
+        "description": "A set of machines held under one intention, and the machines holding each rank of it.\n\n``spec`` is what was asked for and ``status`` what was observed. ``nodes`` is the\nnode currently holding each rank, and ``include=nodes.replaced`` adds the ones that\nheld a rank before.",
+        "properties": {
+          "cost": {
+            "type": "number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ended": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Ending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/LeaseResource"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeResource"
+            },
+            "type": "array"
+          },
+          "offer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OfferResource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "placement": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Refusal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProviderSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rate": {
+            "type": "number"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ComputeSpec"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComputeStatus"
+          },
+          "tasks": {
+            "$ref": "#/components/schemas/TaskCounts"
+          },
+          "utilization": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Utilization"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cost",
+          "created_at",
+          "ended",
+          "generation",
+          "id",
+          "lease",
+          "name",
+          "nodes",
+          "offer",
+          "placement",
+          "provider",
+          "rate",
+          "revision",
+          "spec",
+          "status",
+          "tasks"
+        ],
+        "title": "ComputeResource",
         "type": "object"
       },
       "ComputeSpec": {
-        "description": "Everything a compute was asked to be. Intent, never observation.\n\nOnly a client writes it, and only through ``PATCH``. Of its fields exactly one\nis mutable in place \u2014 ``nodes``, which resizes. The rest is fixed for the life\nof the compute: a different image or provider is a different compute.",
         "properties": {
           "allocation": {
             "default": "spot_if_available",
@@ -558,21 +749,7 @@
         "title": "ComputeSpec",
         "type": "object"
       },
-      "ComputeSpecPatch": {
-        "description": "The one field of a spec that can change without replacing machines.",
-        "properties": {
-          "nodes": {
-            "$ref": "#/components/schemas/NodeBounds"
-          }
-        },
-        "required": [
-          "nodes"
-        ],
-        "title": "ComputeSpecPatch",
-        "type": "object"
-      },
       "ComputeStatus": {
-        "description": "What the reconciler has observed. Never written by a client.\n\n``observed_generation`` against the compute's ``generation`` is the progress:\nthe gap between them *is* the pending work, which is why there is no operation\nresource to poll.",
         "properties": {
           "last_error": {
             "oneOf": [
@@ -583,12 +760,6 @@
                 "type": "null"
               }
             ]
-          },
-          "nodes_ready": {
-            "type": "integer"
-          },
-          "nodes_total": {
-            "type": "integer"
           },
           "observed_generation": {
             "type": "integer"
@@ -606,91 +777,255 @@
           }
         },
         "required": [
-          "nodes_ready",
-          "nodes_total",
+          "last_error",
           "observed_generation",
           "state"
         ],
         "title": "ComputeStatus",
         "type": "object"
       },
-      "ConsoleEvent": {
+      "ComputeStraysTerminatedEvent": {
+        "description": "Machines the provider held under the compute, and that no node owned, were terminated.",
         "properties": {
           "compute": {
             "type": "string"
           },
-          "content": {
-            "type": "string"
-          },
-          "execution": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "node": {
-            "type": "string"
-          },
-          "task": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "machines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "type": {
-            "const": "node.console",
+            "const": "compute.strays_terminated",
             "type": "string"
           }
         },
         "required": [
           "compute",
-          "content",
-          "node",
+          "machines",
           "type"
         ],
-        "title": "ConsoleEvent",
+        "title": "ComputeStraysTerminatedEvent",
         "type": "object"
       },
-      "CostEvent": {
+      "ComputeSummary": {
         "properties": {
-          "at": {
-            "format": "date-time",
+          "id": {
             "type": "string"
           },
-          "compute": {
-            "type": "string"
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ComputeSummary",
+        "type": "object"
+      },
+      "CreateComputeResource": {
+        "properties": {
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "cost": {
-            "type": "number"
+          "spec": {
+            "$ref": "#/components/schemas/ComputeSpec"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "title": "CreateComputeResource",
+        "type": "object"
+      },
+      "CreateExecutionResource": {
+        "description": "A retry. An indeterminate outcome is retried only with ``acknowledge_duplication``, since it may run twice.",
+        "properties": {
+          "acknowledge_duplication": {
+            "default": false,
+            "type": "boolean"
           },
-          "nodes": {
+          "ranks": {
+            "oneOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "CreateExecutionResource",
+        "type": "object"
+      },
+      "CreateGenerationResource": {
+        "description": "An earlier generation's definition made current again, as a new generation.",
+        "properties": {
+          "source": {
             "type": "integer"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "CreateGenerationResource",
+        "type": "object"
+      },
+      "CreateProviderResource": {
+        "description": "An account, and what opens it. Also what replaces one wholesale; ``credentials`` are never read back.",
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
           },
-          "type": {
-            "const": "compute.cost",
+          "credentials": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
             "type": "string"
           }
         },
         "required": [
-          "at",
-          "compute",
-          "cost",
-          "nodes",
-          "type"
+          "kind",
+          "name"
         ],
-        "title": "CostEvent",
+        "title": "CreateProviderResource",
+        "type": "object"
+      },
+      "CreateTaskResource": {
+        "description": "One call to place. The arguments are exactly one of ``args_inline``, ``args_sha256`` and ``call``.",
+        "properties": {
+          "args_inline": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "args_sha256": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "call": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Call"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compute": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dispatch": {
+            "enum": [
+              "one",
+              "all",
+              "stream"
+            ],
+            "type": "string"
+          },
+          "function": {
+            "type": "string"
+          },
+          "queue_timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rank": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "compute",
+          "dispatch",
+          "function"
+        ],
+        "title": "CreateTaskResource",
         "type": "object"
       },
       "Ending": {
-        "description": "How a compute ended: when its last machine was gone, why, and what the run came to.\n\nOnly a deleted compute has one. ``cost`` is derived from the node rows each time\nthe compute is read, the way the meter derives a live compute's cost.",
         "properties": {
           "at": {
             "format": "date-time",
@@ -716,7 +1051,6 @@
         "type": "object"
       },
       "Error": {
-        "description": "Every failure, in one shape, whatever produced it.\n\n``code`` is the closed set a client matches on, so nobody parses prose.\n``retryable`` is a property of the failure rather than a guess left to the\ncaller: a revision conflict is worth re-reading and re-sending, and a spec no\nprovider can satisfy is not.",
         "properties": {
           "code": {
             "enum": [
@@ -772,14 +1106,16 @@
         },
         "required": [
           "code",
+          "details",
           "message",
+          "request_id",
           "retryable"
         ],
         "title": "Error",
         "type": "object"
       },
-      "Execution": {
-        "description": "One physical attempt at a task.\n\n``ordinal`` counts the attempts and ``rank`` says which node took it. A retry\nis another execution pointing ``retry_of`` at the last one \u2014 never another\ntask, because the task id is the handle the caller is holding.",
+      "ExecutionResource": {
+        "description": "One physical attempt at a task. A retry is another execution, never another task.",
         "properties": {
           "deadline_at": {
             "oneOf": [
@@ -880,46 +1216,28 @@
             "type": "string"
           },
           "stopping": {
-            "default": false,
             "type": "boolean"
           }
         },
         "required": [
+          "deadline_at",
+          "error",
+          "finished_at",
           "id",
+          "node_id",
           "ordinal",
           "rank",
-          "state"
+          "result_sha256",
+          "retry_of",
+          "started_at",
+          "state",
+          "stopping"
         ],
-        "title": "Execution",
+        "title": "ExecutionResource",
         "type": "object"
       },
-      "ExecutionCreate": {
-        "description": "A retry, and the admission that it may be a second run.\n\n``acknowledge_duplication`` is required to retry an indeterminate outcome: the\nsystem does not know whether the previous attempt had side effects, and the\ncaller is the only one in a position to say that running twice is acceptable.",
-        "properties": {
-          "acknowledge_duplication": {
-            "default": false,
-            "type": "boolean"
-          },
-          "ranks": {
-            "oneOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [],
-        "title": "ExecutionCreate",
-        "type": "object"
-      },
-      "Function": {
-        "description": "A registered piece of code, named by the hash of its serialized bytes.\n\nThe metadata only. The code is a blob, fetched as one \u2014 which is what lets a\ntask name its function without carrying it.\n\nOne function is many uploads. ``lineage`` names the function \u2014 the same name\nand qualname in the same file \u2014 and ``version`` counts the changes to its code\nalong that lineage, in order. An upload that differs only in where the function\nsits in its file, or in what a run captured, is the same version: a function\nthat closes over a job id is uploaded once per job and edited far less often.\n\nThe text comes one of two ways, because the pickle has none. ``source`` is a\nfunction written in the console, and it is what the function was built from.\n``excerpt`` is one the SDK uploaded: the function and what it uses from its\nmodule, read off the file where it was defined \u2014 a transcript for reading,\nabsent when there was no file to read.",
+      "FunctionResource": {
+        "description": "A registered piece of code, named by the hash of its serialized bytes.\n\n``lineage`` is one function \u2014 the same name in the same file \u2014 and ``version``\ncounts the changes to its code along it.",
         "properties": {
           "codec": {
             "type": "string"
@@ -994,46 +1312,72 @@
         "required": [
           "codec",
           "created_at",
+          "excerpt",
           "lineage",
+          "name",
+          "origin",
+          "qualname",
           "sha256",
           "size_bytes",
+          "source",
           "version"
         ],
-        "title": "Function",
+        "title": "FunctionResource",
         "type": "object"
       },
-      "FunctionExcerpt": {
-        "description": "The text of a function the SDK uploaded, sent after the pickle it describes.\n\nThe imports, constants, functions and classes of its module that it uses, then\nthe function, in the order of the file. Nothing runs it: it is what the console\nshows where a pickle would otherwise show nothing.",
-        "properties": {
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "title": "FunctionExcerpt",
-        "type": "object"
-      },
-      "FunctionSource": {
-        "description": "A function written out, for a caller with no interpreter to pickle one with.\n\nThe module a node will run and the name in it to call. The text is not\nexecuted here \u2014 it is captured, so what is stored is the same pickled callable\nthe SDK would have uploaded, and the machine is still the only place any of it\nruns.\n\nThe name is checked against the source rather than trusted: a module that does\nnot bind it is a function that cannot be called, and finding that out at\nregistration costs a parse, where finding it out at dispatch costs a machine.",
+      "FunctionSummary": {
+        "description": "The code a task names. ``name`` and ``version`` are null for code the daemon holds no record of.",
         "properties": {
           "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sha256": {
             "type": "string"
           },
-          "source": {
-            "type": "string"
+          "version": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "name",
-          "source"
+          "sha256",
+          "version"
         ],
-        "title": "FunctionSource",
+        "title": "FunctionSummary",
         "type": "object"
       },
-      "Generation": {
-        "description": "One frozen definition of a compute, and whether the machines match it yet.\n\nHistory is kept rather than overwritten, because a rollback is a generation\ntoo \u2014 it is a new number carrying an old spec, not an erasure of what happened\nin between.",
+      "Gauge": {
+        "properties": {
+          "at": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "at",
+          "value"
+        ],
+        "title": "Gauge",
+        "type": "object"
+      },
+      "GenerationResource": {
+        "description": "One frozen definition of a compute, and whether the machines were built to it.",
         "properties": {
           "applied": {
             "type": "boolean"
@@ -1059,66 +1403,10 @@
           "number",
           "spec"
         ],
-        "title": "Generation",
-        "type": "object"
-      },
-      "GenerationApplied": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "number": {
-            "type": "integer"
-          },
-          "type": {
-            "const": "compute.generation.applied",
-            "type": "string"
-          }
-        },
-        "required": [
-          "compute",
-          "number",
-          "type"
-        ],
-        "title": "GenerationApplied",
-        "type": "object"
-      },
-      "GenerationCreate": {
-        "description": "Make an earlier generation's definition current again, as a new generation.\n\nThe machines already up are not replaced: a size that differs is reconciled\nas a resize would be, and a machine bought from now on is built to the\ndefinition now current.",
-        "properties": {
-          "source": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "title": "GenerationCreate",
-        "type": "object"
-      },
-      "GenerationCreated": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "number": {
-            "type": "integer"
-          },
-          "type": {
-            "const": "compute.generation.created",
-            "type": "string"
-          }
-        },
-        "required": [
-          "compute",
-          "number",
-          "type"
-        ],
-        "title": "GenerationCreated",
+        "title": "GenerationResource",
         "type": "object"
       },
       "Image": {
-        "description": "The environment a node builds before it runs anything.\n\nThe base, the interpreter, the packages and where they resolve from. What the\nuser shipped from their own machine is not here \u2014 ``includes`` is packed into\na blob client-side and only its hash travels, because a spec is written to the\ncompute row and served back by the API.",
         "properties": {
           "apt": {
             "default": [],
@@ -1253,8 +1541,38 @@
         "title": "Image",
         "type": "object"
       },
-      "Lease": {
-        "description": "Who currently owns the compute, and until when.\n\nA liveness signal the owning process renews, not a lock on the resource. Zero\nowners is legitimate and temporary \u2014 a daemon restarting, a script killed \u2014\nand only the holder opens SSH connections to the machines. Losing it destroys\nnothing by itself.",
+      "LatestTasks": {
+        "properties": {
+          "failed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TaskSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "succeeded": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TaskSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "failed",
+          "succeeded"
+        ],
+        "title": "LatestTasks",
+        "type": "object"
+      },
+      "LeaseResource": {
+        "description": "Who owns the compute, and until when. Zero owners is legitimate and temporary.",
         "properties": {
           "expires_at": {
             "oneOf": [
@@ -1278,83 +1596,31 @@
             ]
           }
         },
-        "required": [],
-        "title": "Lease",
-        "type": "object"
-      },
-      "LeaseClaim": {
-        "description": "A bid for ownership: who is claiming, and for how long before it lapses.",
-        "properties": {
-          "owner": {
-            "type": "string"
-          },
-          "ttl_seconds": {
-            "type": "integer"
-          }
-        },
         "required": [
-          "owner",
-          "ttl_seconds"
+          "expires_at",
+          "owner"
         ],
-        "title": "LeaseClaim",
+        "title": "LeaseResource",
         "type": "object"
       },
-      "LeaseClaimed": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "owner": {
-            "type": "string"
-          },
-          "type": {
-            "const": "compute.lease.claimed",
-            "type": "string"
-          }
-        },
-        "required": [
-          "compute",
-          "owner",
-          "type"
-        ],
-        "title": "LeaseClaimed",
-        "type": "object"
-      },
-      "LeaseReleased": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "type": {
-            "const": "compute.lease.released",
-            "type": "string"
-          }
-        },
-        "required": [
-          "compute",
-          "type"
-        ],
-        "title": "LeaseReleased",
-        "type": "object"
-      },
-      "Liveness": {
-        "description": "Whether the process answers, and what it is running.\n\nSays nothing about the store or the providers. The version rides along because\nit answers the second half of the only question a client asks before trusting a\ndaemon it did not start: something is there, and it speaks this wire.\n\nThe default is for decoding, not for answering \u2014 a daemon always says which\nskyward it is, and one that says nothing is one from before it could.",
+      "LivenessResource": {
         "properties": {
           "live": {
             "type": "boolean"
           },
           "version": {
-            "default": "",
             "type": "string"
           }
         },
         "required": [
-          "live"
+          "live",
+          "version"
         ],
-        "title": "Liveness",
+        "title": "LivenessResource",
         "type": "object"
       },
-      "LogEntry": {
+      "LogEntryResource": {
+        "description": "One recorded event. ``sequence`` is the stream's ``id:`` for the same event; ``at`` is when the daemon recorded it.",
         "properties": {
           "at": {
             "format": "date-time",
@@ -1363,70 +1629,70 @@
           "data": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ComputeCreated"
+                "$ref": "#/components/schemas/ComputeCreatedEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeBound"
+                "$ref": "#/components/schemas/ComputeBoundEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeAdopted"
+                "$ref": "#/components/schemas/ComputeAdoptedEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeProvisioning"
+                "$ref": "#/components/schemas/ComputeProvisioningEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeReady"
+                "$ref": "#/components/schemas/ComputeReadyEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeDegraded"
+                "$ref": "#/components/schemas/ComputeDegradedEvent"
               },
               {
-                "$ref": "#/components/schemas/GenerationCreated"
+                "$ref": "#/components/schemas/ComputeGenerationCreatedEvent"
               },
               {
-                "$ref": "#/components/schemas/GenerationApplied"
+                "$ref": "#/components/schemas/ComputeGenerationAppliedEvent"
               },
               {
-                "$ref": "#/components/schemas/LeaseClaimed"
+                "$ref": "#/components/schemas/ComputeLeaseClaimedEvent"
               },
               {
-                "$ref": "#/components/schemas/LeaseReleased"
+                "$ref": "#/components/schemas/ComputeLeaseReleasedEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeAbandoned"
+                "$ref": "#/components/schemas/ComputeAbandonedEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeDeleting"
+                "$ref": "#/components/schemas/ComputeDeletingEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeDeletionFailed"
+                "$ref": "#/components/schemas/ComputeDeletionFailedEvent"
               },
               {
-                "$ref": "#/components/schemas/StraysTerminated"
+                "$ref": "#/components/schemas/ComputeStraysTerminatedEvent"
               },
               {
-                "$ref": "#/components/schemas/ComputeDeleted"
+                "$ref": "#/components/schemas/ComputeDeletedEvent"
               },
               {
-                "$ref": "#/components/schemas/CostEvent"
+                "$ref": "#/components/schemas/ComputeCostEvent"
               },
               {
-                "$ref": "#/components/schemas/NodeEvent"
+                "$ref": "#/components/schemas/NodeStateEvent"
               },
               {
-                "$ref": "#/components/schemas/ProgressEvent"
+                "$ref": "#/components/schemas/NodeProgressEvent"
               },
               {
-                "$ref": "#/components/schemas/ConsoleEvent"
+                "$ref": "#/components/schemas/NodeConsoleEvent"
               },
               {
-                "$ref": "#/components/schemas/PhaseEvent"
+                "$ref": "#/components/schemas/NodePhaseEvent"
               },
               {
-                "$ref": "#/components/schemas/MetricEvent"
+                "$ref": "#/components/schemas/NodeMetricsEvent"
               },
               {
-                "$ref": "#/components/schemas/TaskEvent"
+                "$ref": "#/components/schemas/TaskStateEvent"
               }
             ]
           },
@@ -1443,46 +1709,16 @@
           "sequence",
           "type"
         ],
-        "title": "LogEntry",
+        "title": "LogEntryResource",
         "type": "object"
       },
-      "MetricEvent": {
-        "properties": {
-          "compute": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "node": {
-            "type": "string"
-          },
-          "type": {
-            "const": "node.metrics",
-            "type": "string"
-          },
-          "value": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "compute",
-          "name",
-          "node",
-          "type",
-          "value"
-        ],
-        "title": "MetricEvent",
-        "type": "object"
-      },
-      "MetricHistory": {
-        "description": "A compute's metrics over a range, or since a cursor, and the cursor that continues them.\n\n``cursor`` is opaque. Handed back as ``after``, it answers with what was recorded\nsince this answer was read \u2014 including samples measured earlier and delivered late \u2014\nand nothing this answer already held. ``reset`` says that some of what was recorded\nsince has already been folded into the compacted history, where a cursor cannot\nreach: read the range again.",
+      "MetricHistoryResource": {
+        "description": "A compute's metrics over a range or since a cursor. ``reset`` says the cursor fell behind compaction.",
         "properties": {
           "cursor": {
             "type": "string"
           },
           "reset": {
-            "default": false,
             "type": "boolean"
           },
           "series": {
@@ -1494,13 +1730,14 @@
         },
         "required": [
           "cursor",
+          "reset",
           "series"
         ],
-        "title": "MetricHistory",
+        "title": "MetricHistoryResource",
         "type": "object"
       },
-      "MetricSample": {
-        "description": "One reading off one node: what it measured, when, and the number.\n\n``at`` is milliseconds since the epoch on the node's own clock \u2014 the moment the\nsample was taken, not the moment it reached the daemon, which a dropped link can\nput minutes later.",
+      "MetricSampleResource": {
+        "description": "One reading off one node. ``at`` is milliseconds since the epoch, on the node's clock.",
         "properties": {
           "at": {
             "type": "integer"
@@ -1521,11 +1758,10 @@
           "node",
           "value"
         ],
-        "title": "MetricSample",
+        "title": "MetricSampleResource",
         "type": "object"
       },
       "MetricSeries": {
-        "description": "One metric of one node over time, as two columns of the same length.",
         "properties": {
           "at": {
             "items": {
@@ -1556,7 +1792,6 @@
         "type": "object"
       },
       "MetricSpec": {
-        "description": "One reading a node takes about itself: a shell command, sampled on a period.\n\nThe command must print a bare number; anything else is dropped rather than\nreported. ``interval`` is in seconds.",
         "properties": {
           "command": {
             "type": "string"
@@ -1576,8 +1811,202 @@
         "title": "MetricSpec",
         "type": "object"
       },
-      "Node": {
-        "description": "One machine, ranked, as the control plane knows it.\n\nThe row exists before the provider is asked for a machine, which is what makes\nprovisioning idempotent \u2014 ``machine`` is null until there is one to name. A\nnode that died keeps its row and its ``provider_binding`` until the provider\nconfirms the instance is gone, so nothing goes missing unnoticed.",
+      "NodeBounds": {
+        "properties": {
+          "initial": {
+            "type": "integer"
+          },
+          "max": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "min": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "initial"
+        ],
+        "title": "NodeBounds",
+        "type": "object"
+      },
+      "NodeConsoleEvent": {
+        "description": "A line a node printed, and the task and attempt it belongs to when it belongs to one.",
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "execution": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node": {
+            "type": "string"
+          },
+          "task": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "node.console",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "content",
+          "node",
+          "type"
+        ],
+        "title": "NodeConsoleEvent",
+        "type": "object"
+      },
+      "NodeMetricsEvent": {
+        "description": "One reading off one node. Streamed, never logged.",
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "type": {
+            "const": "node.metrics",
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "compute",
+          "name",
+          "node",
+          "type",
+          "value"
+        ],
+        "title": "NodeMetricsEvent",
+        "type": "object"
+      },
+      "NodePhaseEvent": {
+        "description": "A bootstrap phase opened, closed or broke.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "compute": {
+            "type": "string"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event": {
+            "enum": [
+              "started",
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "type": {
+            "const": "node.phase",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "compute",
+          "event",
+          "node",
+          "phase",
+          "type"
+        ],
+        "title": "NodePhaseEvent",
+        "type": "object"
+      },
+      "NodeProgressEvent": {
+        "description": "What a machine without an address yet is doing. Streamed, never logged.",
+        "properties": {
+          "completion": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compute": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "type": {
+            "const": "node.progress",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "node",
+          "progress",
+          "type"
+        ],
+        "title": "NodeProgressEvent",
+        "type": "object"
+      },
+      "NodeResource": {
+        "description": "One machine holding one rank of a compute.",
         "properties": {
           "accelerator": {
             "oneOf": [
@@ -1614,8 +2043,8 @@
               }
             ]
           },
-          "compute_id": {
-            "type": "string"
+          "busy": {
+            "type": "integer"
           },
           "created_at": {
             "format": "date-time",
@@ -1679,6 +2108,26 @@
               }
             ]
           },
+          "metrics": {
+            "oneOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/Gauge"
+                },
+                "type": "object"
+              }
+            ]
+          },
+          "phases": {
+            "oneOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Phase"
+                },
+                "type": "array"
+              }
+            ]
+          },
           "price_per_hour": {
             "oneOf": [
               {
@@ -1689,15 +2138,38 @@
               }
             ]
           },
-          "provider_binding": {
-            "additionalProperties": {},
-            "type": "object"
+          "progress": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Progress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rank": {
             "type": "integer"
           },
-          "revision": {
-            "type": "integer"
+          "running": {
+            "oneOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Running"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "ssh": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Ssh"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "state": {
             "enum": [
@@ -1714,6 +2186,16 @@
             ],
             "type": "string"
           },
+          "tail": {
+            "oneOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ]
+          },
           "terminated_at": {
             "oneOf": [
               {
@@ -1727,53 +2209,30 @@
           }
         },
         "required": [
-          "compute_id",
+          "accelerator",
+          "address",
+          "billing_unit",
+          "busy",
           "created_at",
           "desired",
           "generation",
           "id",
-          "provider_binding",
+          "last_error",
+          "launched_at",
+          "machine",
+          "market",
+          "price_per_hour",
+          "progress",
           "rank",
-          "revision",
-          "state"
+          "ssh",
+          "state",
+          "terminated_at"
         ],
-        "title": "Node",
+        "title": "NodeResource",
         "type": "object"
       },
-      "NodeBounds": {
-        "description": "How many machines to open with, and how much of that is negotiable.\n\n``initial`` is the size the pool asks for once, when it starts. ``min`` is the\ncount it is willing to live at: what lets a job of eight begin on four, and the\nonly floor the pool is held to afterwards \u2014 a machine the opening request never\ngot is not asked for again. ``max`` is the ceiling autoscaling may reach, and\nsetting it is what makes the pool elastic at all. Both unset means the pool\nopens at ``initial`` and stays there.",
-        "properties": {
-          "initial": {
-            "type": "integer"
-          },
-          "max": {
-            "oneOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "min": {
-            "oneOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "initial"
-        ],
-        "title": "NodeBounds",
-        "type": "object"
-      },
-      "NodeEvent": {
+      "NodeStateEvent": {
+        "description": "A node's state moved. Its stream frame is named ``node.{state}``.",
         "properties": {
           "compute": {
             "type": "string"
@@ -1817,11 +2276,11 @@
           "state",
           "type"
         ],
-        "title": "NodeEvent",
+        "title": "NodeStateEvent",
         "type": "object"
       },
-      "Offer": {
-        "description": "One buyable machine shape from one account, normalized.\n\nThe accelerator name and its VRAM are parsed into the shared vocabulary here\nrather than in each adapter, which is what stops the same GPU from being two\ndifferent accelerators depending on who is selling it. ``price`` is the\ncheapest the offer can be had for, and it is what ordering and budget filters\ncompare on.",
+      "OfferResource": {
+        "description": "One machine shape one account sells. ``price`` is the cheapest it can be had for.",
         "properties": {
           "accelerator": {
             "oneOf": [
@@ -1839,6 +2298,10 @@
           "architecture": {
             "oneOf": [
               {
+                "enum": [
+                  "x86_64",
+                  "arm64"
+                ],
                 "type": "string"
               },
               {
@@ -1857,7 +2320,6 @@
             ]
           },
           "billing_unit": {
-            "default": "hour",
             "enum": [
               "second",
               "minute",
@@ -1960,18 +2422,29 @@
           }
         },
         "required": [
+          "accelerator",
           "accelerator_count",
+          "architecture",
+          "available",
+          "billing_unit",
           "cpus",
+          "disk_gb",
           "expires_at",
           "fetched_at",
           "id",
           "instance_type",
           "kind",
           "memory_gb",
+          "on_demand_price",
+          "price",
           "provider_id",
-          "provider_name"
+          "provider_name",
+          "region",
+          "specific",
+          "spot_price",
+          "vram"
         ],
-        "title": "Offer",
+        "title": "OfferResource",
         "type": "object"
       },
       "Options": {
@@ -1993,7 +2466,6 @@
           "task_run_timeout": 0.0,
           "worker_timeout": 180.0
         },
-        "description": "Operational knobs the daemon reads off the spec.\n\nEach defaults to the value the runtime hard-coded before the knob existed, so a\nspec built without options behaves exactly as one built with ``Options()``. The\nclient-side timeouts are not here: they govern how long the owning process waits\nfor its own pool, never leave it, and so ride the SDK's ``Options`` rather than\nthe wire.",
         "properties": {
           "autoscale_cooldown": {
             "default": 0.0,
@@ -2082,12 +2554,35 @@
         "title": "Options",
         "type": "object"
       },
-      "Page_skyward.shared.events.LogEntry_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Pace": {
+        "properties": {
+          "finished_last_hour": {
+            "type": "integer"
+          },
+          "mean_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "finished_last_hour",
+          "mean_seconds"
+        ],
+        "title": "Pace",
+        "type": "object"
+      },
+      "Page_skyward.api.v1.ComputeResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/LogEntry"
+              "$ref": "#/components/schemas/ComputeResource"
             },
             "type": "array"
           },
@@ -2113,17 +2608,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[LogEntry]",
+        "title": "Page[ComputeResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Compute_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.ExecutionResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Compute"
+              "$ref": "#/components/schemas/ExecutionResource"
             },
             "type": "array"
           },
@@ -2149,17 +2646,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Compute]",
+        "title": "Page[ExecutionResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Execution_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.FunctionResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Execution"
+              "$ref": "#/components/schemas/FunctionResource"
             },
             "type": "array"
           },
@@ -2185,17 +2684,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Execution]",
+        "title": "Page[FunctionResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Function_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.GenerationResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Function"
+              "$ref": "#/components/schemas/GenerationResource"
             },
             "type": "array"
           },
@@ -2221,17 +2722,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Function]",
+        "title": "Page[GenerationResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Generation_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.LogEntryResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Generation"
+              "$ref": "#/components/schemas/LogEntryResource"
             },
             "type": "array"
           },
@@ -2257,17 +2760,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Generation]",
+        "title": "Page[LogEntryResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.MetricSample_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.MetricSampleResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/MetricSample"
+              "$ref": "#/components/schemas/MetricSampleResource"
             },
             "type": "array"
           },
@@ -2293,17 +2798,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[MetricSample]",
+        "title": "Page[MetricSampleResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Node_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.NodeResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Node"
+              "$ref": "#/components/schemas/NodeResource"
             },
             "type": "array"
           },
@@ -2329,17 +2836,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Node]",
+        "title": "Page[NodeResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Offer_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.OfferResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Offer"
+              "$ref": "#/components/schemas/OfferResource"
             },
             "type": "array"
           },
@@ -2365,17 +2874,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Offer]",
+        "title": "Page[OfferResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Provider_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.ProviderResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Provider"
+              "$ref": "#/components/schemas/ProviderResource"
             },
             "type": "array"
           },
@@ -2401,17 +2912,19 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Provider]",
+        "title": "Page[ProviderResource]",
         "type": "object"
       },
-      "Page_skyward.shared.schemas.Task_": {
-        "description": "A slice of a listing, and the cursor that continues it.\n\n``next_cursor`` is null on the last page. Cursors are opaque and are not\noffsets \u2014 a row inserted mid-walk does not shift what a held cursor returns.\n\n``total`` is how many rows the filters match, counted for the listings where\ncounting is one more read of an index: fifty of fifty is a different answer\nfrom fifty of nine thousand, and a reader cannot tell them apart from a page.\nIt is null where nothing counted.",
+      "Page_skyward.api.v1.TaskResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Task"
+              "$ref": "#/components/schemas/TaskResource"
             },
             "type": "array"
           },
@@ -2437,18 +2950,17 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "next_cursor",
+          "total"
         ],
-        "title": "Page[Task]",
+        "title": "Page[TaskResource]",
         "type": "object"
       },
-      "PhaseEvent": {
+      "Phase": {
         "properties": {
           "at": {
             "format": "date-time",
-            "type": "string"
-          },
-          "compute": {
             "type": "string"
           },
           "error": {
@@ -2461,38 +2973,28 @@
               }
             ]
           },
-          "event": {
+          "name": {
+            "type": "string"
+          },
+          "state": {
             "enum": [
               "started",
               "completed",
               "failed"
             ],
             "type": "string"
-          },
-          "node": {
-            "type": "string"
-          },
-          "phase": {
-            "type": "string"
-          },
-          "type": {
-            "const": "node.phase",
-            "type": "string"
           }
         },
         "required": [
           "at",
-          "compute",
-          "event",
-          "node",
-          "phase",
-          "type"
+          "error",
+          "name",
+          "state"
         ],
-        "title": "PhaseEvent",
+        "title": "Phase",
         "type": "object"
       },
       "PipIndex": {
-        "description": "A package index the resolver should reach for, and what it may serve.\n\n``packages`` is the scope: only those names resolve from ``url`` (uv's\n``explicit = true``), so a private index cannot silently answer for a public\npackage. An empty scope makes it an ordinary extra index.",
         "properties": {
           "packages": {
             "default": [],
@@ -2512,7 +3014,6 @@
         "type": "object"
       },
       "PluginRef": {
-        "description": "A plugin as it travels: a name and its parameters, never an object.\n\nA plugin is rebuilt on the node from exactly this, which is why it cannot hold\na closure or a live handle. Its behaviour is its class's methods; its identity\nis ``kind``.",
         "properties": {
           "kind": {
             "type": "string"
@@ -2528,7 +3029,7 @@
         "title": "PluginRef",
         "type": "object"
       },
-      "ProgressEvent": {
+      "Progress": {
         "properties": {
           "completion": {
             "oneOf": [
@@ -2540,31 +3041,65 @@
               }
             ]
           },
-          "compute": {
-            "type": "string"
-          },
-          "node": {
-            "type": "string"
-          },
-          "progress": {
-            "type": "string"
-          },
-          "type": {
-            "const": "node.progress",
+          "step": {
             "type": "string"
           }
         },
         "required": [
-          "compute",
-          "node",
-          "progress",
-          "type"
+          "completion",
+          "step"
         ],
-        "title": "ProgressEvent",
+        "title": "Progress",
         "type": "object"
       },
-      "Provider": {
-        "description": "A registered account, as the API serves it \u2014 which is to say, without its secrets.\n\n``offers_fetched_at`` and ``offers_count`` describe the cached catalog behind\nit, and ``last_error`` is why the last refresh failed. A failed refresh leaves\nthe stale offers in place: stale offers beat no offers.",
+      "ProviderKindResource": {
+        "description": "A kind of cloud this daemon can talk to, and what registering one takes.",
+        "properties": {
+          "credential_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "offers_ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "credential_fields",
+          "kind",
+          "offers_ttl_seconds"
+        ],
+        "title": "ProviderKindResource",
+        "type": "object"
+      },
+      "ProviderRef": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ProviderRef",
+        "type": "object"
+      },
+      "ProviderResource": {
+        "description": "A registered account, without its credentials.",
         "properties": {
           "config": {
             "additionalProperties": {},
@@ -2594,7 +3129,6 @@
             "type": "string"
           },
           "offers_count": {
-            "default": 0,
             "type": "integer"
           },
           "offers_fetched_at": {
@@ -2617,24 +3151,19 @@
           "created_at",
           "id",
           "kind",
+          "last_error",
           "name",
+          "offers_count",
+          "offers_fetched_at",
           "offers_ttl_seconds"
         ],
-        "title": "Provider",
+        "title": "ProviderResource",
         "type": "object"
       },
-      "ProviderCreate": {
-        "description": "An account to register: what to call it, which cloud it is, and what opens it.\n\n``credentials`` are validated against the kind's declared fields before the\nrow is written, and no read path returns them afterwards.",
+      "ProviderSummary": {
         "properties": {
-          "config": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "credentials": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
+          "id": {
+            "type": "string"
           },
           "kind": {
             "type": "string"
@@ -2644,61 +3173,14 @@
           }
         },
         "required": [
+          "id",
           "kind",
           "name"
         ],
-        "title": "ProviderCreate",
+        "title": "ProviderSummary",
         "type": "object"
       },
-      "ProviderKind": {
-        "description": "A kind of cloud this build can talk to, and what registering one needs.\n\nCapability negotiation, before anything is created: a kind absent from this\nlist cannot be registered, usually because its SDK is not installed.",
-        "properties": {
-          "credential_fields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "offers_ttl_seconds": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "credential_fields",
-          "kind",
-          "offers_ttl_seconds"
-        ],
-        "title": "ProviderKind",
-        "type": "object"
-      },
-      "ProviderRef": {
-        "description": "Which account a spec wants to buy from.\n\nA kind and a name, and nothing else: how the account is configured belongs to\nthe provider row, which is what the daemon builds its adapter from. A copy of\nthe settings riding on the spec would be a second answer to the same question,\nand the one nobody reads \u2014 so a spec names the row, and ``sky providers set``\nor the SDK's own account object is what says what that row means here.\n\n``name`` is the row's; two accounts of one kind are two rows with two names,\nand the market buys from the one named. Left out, any row of the kind will do.",
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "name": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "kind"
-        ],
-        "title": "ProviderRef",
-        "type": "object"
-      },
-      "Readiness": {
-        "description": "Whether the daemon can serve: schema in place, recovery done.",
+      "ReadinessResource": {
         "properties": {
           "ready": {
             "type": "boolean"
@@ -2707,32 +3189,59 @@
         "required": [
           "ready"
         ],
-        "title": "Readiness",
+        "title": "ReadinessResource",
         "type": "object"
       },
-      "Result": {
-        "description": "What one command said on one machine: its exit code and both its streams.",
+      "Refusal": {
         "properties": {
-          "exit_code": {
-            "type": "integer"
-          },
-          "stderr": {
+          "reason": {
             "type": "string"
           },
-          "stdout": {
+          "retry_at": {
+            "format": "date-time",
             "type": "string"
           }
         },
         "required": [
-          "exit_code",
-          "stderr",
-          "stdout"
+          "reason",
+          "retry_at"
         ],
-        "title": "Result",
+        "title": "Refusal",
+        "type": "object"
+      },
+      "Running": {
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/FunctionSummary"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "started_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function",
+          "ordinal",
+          "started_at",
+          "task"
+        ],
+        "title": "Running",
         "type": "object"
       },
       "Spec": {
-        "description": "One shape of machine that would do, from one account.\n\nA compute carries several of these as a preference list and buys exactly one:\neverything here is what the market filters offers on, and everything that must\nbe true of the whole fleet \u2014 volumes, plugins, node counts \u2014 is on the compute\ninstead.",
         "properties": {
           "accelerator": {
             "oneOf": [
@@ -2822,38 +3331,84 @@
         "title": "Spec",
         "type": "object"
       },
-      "StraysTerminated": {
+      "Ssh": {
         "properties": {
-          "compute": {
+          "host": {
             "type": "string"
           },
-          "machines": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "port": {
+            "type": "integer"
           },
-          "type": {
-            "const": "compute.strays_terminated",
+          "user": {
             "type": "string"
           }
         },
         "required": [
-          "compute",
-          "machines",
-          "type"
+          "host",
+          "port",
+          "user"
         ],
-        "title": "StraysTerminated",
+        "title": "Ssh",
         "type": "object"
       },
-      "Task": {
-        "description": "One call \u2014 function plus arguments \u2014 and its one terminal outcome.\n\nAppend-only. ``state`` is derived from the executions rather than written\nbeside them, and is stored only so that listing by state is a query instead of\na scan. ``correlation_id`` is how the tasks of one ``&``, ``gather`` or ``map``\nare found together: a field on each of them, not a resource of their own.",
+      "TaskCounts": {
+        "properties": {
+          "cancelled": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "indeterminate": {
+            "type": "integer"
+          },
+          "latest": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LatestTasks"
+              }
+            ]
+          },
+          "pace": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Pace"
+              }
+            ]
+          },
+          "queued": {
+            "type": "integer"
+          },
+          "running": {
+            "type": "integer"
+          },
+          "succeeded": {
+            "type": "integer"
+          },
+          "timed_out": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cancelled",
+          "failed",
+          "indeterminate",
+          "queued",
+          "running",
+          "succeeded",
+          "timed_out"
+        ],
+        "title": "TaskCounts",
+        "type": "object"
+      },
+      "TaskResource": {
+        "description": "One call \u2014 a function and its arguments \u2014 and its one terminal outcome.",
         "properties": {
           "args_sha256": {
             "type": "string"
           },
-          "compute_id": {
-            "type": "string"
+          "compute": {
+            "$ref": "#/components/schemas/ComputeSummary"
           },
           "correlation_id": {
             "oneOf": [
@@ -2875,7 +3430,7 @@
           },
           "executions": {
             "items": {
-              "$ref": "#/components/schemas/Execution"
+              "$ref": "#/components/schemas/ExecutionResource"
             },
             "type": "array"
           },
@@ -2891,7 +3446,7 @@
             ]
           },
           "function": {
-            "type": "string"
+            "$ref": "#/components/schemas/FunctionSummary"
           },
           "generation": {
             "type": "integer"
@@ -2968,163 +3523,27 @@
         },
         "required": [
           "args_sha256",
-          "compute_id",
+          "compute",
+          "correlation_id",
           "dispatch",
           "executions",
+          "finished_at",
           "function",
           "generation",
           "id",
+          "queue_timeout_seconds",
+          "rank",
+          "result_sha256",
           "retry",
+          "run_timeout_seconds",
           "state",
           "submitted_at"
         ],
-        "title": "Task",
+        "title": "TaskResource",
         "type": "object"
       },
-      "TaskCounts": {
-        "description": "How many of a compute's tasks are in each state, one field per :data:`TaskState`.",
-        "properties": {
-          "cancelled": {
-            "type": "integer"
-          },
-          "failed": {
-            "type": "integer"
-          },
-          "indeterminate": {
-            "type": "integer"
-          },
-          "queued": {
-            "type": "integer"
-          },
-          "running": {
-            "type": "integer"
-          },
-          "succeeded": {
-            "type": "integer"
-          },
-          "timed_out": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "cancelled",
-          "failed",
-          "indeterminate",
-          "queued",
-          "running",
-          "succeeded",
-          "timed_out"
-        ],
-        "title": "TaskCounts",
-        "type": "object"
-      },
-      "TaskCreate": {
-        "description": "One call to place: the code, its arguments, and how widely to run it.\n\nArguments travel inline below a size threshold and as a blob above it, which\nis why there are fields for both and exactly one is set. ``call`` is the third\nway to say the same thing, for a caller with no interpreter: the values in\nJSON, encoded here into the pickle the other two already carry.",
-        "properties": {
-          "args_inline": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "args_sha256": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "call": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Call"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "compute": {
-            "type": "string"
-          },
-          "correlation_id": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "dispatch": {
-            "enum": [
-              "one",
-              "all",
-              "stream"
-            ],
-            "type": "string"
-          },
-          "function": {
-            "type": "string"
-          },
-          "queue_timeout_seconds": {
-            "oneOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rank": {
-            "oneOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "retry": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "run_timeout_seconds": {
-            "oneOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "compute",
-          "dispatch",
-          "function"
-        ],
-        "title": "TaskCreate",
-        "type": "object"
-      },
-      "TaskEvent": {
+      "TaskStateEvent": {
+        "description": "A task started, is being retried, or ended. Its stream frame is named ``task.{state}``.",
         "properties": {
           "attempt": {
             "default": 1,
@@ -3158,11 +3577,120 @@
           "task",
           "type"
         ],
-        "title": "TaskEvent",
+        "title": "TaskStateEvent",
+        "type": "object"
+      },
+      "TaskSummary": {
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "function": {
+            "$ref": "#/components/schemas/FunctionSummary"
+          },
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "timed_out",
+              "indeterminate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "finished_at",
+          "function",
+          "id",
+          "state"
+        ],
+        "title": "TaskSummary",
+        "type": "object"
+      },
+      "UpdateComputeResource": {
+        "description": "A resize: ``nodes`` is the one part of a spec that changes without replacing the machines.",
+        "properties": {
+          "nodes": {
+            "$ref": "#/components/schemas/NodeBounds"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "title": "UpdateComputeResource",
+        "type": "object"
+      },
+      "Utilization": {
+        "description": "The average across the compute's nodes, one value per ``step`` milliseconds since ``since``. Null is a step nobody reported.",
+        "properties": {
+          "cpu": {
+            "items": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "gpu": {
+            "items": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "since": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cpu",
+          "gpu",
+          "since",
+          "step"
+        ],
+        "title": "Utilization",
         "type": "object"
       },
       "Volume": {
-        "description": "A bucket the nodes read and write as a directory.\n\n``bucket`` names an object-storage bucket, except on providers that attach a\nvolume of their own rather than mounting one \u2014 RunPod reads it as the id or\nname of a network volume.\n\nWhere the credentials come from is what ``storage_sha256`` decides, and it is\nthe only reason the field exists. ``None`` means the daemon resolves them from\nthe provider record it already holds, and nothing about the bucket's access\never reaches this struct. A digest means the client brought its own, put them\nin the blob store, and left only the hash here \u2014 because a spec is written to\nthe compute row and served back by the compute API, and a secret written there\nis a secret published.",
         "properties": {
           "bucket": {
             "type": "string"
@@ -3203,7 +3731,6 @@
           "executor": "thread",
           "reuse": true
         },
-        "description": "How much work a node takes at once, and what runs it.\n\n``concurrency`` unset lets the node decide from what it has. The executor is\nthe backend the tasks run on: threads by default, processes or loky when the\nwork holds the GIL.",
         "properties": {
           "buffer": {
             "default": 0,
@@ -3236,6 +3763,23 @@
         "required": [],
         "title": "Worker",
         "type": "object"
+      },
+      "WriteFunctionResource": {
+        "description": "A function as text: a module, and the name in it to call.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "WriteFunctionResource",
+        "type": "object"
       }
     }
   },
@@ -3257,7 +3801,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Accelerator"
+                    "$ref": "#/components/schemas/AcceleratorResource"
                   },
                   "type": "array"
                 }
@@ -3498,6 +4042,26 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
+            "description": "Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization.",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "description": "Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -3621,7 +4185,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Compute_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.ComputeResource_"
                 }
               }
             },
@@ -3701,7 +4265,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ComputeCreate"
+                "$ref": "#/components/schemas/CreateComputeResource"
               }
             }
           },
@@ -3712,7 +4276,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Compute"
+                  "$ref": "#/components/schemas/ComputeResource"
                 }
               }
             },
@@ -3722,7 +4286,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Compute"
+                  "$ref": "#/components/schemas/ComputeResource"
                 }
               }
             },
@@ -3835,7 +4399,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Compute"
+                  "$ref": "#/components/schemas/ComputeResource"
                 }
               }
             },
@@ -3918,7 +4482,7 @@
       },
       "get": {
         "deprecated": false,
-        "description": "Accepts an id or a name. The response always carries both.",
+        "description": "Accepts an id or a name. The response always carries both, and the node holding each rank.\n\n`include` adds what is not carried by default, comma-separated: `nodes.metrics` (each node's newest reading of each metric), `nodes.phases` (where each step of its bootstrap got to), `nodes.running` (what each node is holding, and whose code), `nodes.tail` (the last lines each node printed), `nodes.replaced` (the nodes that held a rank before), `tasks.latest` (the last task to succeed and the last to fail), `tasks.pace` (how much finished in the last hour) and `utilization` (the fleet's average GPU and CPU over the last minutes). A block that was not asked for is absent; one that was asked for and has nothing is empty.",
         "operationId": "V1ComputesRead",
         "parameters": [
           {
@@ -3931,6 +4495,26 @@
               "description": "The compute's name or id.",
               "type": "string"
             }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization.",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "description": "Blocks to carry beyond the default, comma-separated: nodes.metrics, nodes.phases, nodes.running, nodes.tail, nodes.replaced, tasks.latest, tasks.pace, utilization.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
           }
         ],
         "responses": {
@@ -3938,7 +4522,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Compute"
+                  "$ref": "#/components/schemas/ComputeResource"
                 }
               }
             },
@@ -4029,7 +4613,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ComputeSpecPatch"
+                "$ref": "#/components/schemas/UpdateComputeResource"
               }
             }
           },
@@ -4040,7 +4624,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Compute"
+                  "$ref": "#/components/schemas/ComputeResource"
                 }
               }
             },
@@ -4173,7 +4757,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": {
-                    "$ref": "#/components/schemas/Result"
+                    "$ref": "#/components/schemas/CommandResultResource"
                   },
                   "type": "object"
                 }
@@ -4308,7 +4892,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": {
-                    "$ref": "#/components/schemas/Result"
+                    "$ref": "#/components/schemas/CommandResultResource"
                   },
                   "type": "object"
                 }
@@ -4441,7 +5025,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": {
-                    "$ref": "#/components/schemas/Result"
+                    "$ref": "#/components/schemas/CommandResultResource"
                   },
                   "type": "object"
                 }
@@ -5063,7 +5647,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Generation_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.GenerationResource_"
                 }
               }
             },
@@ -5163,7 +5747,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GenerationCreate"
+                "$ref": "#/components/schemas/CreateGenerationResource"
               }
             }
           },
@@ -5174,7 +5758,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Generation"
+                  "$ref": "#/components/schemas/GenerationResource"
                 }
               }
             },
@@ -5298,7 +5882,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Generation"
+                  "$ref": "#/components/schemas/GenerationResource"
                 }
               }
             },
@@ -5458,7 +6042,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LeaseClaim"
+                "$ref": "#/components/schemas/ClaimLeaseResource"
               }
             }
           },
@@ -5469,7 +6053,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Lease"
+                  "$ref": "#/components/schemas/LeaseResource"
                 }
               }
             },
@@ -5711,7 +6295,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MetricHistory"
+                  "$ref": "#/components/schemas/MetricHistoryResource"
                 }
               }
             },
@@ -5842,7 +6426,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.MetricSample_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.MetricSampleResource_"
                 }
               }
             },
@@ -5907,7 +6491,7 @@
     "/v1/computes/{compute}/nodes": {
       "get": {
         "deprecated": false,
-        "description": "Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until the provider confirms termination \u2014 that is what stops an instance from going missing with nobody knowing.",
+        "description": "The node holding each rank, by rank \u2014 what a compute carries as `nodes`. `include=replaced` adds the ones that held a rank before: a node that died stays until the provider confirms the machine is gone, which is what stops an instance from going missing with nobody knowing. `include` takes the blocks a compute's `nodes.` blocks are, without the prefix.",
         "operationId": "V1ComputesNodesList",
         "parameters": [
           {
@@ -5925,25 +6509,15 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
+            "description": "Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced.",
             "in": "query",
-            "name": "include_terminal",
+            "name": "include",
             "required": false,
             "schema": {
-              "default": true,
-              "type": "boolean"
-            }
-          },
-          {
-            "allowEmptyValue": false,
-            "allowReserved": false,
-            "deprecated": false,
-            "in": "query",
-            "name": "generation",
-            "required": false,
-            "schema": {
+              "description": "Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced.",
               "oneOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -5957,7 +6531,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Node_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.NodeResource_"
                 }
               }
             },
@@ -6019,11 +6593,11 @@
         ]
       }
     },
-    "/v1/computes/{compute}/nodes/{node_id}": {
+    "/v1/computes/{compute}/nodes/{node}": {
       "delete": {
         "deprecated": false,
         "description": "Nodes are not directly creatable \u2014 they come from reconciling `spec.nodes`. But a node can be condemned: `desired: deleted` blocks new assignments, waits for the executions it is known to hold, then destroys the instance.\n\nIf the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with a new `id`. The old node's tombstone remains.",
-        "operationId": "V1ComputesNodesNodeIdDrain",
+        "operationId": "V1ComputesNodesDrain",
         "parameters": [
           {
             "deprecated": false,
@@ -6038,10 +6612,12 @@
           },
           {
             "deprecated": false,
+            "description": "The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did.",
             "in": "path",
-            "name": "node_id",
+            "name": "node",
             "required": true,
             "schema": {
+              "description": "The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did.",
               "type": "string"
             }
           },
@@ -6060,7 +6636,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Node"
+                  "$ref": "#/components/schemas/NodeResource"
                 }
               }
             },
@@ -6133,8 +6709,8 @@
       },
       "get": {
         "deprecated": false,
-        "description": "One machine as the control plane knows it, including the `provider_binding` it was launched under.",
-        "operationId": "V1ComputesNodesNodeIdRead",
+        "description": "One machine as the control plane knows it, reached by rank or by id.",
+        "operationId": "V1ComputesNodesRead",
         "parameters": [
           {
             "deprecated": false,
@@ -6148,11 +6724,33 @@
             }
           },
           {
+            "allowEmptyValue": false,
+            "allowReserved": false,
             "deprecated": false,
+            "description": "Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced.",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "description": "Blocks to carry beyond the default, comma-separated: metrics, phases, running, tail, replaced.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "deprecated": false,
+            "description": "The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did.",
             "in": "path",
-            "name": "node_id",
+            "name": "node",
             "required": true,
             "schema": {
+              "description": "The rank the node holds, or its id. A rank reaches the node holding it, else the last one that did.",
               "type": "string"
             }
           }
@@ -6162,7 +6760,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Node"
+                  "$ref": "#/components/schemas/NodeResource"
                 }
               }
             },
@@ -6623,97 +7221,97 @@
                 "schema": {
                   "discriminator": {
                     "mapping": {
-                      "compute.abandoned": "#/components/schemas/ComputeAbandoned",
-                      "compute.adopted": "#/components/schemas/ComputeAdopted",
-                      "compute.bound": "#/components/schemas/ComputeBound",
-                      "compute.cost": "#/components/schemas/CostEvent",
-                      "compute.created": "#/components/schemas/ComputeCreated",
-                      "compute.degraded": "#/components/schemas/ComputeDegraded",
-                      "compute.deleted": "#/components/schemas/ComputeDeleted",
-                      "compute.deleting": "#/components/schemas/ComputeDeleting",
-                      "compute.deletion_failed": "#/components/schemas/ComputeDeletionFailed",
-                      "compute.generation.applied": "#/components/schemas/GenerationApplied",
-                      "compute.generation.created": "#/components/schemas/GenerationCreated",
-                      "compute.lease.claimed": "#/components/schemas/LeaseClaimed",
-                      "compute.lease.released": "#/components/schemas/LeaseReleased",
-                      "compute.provisioning": "#/components/schemas/ComputeProvisioning",
-                      "compute.ready": "#/components/schemas/ComputeReady",
-                      "compute.strays_terminated": "#/components/schemas/StraysTerminated",
-                      "node.console": "#/components/schemas/ConsoleEvent",
-                      "node.metrics": "#/components/schemas/MetricEvent",
-                      "node.phase": "#/components/schemas/PhaseEvent",
-                      "node.progress": "#/components/schemas/ProgressEvent",
-                      "node.state": "#/components/schemas/NodeEvent",
-                      "task.state": "#/components/schemas/TaskEvent"
+                      "compute.abandoned": "#/components/schemas/ComputeAbandonedEvent",
+                      "compute.adopted": "#/components/schemas/ComputeAdoptedEvent",
+                      "compute.bound": "#/components/schemas/ComputeBoundEvent",
+                      "compute.cost": "#/components/schemas/ComputeCostEvent",
+                      "compute.created": "#/components/schemas/ComputeCreatedEvent",
+                      "compute.degraded": "#/components/schemas/ComputeDegradedEvent",
+                      "compute.deleted": "#/components/schemas/ComputeDeletedEvent",
+                      "compute.deleting": "#/components/schemas/ComputeDeletingEvent",
+                      "compute.deletion_failed": "#/components/schemas/ComputeDeletionFailedEvent",
+                      "compute.generation.applied": "#/components/schemas/ComputeGenerationAppliedEvent",
+                      "compute.generation.created": "#/components/schemas/ComputeGenerationCreatedEvent",
+                      "compute.lease.claimed": "#/components/schemas/ComputeLeaseClaimedEvent",
+                      "compute.lease.released": "#/components/schemas/ComputeLeaseReleasedEvent",
+                      "compute.provisioning": "#/components/schemas/ComputeProvisioningEvent",
+                      "compute.ready": "#/components/schemas/ComputeReadyEvent",
+                      "compute.strays_terminated": "#/components/schemas/ComputeStraysTerminatedEvent",
+                      "node.console": "#/components/schemas/NodeConsoleEvent",
+                      "node.metrics": "#/components/schemas/NodeMetricsEvent",
+                      "node.phase": "#/components/schemas/NodePhaseEvent",
+                      "node.progress": "#/components/schemas/NodeProgressEvent",
+                      "node.state": "#/components/schemas/NodeStateEvent",
+                      "task.state": "#/components/schemas/TaskStateEvent"
                     },
                     "propertyName": "type"
                   },
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/ComputeCreated"
+                      "$ref": "#/components/schemas/ComputeCreatedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeBound"
+                      "$ref": "#/components/schemas/ComputeBoundEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeAdopted"
+                      "$ref": "#/components/schemas/ComputeAdoptedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeProvisioning"
+                      "$ref": "#/components/schemas/ComputeProvisioningEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeReady"
+                      "$ref": "#/components/schemas/ComputeReadyEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeDegraded"
+                      "$ref": "#/components/schemas/ComputeDegradedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/GenerationCreated"
+                      "$ref": "#/components/schemas/ComputeGenerationCreatedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/GenerationApplied"
+                      "$ref": "#/components/schemas/ComputeGenerationAppliedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/LeaseClaimed"
+                      "$ref": "#/components/schemas/ComputeLeaseClaimedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/LeaseReleased"
+                      "$ref": "#/components/schemas/ComputeLeaseReleasedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeAbandoned"
+                      "$ref": "#/components/schemas/ComputeAbandonedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeDeleting"
+                      "$ref": "#/components/schemas/ComputeDeletingEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeDeletionFailed"
+                      "$ref": "#/components/schemas/ComputeDeletionFailedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/StraysTerminated"
+                      "$ref": "#/components/schemas/ComputeStraysTerminatedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ComputeDeleted"
+                      "$ref": "#/components/schemas/ComputeDeletedEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/CostEvent"
+                      "$ref": "#/components/schemas/ComputeCostEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/NodeEvent"
+                      "$ref": "#/components/schemas/NodeStateEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ProgressEvent"
+                      "$ref": "#/components/schemas/NodeProgressEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/ConsoleEvent"
+                      "$ref": "#/components/schemas/NodeConsoleEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/PhaseEvent"
+                      "$ref": "#/components/schemas/NodePhaseEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/MetricEvent"
+                      "$ref": "#/components/schemas/NodeMetricsEvent"
                     },
                     {
-                      "$ref": "#/components/schemas/TaskEvent"
+                      "$ref": "#/components/schemas/TaskStateEvent"
                     }
                   ]
                 }
@@ -6910,7 +7508,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.events.LogEntry_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.LogEntryResource_"
                 }
               }
             },
@@ -7039,7 +7637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Function_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.FunctionResource_"
                 }
               }
             },
@@ -7098,7 +7696,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FunctionSource"
+                "$ref": "#/components/schemas/WriteFunctionResource"
               }
             }
           },
@@ -7109,7 +7707,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7119,7 +7717,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7202,7 +7800,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7386,7 +7984,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7396,7 +7994,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7440,7 +8038,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FunctionExcerpt"
+                "$ref": "#/components/schemas/AttachExcerptResource"
               }
             }
           },
@@ -7451,7 +8049,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Function"
+                  "$ref": "#/components/schemas/FunctionResource"
                 }
               }
             },
@@ -7554,7 +8152,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Liveness"
+                  "$ref": "#/components/schemas/LivenessResource"
                 }
               }
             },
@@ -7578,7 +8176,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Readiness"
+                  "$ref": "#/components/schemas/ReadinessResource"
                 }
               }
             },
@@ -7787,7 +8385,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Offer_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.OfferResource_"
                 }
               }
             },
@@ -7860,7 +8458,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ProviderKind"
+                    "$ref": "#/components/schemas/ProviderKindResource"
                   },
                   "type": "array"
                 }
@@ -7886,7 +8484,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Provider_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.ProviderResource_"
                 }
               }
             },
@@ -7907,7 +8505,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProviderCreate"
+                "$ref": "#/components/schemas/CreateProviderResource"
               }
             }
           },
@@ -7918,7 +8516,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Provider"
+                  "$ref": "#/components/schemas/ProviderResource"
                 }
               }
             },
@@ -8085,7 +8683,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Provider"
+                  "$ref": "#/components/schemas/ProviderResource"
                 }
               }
             },
@@ -8165,7 +8763,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProviderCreate"
+                "$ref": "#/components/schemas/CreateProviderResource"
               }
             }
           },
@@ -8176,7 +8774,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Provider"
+                  "$ref": "#/components/schemas/ProviderResource"
                 }
               }
             },
@@ -8410,7 +9008,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Task_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.TaskResource_"
                 }
               }
             },
@@ -8480,7 +9078,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskCreate"
+                "$ref": "#/components/schemas/CreateTaskResource"
               }
             }
           },
@@ -8491,7 +9089,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/TaskResource"
                 }
               }
             },
@@ -8501,7 +9099,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/TaskResource"
                 }
               }
             },
@@ -8613,7 +9211,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/TaskResource"
                 }
               }
             },
@@ -8704,7 +9302,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/TaskResource"
                 }
               }
             },
@@ -8787,7 +9385,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_skyward.shared.schemas.Execution_"
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.ExecutionResource_"
                 }
               }
             },
@@ -8876,7 +9474,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExecutionCreate"
+                "$ref": "#/components/schemas/CreateExecutionResource"
               }
             }
           },
@@ -8887,7 +9485,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "$ref": "#/components/schemas/TaskResource"
                 }
               }
             },
@@ -8989,7 +9587,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Execution"
+                  "$ref": "#/components/schemas/ExecutionResource"
                 }
               }
             },

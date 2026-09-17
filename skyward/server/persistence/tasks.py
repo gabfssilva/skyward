@@ -4,8 +4,9 @@ import asyncio
 import base64
 from collections import Counter, defaultdict
 from collections.abc import Collection, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from itertools import batched
+from statistics import fmean
 from typing import Any, NamedTuple
 
 import msgspec
@@ -13,6 +14,7 @@ from msgspec import UNSET
 from piccolo.columns import Column
 from piccolo.querystring import QueryString
 
+from skyward.server.application.ports import Held, Pace
 from skyward.server.persistence.computes import LIVE, ComputeStore
 from skyward.server.persistence.db import POSITIONS
 from skyward.server.persistence.functions import BlobStore
@@ -464,14 +466,55 @@ class TaskStore:
         slot is not free until the worker lets go of it.
         """
         pending = await self._pending(compute)
-        stopping = await ExecutionRow.select(ExecutionRow.node_id).where(
-            ExecutionRow.stopping.eq(True) & ExecutionRow.task_id.is_in(TaskRow.select(TaskRow.id).where(TaskRow.compute_id == compute)),
-        )
         return Pressure(
             load=len(pending),
-            holding=Counter(row["node_id"] for row in (*pending, *stopping) if row["node_id"]),
+            holding=Counter(held.node for held in await self.held(compute)),
             owed=frozenset(row["rank"] for row in pending),
         )
+
+    async def held(self, compute: str) -> tuple[Held, ...]:
+        """The attempts this compute's machines are holding, the earliest started first.
+
+        Placed and still owed an answer, or answered for while the machine still ran
+        them: a slot is the worker's until it lets go, whatever the attempt's verdict.
+        """
+        live = TaskRow.select(TaskRow.id).where((TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]))
+        stopping = TaskRow.select(TaskRow.id).where(TaskRow.compute_id == compute)
+        rows = await ExecutionRow.select(ExecutionRow.node_id, ExecutionRow.task_id, ExecutionRow.ordinal, ExecutionRow.started_at).where(
+            ExecutionRow.node_id.is_not_null()
+            & (
+                (ExecutionRow.task_id.is_in(live) & ExecutionRow.state.is_in(list(PENDING)))
+                | (ExecutionRow.stopping.eq(True) & ExecutionRow.task_id.is_in(stopping))
+            ),
+        ).order_by(ExecutionRow.started_at)
+        if not rows:
+            return ()
+
+        functions = await TaskRow.select(TaskRow.id, TaskRow.function).where(TaskRow.id.is_in(list({row["task_id"] for row in rows})))
+        named = {row["id"]: row["function"] for row in functions}
+        return tuple(Held(row["node_id"], row["task_id"], row["ordinal"], named[row["task_id"]], row["started_at"]) for row in rows)
+
+    async def pace(self, compute: str, since: datetime) -> Pace:
+        """How many of this compute's tasks finished since ``since``, and how long they took.
+
+        A task takes from its first attempt starting to its verdict, retries and all,
+        which is the wait a caller holding its future sat through once it was running.
+        One that never started — cancelled in the queue, timed out waiting — finished
+        without taking any time, and is counted without being averaged.
+        """
+        finished = await TaskRow.select(TaskRow.id, TaskRow.finished_at).where((TaskRow.compute_id == compute) & (TaskRow.finished_at >= since))
+        if not finished:
+            return Pace(0, None)
+
+        started: dict[str, datetime] = {}
+        for ids in batched([row["id"] for row in finished], BATCH):
+            for row in await ExecutionRow.select(ExecutionRow.task_id, ExecutionRow.started_at).where(
+                ExecutionRow.task_id.is_in(list(ids)) & ExecutionRow.started_at.is_not_null(),
+            ):
+                started[row["task_id"]] = min(started.get(row["task_id"], row["started_at"]), row["started_at"])
+
+        took = [(row["finished_at"] - started[row["id"]]).total_seconds() for row in finished if row["id"] in started]
+        return Pace(len(finished), fmean(took) if took else None)
 
     async def busy(self, compute: str) -> tuple[Counter[str], frozenset[int]]:
         """How much each node is holding, and which ranks are spoken for.

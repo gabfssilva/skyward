@@ -23,6 +23,7 @@ from typing import Annotated
 import msgspec
 from cyclopts import Parameter
 
+from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call
 from skyward.cli._output import Output, dump, render
@@ -34,20 +35,15 @@ from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import bounds
 from skyward.shared import codec
 from skyward.shared.schemas import (
-    Compute,
     ComputeCreate,
     ComputeSpec,
     ComputeSpecPatch,
     Dispatch,
-    Function,
     FunctionExcerpt,
-    Node,
     NodeBounds,
-    Page,
     ProviderCreate,
     ProviderRef,
     Spec,
-    Task,
     TaskCreate,
 )
 
@@ -118,15 +114,15 @@ def list_computes(
 
     ``--state`` asks for one state instead, and is then the whole filtered list.
     """
-    async def work(client: Client) -> tuple[Compute, ...]:
+    async def work(client: Client) -> tuple[ComputeResource, ...]:
         if state:
-            return (await client.call("GET", "/v1/computes", Page[Compute], state=state)).items
+            return (await client.call("GET", "/v1/computes", Page[ComputeResource], state=state)).items
 
-        live = await client.call("GET", "/v1/computes", Page[Compute], live=True)
+        live = await client.call("GET", "/v1/computes", Page[ComputeResource], live=True)
         if history <= 0:
             return live.items
 
-        finished = await client.call("GET", "/v1/computes", Page[Compute], live=False, limit=history)
+        finished = await client.call("GET", "/v1/computes", Page[ComputeResource], live=False, limit=history)
         return live.items + finished.items
 
     render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in _call(work, url=url)], output=output)
@@ -140,7 +136,7 @@ def get_compute(
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Read one compute, by id or by name."""
-    compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}", Compute), url=url)
+    compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}", ComputeResource), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute)], output=output)
 
 
@@ -187,12 +183,12 @@ def create_compute(
     if ttl is not None:
         spec = msgspec.structs.replace(spec, ttl=ttl)
 
-    async def work(client: Client) -> Compute:
+    async def work(client: Client) -> ComputeResource:
         await _register(client, account)
         return await client.call(
             "POST",
             "/v1/computes",
-            Compute,
+            ComputeResource,
             body=msgspec.json.encode(ComputeCreate(spec=spec, name=name)),
             headers={"Idempotency-Key": uuid.uuid4().hex},
         )
@@ -249,13 +245,9 @@ def view_compute(
 ) -> None:
     """Read a compute together with the machines it is standing on."""
 
-    async def work(client: Client) -> tuple[Compute, Page[Node]]:
-        compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
-        return compute, await client.call("GET", f"/v1/computes/{compute.id}/nodes", Page[Node])
-
-    compute, nodes = _call(work, url=url)
+    compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}?include=nodes.replaced", ComputeResource), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute)], output=output)
-    render(NODE_COLUMNS, [_node_row(node) for node in nodes.items], output=output)
+    render(NODE_COLUMNS, [_node_row(node) for node in compute.nodes], output=output)
 
 
 @compute_app.command(name="ls")
@@ -433,7 +425,7 @@ def _nodes(value: str) -> NodeBounds:
             raise SystemExit(f"--nodes takes N, or MIN:MAX with MIN <= MAX, not {value!r}")
 
 
-async def _conditional(client: Client, ref: str, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> Compute:
+async def _conditional(client: Client, ref: str, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeResource:
     """A write against a compute, guarded by the revision it was read at.
 
     ``If-Match`` is what keeps two terminals from overwriting each other's intent,
@@ -444,12 +436,12 @@ async def _conditional(client: Client, ref: str, method: str, body: bytes | None
     """
     attempts = WRITE_ATTEMPTS
     while True:
-        current = await client.call("GET", f"/v1/computes/{ref}", Compute)
+        current = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
         try:
             return await client.call(
                 method,
                 f"/v1/computes/{current.id}",
-                Compute,
+                ComputeResource,
                 body=body,
                 headers={"If-Match": f'"{current.revision}"', **(headers or {})},
             )
@@ -487,7 +479,7 @@ async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...]
     task settles drops whatever the stream had not delivered yet. So the follower
     is told the task is done and left to drain until the log goes quiet.
     """
-    compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
+    compute = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
     task = await _submit(client, compute.id, source, argv, dispatch)
 
     settled = asyncio.Event()
@@ -507,16 +499,16 @@ async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...]
     return await _status(client, task.id)
 
 
-async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ...], dispatch: Dispatch) -> Task:
+async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ...], dispatch: Dispatch) -> TaskResource:
     blob = await codec.payload.encode(_wrap(source, argv))
     function = await codec.digest(blob)
     await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": Path(argv[0]).name})
-    await client.call("PUT", f"/v1/functions/{function}/excerpt", Function, body=msgspec.json.encode(FunctionExcerpt(text=source)))
+    await client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=source)))
 
     return await client.call(
         "POST",
         "/v1/tasks",
-        Task,
+        TaskResource,
         body=msgspec.json.encode(
             TaskCreate(
                 compute=compute,
@@ -535,28 +527,10 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
     The log replays from its start, so subscribing after the task was submitted
     loses nothing — the first thing the script printed is still in it.
 
-    A line names the *execution* that produced it, not the task: a task is one
-    call, and a broadcast of it is one execution per node. So the task is read
-    back for the executions it has, and only when a line names one that has not
-    been decided yet — which is once per node, not once per line.
+    A line carries the task it belongs to — the daemon resolves it from the attempt
+    the machine was handed — so a compute running more than one is filtered on the
+    line itself rather than by reading the task back per attempt.
     """
-    mine: set[str] = set()
-    foreign: set[str] = set()
-
-    async def belongs(execution: str) -> bool:
-        nonlocal mine
-        if execution in mine:
-            return True
-        if execution in foreign:
-            return False
-
-        mine = {run.id for run in (await client.call("GET", f"/v1/tasks/{task}", Task)).executions}
-        if execution in mine:
-            return True
-
-        foreign.add(execution)
-        return False
-
     async with aclosing(client.events(compute, types=("node.console",))) as stream:
         feed = stream.__aiter__()
         while True:
@@ -567,14 +541,14 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
                 return
 
             line = json.loads(payload)
-            if (execution := line.get("task")) and await belongs(execution):
+            if line.get("task") == task:
                 sys.stdout.write(line.get("content", "") + "\n")
                 sys.stdout.flush()
 
 
 async def _status(client: Client, task_id: str) -> int:
     """The worst node's, because a broadcast is as good as its unhappiest machine."""
-    settled = await client.call("GET", f"/v1/tasks/{task_id}", Task)
+    settled = await client.call("GET", f"/v1/tasks/{task_id}", TaskResource)
     codes = [
         await codec.Pickle[int]().decode(blob)
         for execution in settled.executions
@@ -611,19 +585,12 @@ def _wrap(source: str, argv: tuple[str, ...]) -> Callable[[], int]:
     return execute
 
 
-def _compute_row(compute: Compute) -> tuple[object, ...]:
-    return (
-        compute.id,
-        compute.name,
-        compute.status.state,
-        compute.status.nodes_ready,
-        compute.status.nodes_total,
-        compute.generation,
-        compute.created_at,
-    )
+def _compute_row(compute: ComputeResource) -> tuple[object, ...]:
+    ready = sum(node.state == "ready" for node in compute.nodes)
+    return (compute.id, compute.name, compute.status.state, ready, len(compute.nodes), compute.generation, compute.created_at)
 
 
-def _node_row(node: Node) -> tuple[object, ...]:
+def _node_row(node: NodeResource) -> tuple[object, ...]:
     return (node.id, node.rank, node.state, node.desired, node.machine, node.address, node.accelerator, node.price_per_hour)
 
 

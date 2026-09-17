@@ -14,7 +14,7 @@ from typing import Annotated
 
 from cyclopts import Parameter
 
-from skyward.shared.schemas import Readiness
+from skyward.api.v1 import ReadinessResource
 
 from . import config_app
 from ._client import call, resolve
@@ -74,7 +74,7 @@ def config_validate(
     target, source, _ = _settings(url)
 
     try:
-        body = call(lambda client: client.call("GET", "/v1/health/ready", Readiness), url=url)
+        body = call(lambda client: client.call("GET", "/v1/health/ready", ReadinessResource), url=url)
     except SystemExit as unreachable:
         status, detail = "fail", str(unreachable)
     except Exception as exc:

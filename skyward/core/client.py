@@ -27,9 +27,9 @@ from urllib.parse import urlsplit
 import httpx
 import msgspec
 
+from skyward.api.v1 import LivenessResource
 from skyward.core.errors import DaemonError, SkywardError, UnexpectedResponseError, refused
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Liveness
 from skyward.shared.version import current
 
 if TYPE_CHECKING:
@@ -120,7 +120,7 @@ class Client:
         )
         return cls(http, control, stack)
 
-    async def liveness(self) -> Liveness | None:
+    async def liveness(self) -> LivenessResource | None:
         """What the daemon says about itself, or nothing when none answers.
 
         No patience here: this is the probe :func:`connect` uses to decide whether
@@ -129,7 +129,7 @@ class Client:
         """
         try:
             response = await self._send("GET", "/v1/health/live", None, JSON, None, {}, patience=0.0)
-            return msgspec.json.decode(response.content, type=Liveness)
+            return msgspec.json.decode(response.content, type=LivenessResource)
         except NOT_A_DAEMON:
             return None
 
@@ -591,7 +591,7 @@ async def dial(url: str, *, start: bool, strict: bool) -> Client:
     return client
 
 
-async def started(client: Client, url: str) -> Liveness:
+async def started(client: Client, url: str) -> LivenessResource:
     """Start a daemon at ``url`` and wait for it to answer.
 
     The pid is written down only once something has answered, and only if the

@@ -7,12 +7,12 @@ from typing import Annotated
 
 from cyclopts import Parameter
 
+from skyward.api.v1 import ComputeResource
 from skyward.cli import app
 from skyward.cli._client import call
 from skyward.core.client import Client
 from skyward.core.console import ConsoleMode, Observer, watcher
 from skyward.core.errors import SkywardError
-from skyward.shared.schemas import Compute
 
 
 @app.command(name="monitor")
@@ -36,7 +36,7 @@ def monitor(
     """
 
     async def work(client: Client) -> None:
-        compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
+        compute = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
         follower = await asyncio.to_thread(watcher, mode=mode)
         await Observer(client, compute.id, watchers=(follower,)).follow()
 

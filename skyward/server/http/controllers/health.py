@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from litestar import Controller, get
 
+from skyward.api import v1
 from skyward.server.application import ports
-from skyward.shared.schemas import DependencyState, Liveness, Readiness
 from skyward.shared.version import current
 
 
@@ -20,8 +20,8 @@ class HealthController(Controller):
             "this wire before it sends anything over it."
         ),
     )
-    async def live(self, health: ports.Health) -> Liveness:
-        return Liveness(live=await health.live(), version=current())
+    async def live(self, health: ports.Health) -> v1.LivenessResource:
+        return v1.LivenessResource(live=await health.live(), version=current())
 
     @get(
         "/ready",
@@ -31,8 +31,8 @@ class HealthController(Controller):
             "been classified — it does not wait for new provisioning to finish."
         ),
     )
-    async def ready(self, health: ports.Health) -> Readiness:
-        return Readiness(ready=await health.ready())
+    async def ready(self, health: ports.Health) -> v1.ReadinessResource:
+        return v1.ReadinessResource(ready=await health.ready())
 
     @get(
         "/dependencies",
@@ -43,5 +43,5 @@ class HealthController(Controller):
             "would take every other compute down with it."
         ),
     )
-    async def dependency_health(self, health: ports.Health) -> dict[str, DependencyState]:
+    async def dependency_health(self, health: ports.Health) -> dict[str, v1.DependencyState]:
         return await health.dependencies()

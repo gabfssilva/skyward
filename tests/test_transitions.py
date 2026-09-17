@@ -113,13 +113,12 @@ def describe_applying_an_event_to_the_store() -> None:
         assert (await computes.get(compute)).status.state == "ready"
         assert await _recorded(compute) == ["compute.created", "compute.generation.created", "compute.provisioning", "compute.ready"]
 
-    async def the_same_pass_again_writes_the_counts_and_records_nothing(tmp_path: Path) -> None:
+    async def the_same_pass_again_records_nothing(tmp_path: Path) -> None:
         computes, compute = await _given(tmp_path)
         await computes.apply(ready(2, compute=compute))
 
-        assert await computes.apply(ready(3, compute=compute)) is False
+        assert await computes.apply(ready(3, compute=compute)) is False, "a count that moved is not news: the nodes say it"
 
-        assert (await computes.get(compute)).status.nodes_ready == 3
         assert (await _recorded(compute))[-1] == "compute.ready"
         assert (await _recorded(compute)).count("compute.ready") == 1
 

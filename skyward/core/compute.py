@@ -24,6 +24,7 @@ import httpx
 import msgspec
 from msgspec import UNSET, UnsetType
 
+from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, ProviderResource, TaskResource
 from skyward.core import context, usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
@@ -48,27 +49,17 @@ from skyward.shared.schemas import (
     ComputeState,
     Dispatch,
     Endpoint,
-    Error,
-    Function,
     FunctionExcerpt,
     Image,
-    Lease,
     LeaseClaim,
     ProviderCreate,
     ProviderRef,
     Selection,
-    Task,
     TaskCreate,
     Worker,
 )
 from skyward.shared.schemas import (
-    Compute as ComputeResource,
-)
-from skyward.shared.schemas import (
     Options as OptionsRef,
-)
-from skyward.shared.schemas import (
-    Provider as ProviderView,
 )
 from skyward.shared.schemas import (
     Spec as SpecRef,
@@ -397,7 +388,7 @@ class Compute:
                         yield codec.loads(value)
                     case Failed(error=error, traceback=trace):
                         raise TaskFailedError(
-                            Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
+                            Error(code="task_failed", message=error, retryable=False, request_id=None, details={"traceback": trace}),
                         )
         finally:
             if self._loop is not None:
@@ -426,8 +417,9 @@ class Compute:
                 self.loop.run(stream.aclose())
 
     def current_nodes(self) -> int:
+        """How many machines are ready — counted off the compute, which carries its nodes."""
         compute = self.loop.run(self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource))
-        return compute.status.nodes_ready
+        return sum(node.state == "ready" for node in compute.nodes)
 
     def resize(self, nodes: NodeSpec) -> None:
         """Ask for a different number of machines, in the spelling ``nodes=`` takes.
@@ -496,7 +488,7 @@ class Compute:
             credentials, config = resolve_provider(provider)
             body = ProviderCreate(name=name, kind=provider.kind, credentials=credentials, config=config)
             try:
-                existing = await self.client.call("GET", f"/v1/providers/{name}", ProviderView)
+                existing = await self.client.call("GET", f"/v1/providers/{name}", ProviderResource)
             except SkywardError as error:
                 if error.code != "not_found":
                     raise
@@ -597,7 +589,7 @@ class Compute:
         await self.client.call(
             "PUT",
             f"/v1/computes/{self._id}/lease",
-            Lease,
+            LeaseResource,
             body=msgspec.json.encode(LeaseClaim(owner=self._owner, ttl_seconds=LEASE_SECONDS)),
             urgent=True,
         )
@@ -714,7 +706,7 @@ class Compute:
         task = await self._submit(pending, dispatch="all")
         await self._settled(task.id)
 
-        settled = await self.client.call("GET", f"/v1/tasks/{task.id}", Task)
+        settled = await self.client.call("GET", f"/v1/tasks/{task.id}", TaskResource)
         blobs = [
             await self.client.blob(f"/v1/blobs/{execution.result_sha256}")
             for execution in sorted(settled.executions, key=lambda execution: execution.rank)
@@ -722,7 +714,7 @@ class Compute:
         ]
         return [await codec.Pickle[T]().decode(blob) for blob in blobs if blob is not None]
 
-    async def _submit[T](self, pending: Pending[T] | Streaming[T], dispatch: Dispatch) -> Task:
+    async def _submit[T](self, pending: Pending[T] | Streaming[T], dispatch: Dispatch) -> TaskResource:
         code = await codec.payload.encode(pending.fn)
         function = await codec.digest(code)
         if function not in self._functions:
@@ -733,7 +725,7 @@ class Compute:
                 headers={"X-Skyward-Function-Name": written.__name__},
             )
             if (text := await asyncio.to_thread(excerpt, written)) is not None:
-                await self.client.call("PUT", f"/v1/functions/{function}/excerpt", Function, body=msgspec.json.encode(FunctionExcerpt(text=text)))
+                await self.client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=text)))
             self._functions.add(function)
 
         args = await codec.payload.encode((pending.args, pending.kwargs))
@@ -757,7 +749,7 @@ class Compute:
         return await self.client.call(
             "POST",
             "/v1/tasks",
-            Task,
+            TaskResource,
             body=msgspec.json.encode(
                 TaskCreate(
                     compute=self._id,

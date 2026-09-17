@@ -125,7 +125,6 @@ export function Stage() {
 
 /** One hex per worker slot, lit while an execution occupies it. */
 function SlotHive({ c, nodes, tasks, rank }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[]; rank: number }) {
-  const functions = useStore((s) => s.functions)
   const k = slotsOf(c)
   const busy = busyOf(tasks, nodes, rank)
   const s = 30
@@ -137,7 +136,7 @@ function SlotHive({ c, nodes, tasks, rank }: { c: Compute; nodes: readonly Node[
       {lay.cells.map(([x, y], i) => {
         const t = i < busy ? running[i % Math.max(1, running.length)] : undefined
         return (
-          <g key={i} transform={`translate(${x.toFixed(1)},${y.toFixed(1)})`} data-tip={t ? (functions[t.function]?.name ?? t.function.slice(0, 8)) : 'idle'}>
+          <g key={i} transform={`translate(${x.toFixed(1)},${y.toFixed(1)})`} data-tip={t ? (t.function.name ?? t.function.sha256.slice(0, 8)) : 'idle'}>
             <polygon className={`slot${t ? ' on' : ''}`} points={P} />
             <text y="4">{i}</text>
           </g>
@@ -189,7 +188,7 @@ function RanHere({ rows }: { rows: readonly { t: Task; x: ExecRow }[] }) {
             {rows.map(({ t, x }) => (
               <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
                 <td>
-                  <Fn sha={t.function} weight={600} />
+                  <Fn sha={t.function.sha256} weight={600} />
                 </td>
                 <td>
                   <Pill state={x.state} />

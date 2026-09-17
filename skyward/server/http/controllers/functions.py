@@ -4,10 +4,11 @@ from litestar import Controller, Request, Response, get, head, post, put
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 
+from skyward.api import v1
 from skyward.server.application import ports
 from skyward.server.http.exceptions import failures
+from skyward.server.http.representation import recast
 from skyward.shared import codec
-from skyward.shared.schemas import Function, FunctionExcerpt, FunctionSource, Page
 from skyward.worker.authored import authored
 
 BLOB = "application/vnd.skyward.blob"
@@ -41,8 +42,8 @@ class FunctionController(Controller):
         limit: int = Parameter(default=50, ge=1),
         latest: bool = Parameter(default=False, description="One row per function: its newest upload, which carries its highest version."),
         lineage: str | None = Parameter(default=None, description="Every upload of one function."),
-    ) -> Page[Function]:
-        return await functions.list(cursor, limit, latest, lineage)
+    ) -> v1.Page[v1.FunctionResource]:
+        return recast(await functions.list(cursor, limit, latest, lineage), v1.Page[v1.FunctionResource])
 
     @post(
         status_code=201,
@@ -62,13 +63,13 @@ class FunctionController(Controller):
         ),
         responses={
             **failures(422),
-            200: ResponseSpec(Function, description="Already registered — the same text, written again"),
+            200: ResponseSpec(v1.FunctionResource, description="Already registered — the same text, written again"),
         },
     )
-    async def write(self, data: FunctionSource, functions: ports.Functions) -> Response[Function]:
+    async def write(self, data: v1.WriteFunctionResource, functions: ports.Functions) -> Response[v1.FunctionResource]:
         blob = await codec.payload.encode(authored(data.source, data.name))
         function, created = await functions.register(await codec.digest(blob), blob, data.name, data.source)
-        return Response(function, status_code=201 if created else 200)
+        return Response(recast(function, v1.FunctionResource), status_code=201 if created else 200)
 
     @put(
         "/{sha256:str}/excerpt",
@@ -83,8 +84,8 @@ class FunctionController(Controller):
         ),
         responses=failures(404),
     )
-    async def excerpt(self, sha256: str, data: FunctionExcerpt, functions: ports.Functions) -> Function:
-        return await functions.excerpt(sha256, data.text)
+    async def excerpt(self, sha256: str, data: v1.AttachExcerptResource, functions: ports.Functions) -> v1.FunctionResource:
+        return recast(await functions.excerpt(sha256, data.text), v1.FunctionResource)
 
     @head(
         "/{sha256:str}",
@@ -111,7 +112,7 @@ class FunctionController(Controller):
         ),
         responses={
             **failures(400),
-            200: ResponseSpec(Function, description="Already registered — the upload was a no-op"),
+            200: ResponseSpec(v1.FunctionResource, description="Already registered — the upload was a no-op"),
         },
     )
     async def register(
@@ -120,9 +121,9 @@ class FunctionController(Controller):
         request: Request,
         functions: ports.Functions,
         name: str | None = Parameter(header="X-Skyward-Function-Name", default=None),
-    ) -> Response[Function]:
+    ) -> Response[v1.FunctionResource]:
         function, created = await functions.register(sha256, await request.body(), name)
-        return Response(function, status_code=201 if created else 200)
+        return Response(recast(function, v1.FunctionResource), status_code=201 if created else 200)
 
     @get(
         "/{sha256:str}",
@@ -133,5 +134,5 @@ class FunctionController(Controller):
         ),
         responses=failures(404),
     )
-    async def read(self, sha256: str, functions: ports.Functions) -> Function:
-        return await functions.get(sha256)
+    async def read(self, sha256: str, functions: ports.Functions) -> v1.FunctionResource:
+        return recast(await functions.get(sha256), v1.FunctionResource)

@@ -12,7 +12,7 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, redirect_stdout
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -120,8 +120,8 @@ def _state(view: ComputeView) -> _State:
         max_nodes=view.maximum,
         is_elastic=view.minimum is not None or view.maximum is not None,
         tasks_per_node=MappingProxyType(dict(per_node)),
-        ssh_user=_binding_string(rows, "ssh_user"),
-        ssh_key_path=_binding_string(rows, "ssh_key_path"),
+        ssh_user=next((row.ssh.user for row in rows if row.ssh), ""),
+        ssh_key_path="",
         bootstrap_spinners=spinners,
         progress_lines=MappingProxyType({row.rank: _Progress(row.progress, row.completion) for row in rows if row.progress is not None}),
         node_instances=MappingProxyType({row.rank: instance for row, instance in zip(rows, instances, strict=True)}),
@@ -175,8 +175,8 @@ def _instance(view: ComputeView, row: NodeView) -> _Instance:
     return _Instance(
         id=row.machine or row.id,
         ip=row.address,
-        ssh_port=_binding_int(row.binding, "ssh_port", 22),
-        region=_binding_string_value(row.binding, "region") or view.region or "",
+        ssh_port=row.ssh.port if row.ssh else 22,
+        region=view.region or "",
         spot=spot,
         offer=_Offer(
             instance_type=_InstanceType(
@@ -189,20 +189,6 @@ def _instance(view: ComputeView, row: NodeView) -> _Instance:
             on_demand_price=price if not spot else None,
         ),
     )
-
-
-def _binding_string(rows: list[NodeView], key: str) -> str:
-    return next((value for row in rows if (value := _binding_string_value(row.binding, key))), "")
-
-
-def _binding_string_value(binding: Mapping[str, object], key: str) -> str:
-    value = binding.get(key)
-    return value if isinstance(value, str) else ""
-
-
-def _binding_int(binding: Mapping[str, object], key: str, default: int) -> int:
-    value = binding.get(key)
-    return value if isinstance(value, int) else default
 
 
 def render(view: ComputeView) -> RenderableType:

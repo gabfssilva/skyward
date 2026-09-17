@@ -18,11 +18,11 @@ import asyncio
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from skyward.api.v1 import ComputeResource, Page
 from skyward.core.client import Client
 from skyward.core.console import Observer
 from skyward.core.view import ComputeView, decoded
 from skyward.shared.events import ComputeCreated, ComputeDeleted, Event
-from skyward.shared.schemas import Compute, Page
 
 type Fleet = Mapping[str, ComputeView]
 
@@ -52,14 +52,14 @@ class FleetObserver:
     async def follow(self) -> None:
         """Watch until cancelled: what is live now, and whatever is created later."""
         loop = asyncio.get_running_loop()
-        listed = await self._client.call("GET", "/v1/computes", Page[Compute], live=True)
+        listed = await self._client.call("GET", "/v1/computes", Page[ComputeResource], live=True)
         async with asyncio.TaskGroup() as group:
             for compute in listed.items:
                 self._watch(group, loop, compute.id)
             async for _, payload in self._client.events(types=("compute.created",)):
                 match decoded(payload):
                     case ComputeCreated(compute=compute_id) if compute_id not in self._tasks:
-                        compute = await self._client.call("GET", f"/v1/computes/{compute_id}", Compute)
+                        compute = await self._client.call("GET", f"/v1/computes/{compute_id}", ComputeResource)
                         if compute.status.state in LIVE:
                             self._watch(group, loop, compute_id)
                     case _:

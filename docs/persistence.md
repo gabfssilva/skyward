@@ -28,7 +28,7 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 | `generation` | client | which revision of that definition is current |
 | `status_observed_generation` | reconciler | which one has actually been applied |
 | `status_state` | `ComputeStore.apply` | `requested`, `provisioning`, `ready`, `degraded`, `deleting`, `deleted` — moved only by an event, recorded in the same transaction |
-| `status_nodes_ready` / `status_nodes_total` | reconciler | how many machines answer, of how many that exist |
+| `placement_reason` / `placement_retry_at` | `Machines` | why the last launch was refused, and when buying is tried again |
 | `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` — or `abandoned`, the reconciler's when nobody renewed the lease and `delete_on_exit` was set |
 | `deleted_at` | `ComputeStore.apply` | when the state reached `deleted`, written once |
 | `revision` | either | the optimistic-concurrency token behind `If-Match` |
@@ -94,7 +94,7 @@ It's a SQLite file, so it opens with anything:
 ```console
 $ sqlite3 ~/.skyward/skyward.sqlite '.tables'
 $ sqlite3 ~/.skyward/skyward.sqlite \
-    'select id, name, status_state, status_nodes_ready from computes'
+    'select id, name, status_state, status_observed_generation from computes'
 ```
 
 Read freely. Writing behind the daemon's back is how you end up with a compute whose `revision` no client expects and machines nobody reclaims — use the API or the CLI, which is what they are for.

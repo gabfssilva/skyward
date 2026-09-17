@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Collection, Iterable, Sequence
 from datetime import UTC, datetime
 
+from skyward.server.application.ports import Held, Pace
 from skyward.shared.errors import NotFoundError
 from skyward.shared.events import ComputeProvisioning, LogEntry
 from skyward.shared.schemas import (
@@ -59,7 +60,7 @@ COMPUTE = Compute(
     revision=7,
     generation=3,
     spec=SPEC,
-    status=ComputeStatus(state="ready", observed_generation=3, nodes_ready=4, nodes_total=4),
+    status=ComputeStatus(state="ready", observed_generation=3),
     lease=Lease(owner="ctl_1:epoch_9", expires_at=NOW),
     created_at=NOW,
     cost=18.4,
@@ -74,7 +75,7 @@ NODE = Node(
     revision=2,
     desired="present",
     state="ready",
-    provider_binding={"instance_id": "i-0abc123", "region": "us-east-1", "volume_ids": ["vol-01"]},
+    provider_binding={"id": "i-0abc123", "state": "running", "host": "54.210.8.33", "port": 22, "user": "ubuntu", "private_host": "10.0.1.7"},
     created_at=NOW,
     address="10.0.1.7",
     accelerator="a100",
@@ -89,7 +90,7 @@ DEAD_NODE = Node(
     revision=5,
     desired="deleted",
     state="lost",
-    provider_binding={"instance_id": "i-0def456", "region": "us-east-1", "volume_ids": ["vol-02"]},
+    provider_binding={"id": "i-0def456", "state": "running", "host": "54.210.8.34", "port": 22, "user": "ubuntu", "private_host": "10.0.1.8"},
     created_at=NOW,
     terminated_at=NOW,
 )
@@ -174,6 +175,9 @@ class MockComputes:
     async def identify(self, ref: str) -> str:
         return ref
 
+    async def named(self, ids: Collection[str]) -> dict[str, str | None]:
+        return dict.fromkeys(ids, COMPUTE.name)
+
     async def list(
         self,
         cursor: str | None,
@@ -210,11 +214,8 @@ class MockGenerations:
 
 
 class MockNodes:
-    async def list(self, compute: str, include_terminal: bool, generation: int | None) -> Page[Node]:
-        return Page(items=(NODE, DEAD_NODE) if include_terminal else (NODE,))
-
-    async def get(self, compute: str, node_id: str) -> Node:
-        return NODE
+    async def of(self, compute: str) -> tuple[Node, ...]:
+        return NODE, DEAD_NODE
 
     async def drain(self, compute: str, node_id: str, idempotency_key: str) -> Node:
         return DEAD_NODE
@@ -278,6 +279,12 @@ class MockTasks:
 
     def close(self) -> None:
         return None
+
+    async def held(self, compute: str) -> tuple[Held, ...]:
+        return ()
+
+    async def pace(self, compute: str, since: datetime) -> Pace:
+        return Pace(1, 12.5)
 
 
 class MockExecutions:

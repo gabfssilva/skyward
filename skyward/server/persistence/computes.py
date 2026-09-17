@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import timedelta
+from collections.abc import Collection, Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
 import msgspec
@@ -12,6 +12,7 @@ from piccolo.query.functions.aggregate import Count
 
 from skyward.server.persistence.db import transaction
 from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.nodes import LIVE as NODES_LIVE
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import after, digest, ident, now, once, packed, unpacked
 from skyward.server.persistence.tables import ComputeRow, GenerationRow, TaskRow
@@ -48,6 +49,7 @@ from skyward.shared.schemas import (
     Market,
     Offer,
     Page,
+    Refusal,
     TaskCounts,
 )
 from skyward.shared.tls import Authority
@@ -69,12 +71,12 @@ what lands in it is a lease renewal or a binding — writes about other columns.
 Three is generous for a loop that never contends with itself for long.
 """
 
-STATUS: Mapping[str, Column] = {
-    "nodes_ready": ComputeRow.status_nodes_ready,
-    "nodes_total": ComputeRow.status_nodes_total,
-    "generation": ComputeRow.status_observed_generation,
-}
-"""An event's field, and the status column it is the observation of."""
+STATUS: Mapping[str, Column] = {"generation": ComputeRow.status_observed_generation}
+"""An event's field, and the status column it is the observation of.
+
+The node counts events carry are not among them: they are the nodes, counted, and a
+reader that has the nodes has the counts.
+"""
 
 
 class Infrastructure(Struct, frozen=True):
@@ -222,6 +224,10 @@ class ComputeStore:
     async def identify(self, ref: str) -> str:
         return (await self._row(ref)).id
 
+    async def named(self, ids: Collection[str]) -> dict[str, str | None]:
+        rows = await ComputeRow.select(ComputeRow.id, ComputeRow.name).where(ComputeRow.id.is_in(list(ids))) if ids else []
+        return {row["id"]: row["name"] for row in rows}
+
     async def list(
         self,
         cursor: str | None,
@@ -318,11 +324,31 @@ class ComputeStore:
             row.deletion_cause = row.deletion_cause or cause
             row.revision += 1
             await row.save().run()
-            await self.apply(ComputeDeleting(compute=row.id, nodes_ready=row.status_nodes_ready, nodes_total=row.status_nodes_total))
+            nodes = await self._nodes.of(row.id)
+            live = [node for node in nodes if node.state in NODES_LIVE]
+            await self.apply(ComputeDeleting(
+                compute=row.id,
+                nodes_ready=sum(1 for node in live if node.state == "ready"),
+                nodes_total=len(live),
+            ))
             return row.id
 
         compute_id, _ = await once("compute.delete", idempotency_key, None, mark)
         return await self.get(compute_id)
+
+    async def refused(self, compute_id: str, reason: str, retry_at: datetime) -> None:
+        """Why no machine could be bought, and when one is asked for again."""
+        await ComputeRow.update({
+            ComputeRow.placement_reason: reason,
+            ComputeRow.placement_retry_at: retry_at,
+        }).where(ComputeRow.id == compute_id).run()
+
+    async def placed(self, compute_id: str) -> None:
+        """A machine was bought, or the compute let go of its region: there is nothing left to explain."""
+        await ComputeRow.update({
+            ComputeRow.placement_reason: None,
+            ComputeRow.placement_retry_at: None,
+        }).where((ComputeRow.id == compute_id) & ComputeRow.placement_reason.is_not_null()).run()
 
     async def claim_lease(self, ref: str, claim: LeaseClaim) -> Lease:
         """Take ownership, if it is free or already ours.
@@ -566,8 +592,6 @@ async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None, tasks:
         status=ComputeStatus(
             state=msgspec.convert(row.status_state, ComputeState),
             observed_generation=row.status_observed_generation,
-            nodes_ready=row.status_nodes_ready,
-            nodes_total=row.status_nodes_total,
             last_error=await unpacked(row.status_error, Error) if row.status_error else None,
         ),
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
@@ -575,6 +599,7 @@ async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None, tasks:
         cost=cost,
         tasks=tasks,
         offer=await unpacked(row.offer, Offer) if row.offer else None,
+        placement=Refusal(reason=row.placement_reason, retry_at=row.placement_retry_at) if row.placement_reason and row.placement_retry_at else None,
         ended=ended,
     )
 

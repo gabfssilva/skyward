@@ -33,7 +33,7 @@ const now = (): number => Date.now()
 const iso = (ms: number): string => new Date(ms).toISOString()
 const rid = (p: string): string => `${p}_${Math.floor(rnd() * 0xffffff).toString(16).padStart(6, '0')}`
 
-const err = (message: string): WireError => ({ code: 'reconcile_failed', message, retryable: true })
+const err = (message: string): WireError => ({ code: 'reconcile_failed', message, retryable: true, request_id: null, details: null })
 
 const OPTIONS: Options = {
   autoscale_cooldown: 0,
@@ -185,7 +185,7 @@ const O = (
 ): Offer => ({
   accelerator,
   accelerator_count,
-  architecture: ARCH[accelerator] ?? null,
+  architecture: (ARCH[accelerator] ?? null) as Offer['architecture'],
   available,
   billing_unit,
   cpus,
@@ -257,7 +257,7 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
     accelerator: o.accelerator,
     address,
     billing_unit: 'second',
-    compute_id: computeId,
+    busy: 0,
     created_at: iso(now() - 3.6e6),
     desired: 'present',
     generation: 1,
@@ -266,11 +266,15 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
     launched_at: iso(now() - 3.6e6),
     machine: state === 'ready' || state === 'bootstrapping' ? `${o.mach}${rank.toString(36)}` : null,
     market: o.market,
+    metrics: undefined,
+    phases: undefined,
     price_per_hour: o.price,
-    provider_binding: {},
+    progress: null,
     rank,
-    revision: 1,
+    running: undefined,
+    ssh: address ? { host: address, port: 22, user: 'root' } : null,
     state,
+    tail: undefined,
     terminated_at: null,
   }
   if (state === 'ready') {
@@ -300,7 +304,7 @@ const mkCompute = (
   createdAgo: number,
   s: ComputeSpec,
   nodesTotal: number,
-  nodesReady: number,
+  _nodesReady: number,
   leaseIn: number,
   ended: Ending | null = null,
 ): Omit<Compute, 'tasks'> => ({
@@ -311,10 +315,15 @@ const mkCompute = (
   id,
   lease: { owner: 'gabs@studio', expires_at: iso(now() + leaseIn * 1000) },
   name,
+  nodes: (nodes[id] ?? []).slice(0, nodesTotal),
   offer: offers.find((o) => o.kind === s.specs[0]?.provider.kind && o.accelerator === s.specs[0]?.accelerator) ?? null,
+  placement: null,
+  provider: null,
+  rate: rateOf(id),
   revision: generation,
   spec: s,
-  status: { last_error: null, nodes_ready: nodesReady, nodes_total: nodesTotal, observed_generation: generation, state },
+  status: { last_error: null, observed_generation: generation, state },
+  utilization: undefined,
 })
 
 const computeSpec = (partial: Partial<ComputeSpec> & Pick<ComputeSpec, 'nodes' | 'specs' | 'image' | 'worker'>): ComputeSpec => ({
@@ -339,6 +348,7 @@ const execution = (
   finished: boolean,
   message: string | null,
 ): Execution => ({
+  deadline_at: null,
   error: message ? err(message) : null,
   finished_at: finished ? iso(now() - 1000) : null,
   id: `${taskId}_${ordinal}`,
@@ -452,16 +462,19 @@ const task = (
   executions: Execution[],
 ): Task => ({
   args_sha256: 'a'.repeat(64),
-  compute_id: computeId,
+  compute: { id: computeId, name: null },
   correlation_id: null,
   dispatch,
   executions,
   finished_at: finishedAgo === null ? null : iso(now() - finishedAgo),
-  function: sha(fn),
+  function: { sha256: sha(fn), name: fn, version: 1 },
   generation: 1,
   id,
+  queue_timeout_seconds: null,
+  rank: null,
   result_sha256: null,
   retry: null,
+  run_timeout_seconds: null,
   state,
   submitted_at: iso(now() - submittedAgo),
 })
@@ -802,16 +815,19 @@ function submit(init: RequestInit | undefined): Response {
   const id = rid('tsk')
   const submitted: Task = {
     args_sha256: 'a'.repeat(64),
-    compute_id: body.compute,
+    compute: { id: body.compute, name: null },
     correlation_id: null,
     dispatch: body.dispatch,
     executions: ranks.map((rank) => execution(id, rank, 1, 'created', 0, false, null)),
     finished_at: null,
-    function: body.function,
+    function: { sha256: body.function, name: null, version: 1 },
     generation: 1,
     id,
+    queue_timeout_seconds: null,
+    rank: body.rank ?? null,
     result_sha256: null,
     retry: null,
+    run_timeout_seconds: null,
     state: 'queued',
     submitted_at: iso(now()),
   }
@@ -1070,7 +1086,7 @@ function tick(): void {
       .flat()
       .filter((t) => t.state === 'running')
     const t = running[Math.floor(rnd() * running.length)]
-    if (t) emit('task.started', { type: 'task.state', compute: t.compute_id, task: t.id, state: 'started', attempt: 1 })
+    if (t) emit('task.started', { type: 'task.state', compute: t.compute.id, task: t.id, state: 'started', attempt: 1 })
   }
 }
 

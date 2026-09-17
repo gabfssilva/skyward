@@ -22,12 +22,12 @@ import msgspec
 import pytest
 
 import skyward as sky
+from skyward.api.v1 import ComputeResource, ComputeSpec, ComputeStatus, LeaseResource, NodeBounds, Page, ProviderResource, TaskCounts
 from skyward.core.client import Client, connect
 from skyward.core.compute import MOVES
 from skyward.core.errors import DaemonError
 from skyward.server import daemon
-from skyward.shared.schemas import Compute as ComputeResource
-from skyward.shared.schemas import ComputeSpec, ComputeStatus, Lease, NodeBounds, Page, Provider, ProviderCreate, TaskCounts
+from skyward.shared.schemas import ProviderCreate
 
 pytestmark = pytest.mark.local
 
@@ -37,7 +37,7 @@ async def _register(url: str, name: str) -> None:
     client = await Client.remote(url)
     try:
         body = ProviderCreate(name=name, kind="container", credentials={}, config={})
-        await client.call("POST", "/v1/providers", Provider, body=msgspec.json.encode(body))
+        await client.call("POST", "/v1/providers", ProviderResource, body=msgspec.json.encode(body))
     finally:
         await client.close()
 
@@ -45,7 +45,7 @@ async def _register(url: str, name: str) -> None:
 async def _accounts(client: Client) -> list[str]:
     """What that client can see, and then let it go."""
     try:
-        page = await client.call("GET", "/v1/providers", Page[Provider])
+        page = await client.call("GET", "/v1/providers", Page[ProviderResource])
         return [provider.name for provider in page.items]
     finally:
         await client.close()
@@ -168,12 +168,12 @@ def describe_a_daemon_that_bounces_mid_request() -> None:
             attempts += 1
             if attempts < 3:
                 raise httpx.ConnectError("connection refused")
-            return httpx.Response(200, content=msgspec.json.encode(Page(items=[], next_cursor=None)))
+            return httpx.Response(200, content=msgspec.json.encode(Page(items=(), next_cursor=None, total=None)))
 
-        async def survive_the_bounce() -> Page[Provider]:
+        async def survive_the_bounce() -> Page[ProviderResource]:
             client = _mocked(handler)
             try:
-                return await client.call("GET", "/v1/providers", Page[Provider])
+                return await client.call("GET", "/v1/providers", Page[ProviderResource])
             finally:
                 await client.close()
 
@@ -296,12 +296,18 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
         name="attached",
         revision=1,
         generation=1,
-        spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
-        status=ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1),
-        lease=Lease(),
         created_at=datetime.now(UTC),
+        status=ComputeStatus(state="ready", observed_generation=1, last_error=None),
+        spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
+        provider=None,
+        offer=None,
+        lease=LeaseResource(owner=None, expires_at=None),
         cost=0.0,
+        rate=0.0,
         tasks=TaskCounts(queued=0, running=0, succeeded=0, failed=0, cancelled=0, timed_out=0, indeterminate=0),
+        placement=None,
+        ended=None,
+        nodes=(),
     )
 
     def main(request: httpx.Request) -> httpx.Response:
@@ -316,7 +322,8 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
 
     def lease(request: httpx.Request) -> httpx.Response:
         control.append((request.method, request.url.path))
-        return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(Lease()))
+        held = LeaseResource(owner=None, expires_at=None)
+        return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(held))
 
     async def fake_connect(url: str | None, database: Path | None, *, strict: bool) -> Client:
         http = httpx.AsyncClient(transport=httpx.MockTransport(main), base_url="http://skyward")

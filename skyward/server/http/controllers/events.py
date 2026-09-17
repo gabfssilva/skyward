@@ -8,10 +8,10 @@ from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
+from skyward.api import v1
 from skyward.server.application import ports
 from skyward.server.http.references import narrowed
-from skyward.shared.events import Event, LogEntry
-from skyward.shared.schemas import Page
+from skyward.server.http.representation import recast
 
 MESSAGE = b"id: %d\r\nevent: %s\r\ndata: %s\r\n\r\n"
 """One Server-Sent Event, byte for byte as litestar's ``ServerSentEvent`` frames it.
@@ -59,7 +59,7 @@ class EventController(Controller):
         ),
         responses={
             200: ResponseSpec(
-                Event,
+                v1.Event,
                 media_type="text/event-stream",
                 description="One `data:` payload per message, framed as Server-Sent Events",
                 generate_examples=False,
@@ -109,8 +109,8 @@ class EventController(Controller):
         node: str | None = None,
         types: list[str] | None = None,
         contains: list[str] | None = Parameter(default=None, description="Keeps the entries whose printed line holds any one of these."),
-    ) -> Page[LogEntry]:
-        return await events.log(
+    ) -> v1.Page[v1.LogEntryResource]:
+        page = await events.log(
             cursor,
             limit,
             compute=compute_id,
@@ -119,3 +119,4 @@ class EventController(Controller):
             types=tuple(types) if types else None,
             contains=tuple(contains) if contains else None,
         )
+        return recast(page, v1.Page[v1.LogEntryResource])

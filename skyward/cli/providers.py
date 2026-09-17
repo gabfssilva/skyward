@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Annotated
 import msgspec
 from cyclopts import Parameter
 
+from skyward.api.v1 import Page, ProviderKindResource, ProviderResource
 from skyward.core.errors import SkywardError
 from skyward.core.provider import resolve
-from skyward.shared.schemas import Page, Provider, ProviderCreate, ProviderKind
+from skyward.shared.schemas import ProviderCreate
 
 from . import providers_app
 from ._client import call
@@ -51,11 +52,11 @@ def list_providers(
         The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
     if kinds:
-        supported = call(lambda client: client.call("GET", "/v1/provider-kinds", tuple[ProviderKind, ...]), url=url)
+        supported = call(lambda client: client.call("GET", "/v1/provider-kinds", tuple[ProviderKindResource, ...]), url=url)
         render(KINDS, [(kind.kind, ", ".join(kind.credential_fields), kind.offers_ttl_seconds) for kind in supported], output=output)
         return
 
-    page = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url)
+    page = call(lambda client: client.call("GET", "/v1/providers", Page[ProviderResource]), url=url)
     render(REGISTERED, [(p.name, p.kind, p.id, p.offers_count, p.offers_fetched_at) for p in page.items], output=output)
 
 
@@ -81,18 +82,18 @@ def check_providers(
     render(CHECKS, [_check(provider) for provider in providers], output=output)
 
 
-async def _read(client: Client, name: str | None) -> tuple[Provider, ...]:
+async def _read(client: Client, name: str | None) -> tuple[ProviderResource, ...]:
     if name:
-        return (await client.call("GET", f"/v1/providers/{name}", Provider),)
-    return (await client.call("GET", "/v1/providers", Page[Provider])).items
+        return (await client.call("GET", f"/v1/providers/{name}", ProviderResource),)
+    return (await client.call("GET", "/v1/providers", Page[ProviderResource])).items
 
 
-def _check(provider: Provider) -> tuple[object, ...]:
+def _check(provider: ProviderResource) -> tuple[object, ...]:
     status, detail = _verdict(provider)
     return (provider.name, provider.kind, status, provider.offers_count, provider.offers_fetched_at, detail)
 
 
-def _verdict(provider: Provider) -> tuple[str, str | None]:
+def _verdict(provider: ProviderResource) -> tuple[str, str | None]:
     match (provider.last_error, provider.offers_fetched_at):
         case (None, None):
             return ("unused", "credentials never exercised")
@@ -163,16 +164,16 @@ def _settings(pairs: list[str]) -> dict[str, str]:
     return written
 
 
-async def _upsert(client: Client, body: ProviderCreate) -> Provider:
+async def _upsert(client: Client, body: ProviderCreate) -> ProviderResource:
     """Write the account, whether or not it is already there."""
     try:
-        await client.call("GET", f"/v1/providers/{body.name}", Provider)
+        await client.call("GET", f"/v1/providers/{body.name}", ProviderResource)
     except SkywardError as error:
         if error.code != "not_found":
             raise
-        return await client.call("POST", "/v1/providers", Provider, body=msgspec.json.encode(body))
+        return await client.call("POST", "/v1/providers", ProviderResource, body=msgspec.json.encode(body))
 
-    return await client.call("PUT", f"/v1/providers/{body.name}", Provider, body=msgspec.json.encode(body))
+    return await client.call("PUT", f"/v1/providers/{body.name}", ProviderResource, body=msgspec.json.encode(body))
 
 
 __all__ = ["check_providers", "list_providers", "set_provider"]

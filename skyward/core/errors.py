@@ -4,7 +4,7 @@ from typing import Any
 
 import msgspec
 
-from skyward.shared.schemas import Error
+from skyward.api.v1 import Error
 
 
 class SkywardError(Exception):

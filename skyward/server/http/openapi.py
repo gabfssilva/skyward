@@ -38,8 +38,7 @@ from litestar.openapi.spec import (
 )
 from msgspec import Struct
 
-from skyward.server.application import ssh
-from skyward.shared import schemas
+from skyward.api import v1
 
 BLOB = "application/vnd.skyward.blob"
 
@@ -203,14 +202,12 @@ def _document_schemas(app: Litestar) -> None:
     stays in the source and the reader of the document gets a list of fields.
 
     A generic's component is named after the alias Litestar built for it —
-    ``Page_skyward.shared.schemas.Task_`` — so the lookup is on what comes before
-    the parameter. ``ssh`` is read alongside the wire types because one of its
-    structs is served: what a command said on a machine.
+    ``Page_skyward.api.v1.TaskResource_`` — so the lookup is on what comes before
+    the parameter.
     """
     structs = {
         name: value.__doc__.strip()
-        for module in (schemas, ssh)
-        for name, value in vars(module).items()
+        for name, value in vars(v1).items()
         if isinstance(value, type) and issubclass(value, Struct) and value.__doc__
     }
 

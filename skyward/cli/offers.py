@@ -16,10 +16,10 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from math import inf
 
+from skyward.api.v1 import OfferResource, Page, ProviderResource
 from skyward.cli import offers_app
 from skyward.cli._client import call
 from skyward.cli._output import EMPTY, Output, render
-from skyward.shared.schemas import Offer, Page, Provider
 
 LIST_COLUMNS = ("PROVIDER", "KIND", "INSTANCE", "ACCELERATOR", "VRAM", "CPUS", "MEMORY", "REGION", "SPOT", "ON-DEMAND", "UNIT")
 SUMMARY_COLUMNS = ("ACCELERATOR", "PROVIDER", "OFFERS", "CHEAPEST", "AVERAGE", "DEAREST")
@@ -43,7 +43,7 @@ def list_offers(
     Parameters
     ----------
     provider
-        Provider id or name.
+        ProviderResource id or name.
     accelerator
         Accelerator name, in any spelling the provider uses.
     min_count
@@ -84,7 +84,7 @@ def fetch_offers(
     Parameters
     ----------
     provider
-        Provider id or name. Defaults to every configured provider.
+        ProviderResource id or name. Defaults to every configured provider.
     output
         ``table`` for a person, ``json`` for a program.
     url
@@ -112,7 +112,7 @@ def summary_offers(
     Parameters
     ----------
     provider
-        Provider id or name.
+        ProviderResource id or name.
     accelerator
         Accelerator name, in any spelling the provider uses.
     min_count
@@ -130,7 +130,7 @@ def summary_offers(
     """
     page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url)
 
-    groups: defaultdict[tuple[str, str], list[Offer]] = defaultdict(list)
+    groups: defaultdict[tuple[str, str], list[OfferResource]] = defaultdict(list)
     for offer in page.items:
         groups[(offer.accelerator or EMPTY, offer.provider_name)].append(offer)
 
@@ -146,12 +146,12 @@ def _query(
     max_price: float | None,
     refresh: bool,
     url: str | None,
-    ) -> Page[Offer]:
+    ) -> Page[OfferResource]:
     return call(
         lambda client: client.call(
             "GET",
             "/v1/offers",
-            Page[Offer],
+            Page[OfferResource],
             provider=provider,
             accelerator=accelerator,
             min_count=min_count,
@@ -163,7 +163,7 @@ def _query(
     )
 
 
-def _row(offer: Offer) -> tuple[object, ...]:
+def _row(offer: OfferResource) -> tuple[object, ...]:
     return (
         offer.provider_name,
         offer.kind,
@@ -179,7 +179,7 @@ def _row(offer: Offer) -> tuple[object, ...]:
     )
 
 
-def _summary(key: tuple[str, str], offers: Sequence[Offer]) -> tuple[object, ...]:
+def _summary(key: tuple[str, str], offers: Sequence[OfferResource]) -> tuple[object, ...]:
     accelerator, provider = key
     prices = [offer.price for offer in offers if offer.price is not None]
     average = sum(prices) / len(prices) if prices else None
@@ -193,11 +193,11 @@ def _summary(key: tuple[str, str], offers: Sequence[Offer]) -> tuple[object, ...
     )
 
 
-def _cheapest(offers: Sequence[Offer]) -> float:
+def _cheapest(offers: Sequence[OfferResource]) -> float:
     return min((offer.price for offer in offers if offer.price is not None), default=inf)
 
 
-def _accelerator(offer: Offer) -> str | None:
+def _accelerator(offer: OfferResource) -> str | None:
     match offer.accelerator:
         case None:
             return None
@@ -222,7 +222,7 @@ def _why_empty(url: str | None) -> None:
     has been given none quotes nothing — which reads exactly like a filter that
     excluded everything, and is a different problem with a different fix.
     """
-    registered = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url)
+    registered = call(lambda client: client.call("GET", "/v1/providers", Page[ProviderResource]), url=url)
     if not registered.items:
         print("no accounts are registered, so there is nothing to quote: sky providers set <kind>", file=sys.stderr)
 

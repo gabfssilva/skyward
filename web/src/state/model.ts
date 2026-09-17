@@ -149,7 +149,8 @@ export const endedAt = (c: Compute): number => ms(c.ended?.at ?? c.created_at)
 export const ranOf = (c: Compute): number => endedAt(c) - ms(c.created_at)
 
 /** Every task the compute was given, in any state — the daemon's count, not the page the store holds. */
-export const callsOf = (c: Compute): number => Object.values(c.tasks).reduce((s, n) => s + n, 0)
+export const callsOf = (c: Compute): number =>
+  c.tasks.queued + c.tasks.running + c.tasks.succeeded + c.tasks.failed + c.tasks.cancelled + c.tasks.timed_out + c.tasks.indeterminate
 /** The tasks that ended in an error: failed or timed out. */
 export const failedOf = (c: Compute): number => c.tasks.failed + c.tasks.timed_out
 /** The tasks that are over, however they turned out. */

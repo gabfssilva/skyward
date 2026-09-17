@@ -240,9 +240,8 @@ export const useStore = create<Store>((set, get) => ({
       const tasks: Record<string, Task[]> = {}
       await Promise.all(
         computes.map(async (c) => {
-          const [ns, ts] = await Promise.all([api.nodes(c.id).then(page), current(c.id, get().tasks[c.id] ?? [])])
-          nodes[c.id] = ns.sort((a, b) => a.rank - b.rank)
-          tasks[c.id] = ts
+          nodes[c.id] = c.nodes
+          tasks[c.id] = await current(c.id, get().tasks[c.id] ?? [])
         }),
       )
       set((s) => ({
@@ -266,12 +265,12 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const compute = await api.compute(computeId)
       if (compute.status.state === 'deleted') return set((s) => retire(s, compute))
-      const [ns, ts] = await Promise.all([api.nodes(computeId).then(page), current(computeId, get().tasks[computeId] ?? [])])
+      const ts = await current(computeId, get().tasks[computeId] ?? [])
       set((s) => ({
         computes: s.computes.some((c) => c.id === computeId) ? s.computes.map((c) => (c.id === computeId ? compute : c)) : [...s.computes, compute],
-        nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) },
+        nodes: { ...s.nodes, [computeId]: compute.nodes },
         tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts) },
-        feed: ranked(s.feed, computeId, ns),
+        feed: ranked(s.feed, computeId, compute.nodes),
       }))
       void named(ts)
     } catch {
@@ -281,11 +280,11 @@ export const useStore = create<Store>((set, get) => ({
 
   reloadHistory: async (computeId) => {
     try {
-      const [ns, ts] = await Promise.all([api.nodes(computeId, { include_terminal: true }).then(page), api.tasks({ compute: computeId }).then(page)])
+      const [compute, ts] = await Promise.all([api.compute(computeId, 'nodes.replaced'), api.tasks({ compute: computeId }).then(page)])
       set((s) => ({
-        nodes: { ...s.nodes, [computeId]: ns.sort((a, b) => a.rank - b.rank) },
+        nodes: { ...s.nodes, [computeId]: compute.nodes },
         tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts, Infinity) },
-        feed: ranked(s.feed, computeId, ns),
+        feed: ranked(s.feed, computeId, compute.nodes),
       }))
       void named(ts)
     } catch {
@@ -369,7 +368,7 @@ export const useStore = create<Store>((set, get) => ({
         },
       }))
       void named(read.items)
-      void get().learn(read.items.map((t) => t.compute_id))
+      void get().learn(read.items.map((t) => t.compute.id))
     } catch {
       set({ taskFeed: at })
     }
@@ -571,7 +570,11 @@ function fold(s: Store, event: SkyEvent): Patch | null {
           ...s.nodes,
           [payload.compute]: (s.nodes[payload.compute] ?? []).map((n) =>
             n.id === payload.node
-              ? { ...n, state: payload.state, last_error: payload.error ? { code: 'reconcile_failed' as const, message: payload.error, retryable: false } : n.last_error }
+              ? {
+                  ...n,
+                  state: payload.state,
+                  last_error: payload.error ? { code: 'reconcile_failed' as const, message: payload.error, retryable: false, request_id: null, details: null } : n.last_error,
+                }
               : n,
           ),
         },
@@ -722,7 +725,7 @@ const groupOf = (t: Task): number => (t.state === 'running' ? 0 : t.state === 'q
 /** A page of tasks from every compute, each laid over what its own compute already has. */
 function filed(known: Record<string, Task[]>, listed: readonly Task[]): Record<string, Task[]> {
   const tasks = { ...known }
-  for (const id of new Set(listed.map((t) => t.compute_id))) tasks[id] = merged(tasks[id] ?? [], listed.filter((t) => t.compute_id === id), Infinity)
+  for (const id of new Set(listed.map((t) => t.compute.id))) tasks[id] = merged(tasks[id] ?? [], listed.filter((t) => t.compute.id === id), Infinity)
   return tasks
 }
 
@@ -741,7 +744,7 @@ const learning = new Set<string>()
  */
 async function named(tasks: readonly Task[]): Promise<void> {
   const known = useStore.getState().functions
-  const wanted = [...new Set(tasks.map((t) => t.function))].filter((sha) => sha && !(sha in known) && !asking.has(sha))
+  const wanted = [...new Set(tasks.map((t) => t.function.sha256))].filter((sha) => sha && !(sha in known) && !asking.has(sha))
   if (!wanted.length) return
   for (const sha of wanted) asking.add(sha)
   const resolved = await Promise.all(
@@ -1022,7 +1025,7 @@ export const nodesOf = (state: Store, computeId: string): Node[] => state.nodes[
 export const tasksOf = (state: Store, computeId: string): Task[] => state.tasks[computeId] ?? []
 
 /** The freshest copy of a task: the one a reload of its compute brought in, else the one the page carried. */
-export const freshest = (state: Store, task: Task): Task => (state.tasks[task.compute_id] ?? []).find((t) => t.id === task.id) ?? task
+export const freshest = (state: Store, task: Task): Task => (state.tasks[task.compute.id] ?? []).find((t) => t.id === task.id) ?? task
 
 export const progressOf = (state: Store, nodeId: string): NodeProgress | undefined => state.progress[nodeId]
 

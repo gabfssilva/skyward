@@ -34,12 +34,12 @@ const stateOf = (value: string): TaskFilters['state'] => STATES.find(([state]) =
 function Row({ task }: { task: Task }) {
   const navigate = useNavigate()
   const t = useStore((s) => freshest(s, task))
-  const c = useStore((s) => computeById(s, task.compute_id))
-  const nodes = useStore((s) => s.nodes[task.compute_id]) ?? NONE
+  const c = useStore((s) => computeById(s, task.compute.id))
+  const nodes = useStore((s) => s.nodes[task.compute.id]) ?? NONE
   return (
     <tr style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
       <td>
-        <Fn sha={t.function} weight={700} />
+        <Fn sha={t.function.sha256} weight={700} />
         <div className="mono faint">{t.id}</div>
       </td>
       <td>
@@ -48,7 +48,7 @@ function Row({ task }: { task: Task }) {
       <td>
         <span className="row" style={{ gap: 6 }}>
           <i className={c ? `dot ${c.status.state}` : 'dot'} />
-          <span className={c ? undefined : 'mono faint'}>{c?.name ?? task.compute_id}</span>
+          <span className={c ? undefined : 'mono faint'}>{c?.name ?? task.compute.name ?? task.compute.id}</span>
         </span>
       </td>
       <td className="sub">{dispatchLine(t, nodes)}</td>

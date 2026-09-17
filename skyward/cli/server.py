@@ -27,13 +27,13 @@ from typing import Annotated
 import httpx
 from cyclopts import Parameter
 
+from skyward.api.v1 import LivenessResource
 from skyward.cli import server_app
 from skyward.cli._client import HOST, PORT, call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
 from skyward.server import daemon
 from skyward.shared.observability import LogLevel
-from skyward.shared.schemas import Liveness
 
 POLL_SECONDS = 0.2
 
@@ -53,7 +53,7 @@ def endpoint(url: str | None, host: str, port: int) -> str:
 async def probe(client: Client) -> bool:
     """Return whether ``/v1/health/live`` answers affirmatively."""
     try:
-        return (await client.call("GET", "/v1/health/live", Liveness)).live
+        return (await client.call("GET", "/v1/health/live", LivenessResource)).live
     except (httpx.TransportError, OSError):
         return False
 

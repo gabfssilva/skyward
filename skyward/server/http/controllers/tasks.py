@@ -9,20 +9,16 @@ from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
+from skyward.api import v1
 from skyward.server.application import ports
+from skyward.server.application.reading import Reader
 from skyward.server.application.reconciler import Wakeup
+from skyward.server.http import representation
 from skyward.server.http.exceptions import failures
 from skyward.server.http.references import narrowed
+from skyward.server.http.representation import recast
 from skyward.shared import codec
-from skyward.shared.schemas import (
-    Execution,
-    ExecutionCreate,
-    Page,
-    Task,
-    TaskCreate,
-    TaskOrder,
-    TaskState,
-)
+from skyward.shared.schemas import ExecutionCreate, TaskCreate
 
 BLOB = "application/vnd.skyward.blob"
 FRAMES = "application/vnd.skyward.frames"
@@ -72,16 +68,17 @@ class TaskController(Controller):
     )
     async def list(
         self,
-        tasks: ports.Tasks,
+        reader: Reader,
         compute_id: str | None,
         cursor: str | None = None,
         limit: int = Parameter(default=50, ge=1),
-        task_states: list[TaskState] | None = Parameter(query="state", default=None, description="Any of these; repeat it for more than one."),
+        task_states: list[v1.TaskState] | None = Parameter(query="state", default=None, description="Any of these; repeat it for more than one."),
         correlation_id: str | None = Parameter(default=None, description="Groups the tasks of an `&`/`gather`/`map`. A field, not a resource."),
         function: str | None = Parameter(default=None, description="A function's name, which takes in every upload of its code."),
-        order: TaskOrder = "submitted",
-    ) -> Page[Task]:
-        return await tasks.list(cursor, limit, compute_id, tuple(task_states or ()), correlation_id, function, order)
+        order: v1.TaskOrder = "submitted",
+    ) -> v1.Page[v1.TaskResource]:
+        page = await reader.tasks(cursor, limit, compute_id, tuple(task_states or ()), correlation_id, function, order)
+        return v1.Page(items=tuple(representation.task(each) for each in page.items), next_cursor=page.next_cursor, total=page.total)
 
     @post(
         status_code=201,
@@ -99,20 +96,21 @@ class TaskController(Controller):
         ),
         responses={
             **failures(404, 409, 422),
-            200: ResponseSpec(Task, description="The task this `Idempotency-Key` already created"),
+            200: ResponseSpec(v1.TaskResource, description="The task this `Idempotency-Key` already created"),
         },
     )
     async def submit(
         self,
-        data: TaskCreate,
+        data: v1.CreateTaskResource,
         tasks: ports.Tasks,
+        reader: Reader,
         wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Task]:
-        task, created = await tasks.submit(await pickled(data), idempotency_key)
+    ) -> Response[v1.TaskResource]:
+        task, created = await tasks.submit(await pickled(recast(data, TaskCreate)), idempotency_key)
         wake("task.changed", task_id=task.id)
         wake("compute.changed", compute_id=task.compute_id)
-        return Response(task, status_code=201 if created else 200)
+        return Response(representation.task(await reader.task(task.id)), status_code=201 if created else 200)
 
     @get(
         "/{task_id:str}",
@@ -120,8 +118,8 @@ class TaskController(Controller):
         description="`state` is **derived** from the executions — never written alongside them.",
         responses=failures(404),
     )
-    async def read(self, task_id: str, tasks: ports.Tasks) -> Task:
-        return await tasks.get(task_id)
+    async def read(self, task_id: str, reader: Reader) -> v1.TaskResource:
+        return representation.task(await reader.task(task_id))
 
     @delete(
         "/{task_id:str}",
@@ -139,12 +137,13 @@ class TaskController(Controller):
         self,
         task_id: str,
         tasks: ports.Tasks,
+        reader: Reader,
         wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Task]:
+    ) -> Response[v1.TaskResource]:
         task = await tasks.cancel(task_id, idempotency_key)
         wake("task.changed", task_id=task.id)
-        return Response(task, status_code=202)
+        return Response(representation.task(await reader.task(task.id)), status_code=202)
 
     @get(
         "/{task_id:str}/result",
@@ -214,8 +213,8 @@ class TaskController(Controller):
         description="One row per attempt, `ordinal`-counted. A retry appears here; it never appears as another task.",
         responses=failures(404),
     )
-    async def list_executions(self, task_id: str, executions: ports.Executions) -> Page[Execution]:
-        return await executions.list(task_id)
+    async def list_executions(self, task_id: str, executions: ports.Executions) -> v1.Page[v1.ExecutionResource]:
+        return recast(await executions.list(task_id), v1.Page[v1.ExecutionResource])
 
     @get(
         "/{task_id:str}/executions/{ordinal:int}",
@@ -223,8 +222,8 @@ class TaskController(Controller):
         description="One attempt by its ordinal, including which node took it and what it ended as.",
         responses=failures(404),
     )
-    async def get_execution(self, task_id: str, ordinal: int, executions: ports.Executions) -> Execution:
-        return await executions.get(task_id, ordinal)
+    async def get_execution(self, task_id: str, ordinal: int, executions: ports.Executions) -> v1.ExecutionResource:
+        return recast(await executions.get(task_id, ordinal), v1.ExecutionResource)
 
     @post(
         "/{task_id:str}/executions",
@@ -241,11 +240,12 @@ class TaskController(Controller):
     async def create_execution(
         self,
         task_id: str,
-        data: ExecutionCreate,
+        data: v1.CreateExecutionResource,
         executions: ports.Executions,
+        reader: Reader,
         wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
-    ) -> Response[Task]:
-        task = await executions.create(task_id, data, idempotency_key)
+    ) -> Response[v1.TaskResource]:
+        task = await executions.create(task_id, recast(data, ExecutionCreate), idempotency_key)
         wake("task.changed", task_id=task.id)
-        return Response(task, status_code=202)
+        return Response(representation.task(await reader.task(task.id)), status_code=202)

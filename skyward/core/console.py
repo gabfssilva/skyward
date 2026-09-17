@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from functools import partial, reduce
 from typing import Literal, Protocol, TextIO
 
+from skyward.api.v1 import ComputeResource, Page, TaskResource
 from skyward.core.client import Client
 from skyward.core.view import TASKS, ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
 from skyward.shared import lifecycle
@@ -36,10 +37,6 @@ from skyward.shared.events import (
     TaskEvent,
     progressed,
 )
-from skyward.shared.schemas import (
-    Compute as ComputeResource,
-)
-from skyward.shared.schemas import Function, Node, Page, Task
 
 type ConsoleMode = Literal["rich", "log"]
 
@@ -119,7 +116,6 @@ class Observer:
         self._watchers = watchers
         self._callbacks = callbacks
         self._view = ComputeView(id=compute)
-        self._names: dict[str, str] = {}
         self._asked = asyncio.Event()
         self._overtaken: list[Event] | None = None
         """What the stream moved while a read was out, or ``None`` while no read is."""
@@ -178,24 +174,13 @@ class Observer:
         self._overtaken = overtaken
         try:
             compute = await self._client.call("GET", f"/v1/computes/{self._compute}", ComputeResource)
-            nodes = await self._client.call("GET", f"/v1/computes/{self._compute}/nodes", Page[Node])
-            tasks: Page[Task] = Page(items=())
+            tasks: Page[TaskResource] = Page(items=(), next_cursor=None, total=None)
             with suppress(Exception):
-                tasks = await self._client.call("GET", "/v1/tasks", Page[Task], compute=self._compute, limit=TASKS)
-            names = await self._names_for(tasks)
+                tasks = await self._client.call("GET", "/v1/tasks", Page[TaskResource], compute=self._compute, limit=TASKS)
         finally:
             self._overtaken = None
-        read = refresh_tasks(refresh(self._view, compute, nodes), tasks, names)
+        read = refresh_tasks(refresh(self._view, compute), tasks)
         self._view = replace(reduce(observe, overtaken, read), errors=read.errors)
-
-    async def _names_for(self, tasks: Page[Task]) -> Mapping[str, str]:
-        """Each function's name, asked once; a function that cannot be named is asked once too."""
-        for sha in {task.function for task in tasks.items} - self._names.keys():
-            try:
-                self._names[sha] = (await self._client.call("GET", f"/v1/functions/{sha}", Function)).name or ""
-            except Exception:
-                self._names[sha] = ""
-        return self._names
 
     async def _tell(self, call: Callable[[ComputeView], None]) -> None:
         """Hand the view as it is now to the watchers, off the loop, one hand-off at a time.

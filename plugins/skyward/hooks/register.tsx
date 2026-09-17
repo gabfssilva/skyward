@@ -23,16 +23,19 @@ type Compute = {
   id: string
   name: string | null
   state: string
+  nodes: Node[]
   nodesReady: number
   nodesTotal: number
   provider: string
   accelerator: string | null
   acceleratorCount: number
-  price: number | null
+  rate: number
   createdAt: number
   ended: boolean
   cost: number | null
   lastError: string | null
+  /** Each node's newest reading of each metric, keyed node/name — present when the read asked for it. */
+  latest: Map<string, number>
 }
 
 type Node = {
@@ -173,27 +176,44 @@ const metricNode = (key: string): string => key.slice(0, key.lastIndexOf('/'))
 function parseCompute(item: unknown): Compute | undefined {
   const id = str(at(item, 'id'))
   const state = str(at(item, 'status', 'state'))
-  const nodesReady = num(at(item, 'status', 'nodes_ready'))
-  const nodesTotal = num(at(item, 'status', 'nodes_total'))
   const createdAt = time(at(item, 'created_at'))
-  if (id === undefined || state === undefined || nodesReady === undefined || nodesTotal === undefined || createdAt === null) {
-    return undefined
-  }
+  if (id === undefined || state === undefined || createdAt === null) return undefined
+
   const spec = at(item, 'spec', 'specs', '0')
+  // A compute carries the node holding each rank, and the ones that held one before when the read asked for them.
+  const nodes = list(at(item, 'nodes'))
+    .flatMap((node) => {
+      const parsed = parseNode(node)
+      return parsed === undefined ? [] : [parsed]
+    })
+    .sort((a, b) => Number(a.terminatedAt !== null) - Number(b.terminatedAt !== null) || a.rank - b.rank)
+  const alive = nodes.filter((node) => node.terminatedAt === null)
   return {
     id,
     state,
-    nodesReady,
-    nodesTotal,
+    nodes,
+    nodesReady: alive.filter((node) => node.state === 'ready').length,
+    nodesTotal: alive.length,
     createdAt,
     name: str(at(item, 'name')) ?? null,
-    provider: str(at(item, 'offer', 'provider_name')) ?? str(at(spec, 'provider', 'name')) ?? '?',
+    provider: str(at(item, 'provider', 'name')) ?? str(at(spec, 'provider', 'name')) ?? '?',
     accelerator: str(at(item, 'offer', 'accelerator')) ?? str(at(spec, 'accelerator')) ?? null,
     acceleratorCount: num(at(item, 'offer', 'accelerator_count')) ?? num(at(spec, 'accelerator_count')) ?? 1,
-    price: num(at(item, 'offer', 'price')) ?? null,
+    rate: num(at(item, 'rate')) ?? 0,
     ended: time(at(item, 'ended', 'at')) !== null,
     cost: num(at(item, 'cost')) ?? null,
     lastError: str(at(item, 'status', 'last_error', 'message')) ?? null,
+    latest: new Map(
+      list(at(item, 'nodes')).flatMap((node) => {
+        const id = str(at(node, 'id'))
+        const metrics = at(node, 'metrics')
+        if (id === undefined || typeof metrics !== 'object' || metrics === null) return []
+        return Object.entries(metrics).flatMap(([name, gauge]): [string, number][] => {
+          const value = num(at(gauge, 'value'))
+          return value === undefined ? [] : [[metricKey(id, name), value]]
+        })
+      }),
+    ),
   }
 }
 
@@ -239,7 +259,7 @@ function parseLogLine(item: unknown): LogLine | undefined {
 
 function parseTask(item: unknown): Task | undefined {
   const id = str(at(item, 'id'))
-  const sha = str(at(item, 'function'))
+  const sha = str(at(item, 'function', 'sha256'))
   const state = str(at(item, 'state'))
   const submittedAt = time(at(item, 'submitted_at'))
   if (id === undefined || sha === undefined || state === undefined || submittedAt === null) return undefined
@@ -250,7 +270,7 @@ function parseTask(item: unknown): Task | undefined {
     sha,
     state,
     submittedAt,
-    name: null,
+    name: str(at(item, 'function', 'name')) ?? null,
     node: str(at(latest, 'node_id')) ?? null,
     attempts: executions.length,
     startedAt: time(at(latest, 'started_at')),
@@ -278,7 +298,7 @@ const money = (value: number | null): string => (value === null ? '—' : value.
 const gpu = (c: Compute): string =>
   c.accelerator === null ? '—' : c.acceleratorCount > 1 ? `${c.acceleratorCount}×${c.accelerator}` : c.accelerator
 const deletable = (c: Compute): boolean => !c.ended && c.state !== 'deleting' && c.state !== 'deleted'
-const hourly = (c: Compute): number | null => (c.ended || c.price === null ? null : c.price * c.nodesTotal)
+const hourly = (c: Compute): number | null => (c.ended ? null : c.rate)
 const averaged = (f: Fleet): string => {
   const mean = (name: string): number | undefined => f.averages.get(name)
   const pct = (name: string, label: string): string | null => {
@@ -389,8 +409,7 @@ async function loadLog($: EngineInterface, path: string): Promise<LogPage> {
   return { path, lines: items(body, parseLogLine), next: str(at(body, 'next_cursor')) ?? null }
 }
 
-// `names` outlives the load: a function's sha names its code, so the name found for it never changes.
-async function loadTasks($: EngineInterface, id: string, query: TaskQuery, names: Map<string, string | null>): Promise<TaskPage> {
+async function loadTasks($: EngineInterface, id: string, query: TaskQuery): Promise<TaskPage> {
   const filter = `/v1/tasks?compute=${id}${query.fn === null ? '' : `&function=${encodeURIComponent(query.fn)}`}`
   const cursor = query.cursors.at(-1)
   const [pageBody, ...countBodies] = await Promise.all([
@@ -398,57 +417,40 @@ async function loadTasks($: EngineInterface, id: string, query: TaskQuery, names
     ...COUNTED_TASK_STATES.map((state) => getJson($, `${filter}&state=${state}&limit=1`)),
   ])
   const parsed = items(pageBody, parseTask)
-  const unnamed = [...new Set(parsed.map((t) => t.sha))].filter((sha) => !names.has(sha))
-  const found = await Promise.all(
-    unnamed.map(async (sha): Promise<[string, string | null]> => [sha, str(at(await getJson($, `/v1/functions/${sha}`), 'name')) ?? null]),
-  )
-  found.forEach(([sha, name]) => names.set(sha, name))
   const total = num(at(pageBody, 'total')) ?? null
   // A last page exactly TASKS_PER_PAGE long still carries a cursor, and it leads to an empty page.
   const last = total !== null && query.cursors.length * TASKS_PER_PAGE + parsed.length >= total
   return {
-    items: parsed.map((t) => ({ ...t, name: names.get(t.sha) ?? null })),
+    items: parsed,
     total,
     next: last ? null : str(at(pageBody, 'next_cursor')) ?? null,
     counts: new Map(COUNTED_TASK_STATES.map((state, i) => [state, num(at(countBodies[i], 'total')) ?? 0])),
   }
 }
 
-async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage | undefined, names: Map<string, string | null>): Promise<Snapshot> {
+async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage | undefined): Promise<Snapshot> {
   const { id, page: requestedPage } = target
   const start = (Math.floor(Date.now() / SPARK_STEP_MS) - (SPARK_BUCKETS - 1)) * SPARK_STEP_MS
   const base = `/v1/computes/${id}`
   const path = logPath(id, target.log)
   // The log is append-only, so a page behind a cursor never changes and only the newest page is fetched again.
   const unchanged = target.log.cursors.length > 0 && shown?.path === path ? shown : undefined
-  const [computeBody, nodesBody, tasks, log] = await Promise.all([
-    getJson($, base),
-    getJson($, `${base}/nodes`),
-    loadTasks($, id, target.tasks, names),
+  // One read is the compute, the node holding each rank, the ones replaced before them, and each node's newest gauges.
+  const [computeBody, tasks, log] = await Promise.all([
+    getJson($, `${base}?include=nodes.replaced,nodes.metrics`),
+    loadTasks($, id, target.tasks),
     unchanged ?? loadLog($, path),
   ])
   const compute = parseCompute(computeBody)
   if (compute === undefined) throw new Error(`unexpected compute payload for ${id}`)
 
-  // The nodes endpoint has no cursor, so the page is cut here. The metrics are asked for the whole compute rather
-  // than for the page: the header averages them and reads idleness off the window, and a page's sparklines read the
-  // same two maps.
-  const nodes = items(nodesBody, parseNode).sort((a, b) => Number(a.terminatedAt !== null) - Number(b.terminatedAt !== null) || a.rank - b.rank)
+  // The nodes are cut into pages here. The metrics are the whole compute's rather than the page's: the header
+  // averages them and reads idleness off the window, and a page's sparklines read the same two maps.
+  const nodes = compute.nodes
+  const latest = compute.latest
   const pageCount = Math.max(1, Math.ceil(nodes.length / NODES_PER_PAGE))
   const page = Math.min(requestedPage, pageCount - 1)
-  const [latestBody, seriesBody] = await Promise.all([
-    nodes.length === 0 ? undefined : getJson($, `${base}/metrics/latest`),
-    nodes.length === 0 ? undefined : getJson($, `${base}/metrics?since=${start}&step=${SPARK_STEP_MS}&agg=avg&name=cpu&name=gpu_util`),
-  ])
-
-  const latest = new Map(
-    items(latestBody, (item): [string, number] | undefined => {
-      const node = str(at(item, 'node'))
-      const name = str(at(item, 'name'))
-      const value = num(at(item, 'value'))
-      return node === undefined || name === undefined || value === undefined ? undefined : [metricKey(node, name), value]
-    }),
-  )
+  const seriesBody = nodes.length === 0 ? undefined : await getJson($, `${base}/metrics?since=${start}&step=${SPARK_STEP_MS}&agg=avg&name=cpu&name=gpu_util`)
 
   const sparks = new Map<string, (number | null)[]>()
   for (const series of list(at(seriesBody, 'series'))) {
@@ -477,7 +479,7 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
   }
 
   const averages = new Map<string, number>()
-  for (const name of new Set(items(latestBody, (item) => str(at(item, 'name'))))) {
+  for (const name of new Set([...latest.keys()].map((key) => key.slice(key.lastIndexOf('/') + 1)))) {
     const value = across((n) => latest.get(metricKey(n.id, name)))
     if (value !== undefined) averages.set(name, value)
   }
@@ -527,7 +529,6 @@ export const register: Register = (on) => {
   let notice: string | undefined
   let scrolling = false
   let removal: Removal | undefined
-  const functionNames = new Map<string, string | null>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'sky', description: 'Skyward computes panel' })
@@ -544,7 +545,7 @@ export const register: Register = (on) => {
       const target = view
       if (loading === target) return
       loading = target
-      const result = await (target.kind === 'list' ? loadList($) : loadDetail($, target, snapshot.kind === 'detail' ? snapshot.detail.log : undefined, functionNames))
+      const result = await (target.kind === 'list' ? loadList($) : loadDetail($, target, snapshot.kind === 'detail' ? snapshot.detail.log : undefined))
         .catch((error: unknown): Snapshot => ({ kind: 'down', reason: error instanceof Error ? error.message : String(error) }))
         .finally(() => {
           if (loading === target) loading = undefined

@@ -513,6 +513,15 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
         waited = await NodeStore().get(compute.id, node.id)
         assert waited.state == "provisioning", "a machine pulling its image is a machine still coming up"
 
+    async def what_it_last_said_is_kept_for_whoever_reads_the_node_later(tmp_path: Path) -> None:
+        machines, compute, node = await _bought(tmp_path / "skyward.sqlite", provision_timeout=600.0, reported=(("downloading", 0.10), ("extracting", 0.55)))
+
+        for _ in range(2):
+            await machines.resolve(compute)
+
+        binding = (await NodeStore().get(compute.id, node.id)).provider_binding
+        assert (binding["progress"], binding["completion"]) == ("extracting", 0.55)
+
     async def it_is_given_up_on_once_it_stops_moving(tmp_path: Path) -> None:
         machines, compute, node = await _bought(
             tmp_path / "skyward.sqlite",

@@ -63,7 +63,7 @@ export function Palette() {
       })),
       ...computes.flatMap((c) =>
         (tasks[c.id] ?? []).map((t) => ({
-          label: `${functionName(state, t.function) ?? t.function.slice(0, 8)} · ${c.name ?? c.id}`,
+          label: `${t.function.name ?? functionName(state, t.function.sha256) ?? t.function.sha256.slice(0, 8)} · ${c.name ?? c.id}`,
           hint: `task · ${t.state}`,
           run: () => {
             closeSheet()

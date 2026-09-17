@@ -6,9 +6,10 @@ from litestar import Controller, get
 from litestar.exceptions import ValidationException
 from litestar.params import Parameter
 
+from skyward.api import v1
 from skyward.server.application import ports
 from skyward.server.http.exceptions import failures
-from skyward.shared.schemas import Aggregate, MetricHistory, MetricSample, Page
+from skyward.server.http.representation import recast
 
 RAW_SPAN = 60 * 60 * 1000
 """The longest range answered sample by sample, in milliseconds. Past it, a range asks for a ``step``."""
@@ -46,13 +47,13 @@ class MetricController(Controller):
         until: int | None = Parameter(default=None, description="Milliseconds since the epoch the range stops before."),
         after: str | None = Parameter(default=None, description="The `cursor` of a previous answer."),
         step: int | None = Parameter(default=None, ge=1, description="Milliseconds each value of a range stands for."),
-        agg: Aggregate = Parameter(default="avg", description="How the samples of one step become its value."),
+        agg: v1.Aggregate = Parameter(default="avg", description="How the samples of one step become its value."),
         node: list[str] | None = Parameter(default=None, description="Keeps the nodes named."),
         name: list[str] | None = Parameter(default=None, description="Keeps the metrics named."),
-    ) -> MetricHistory:
+    ) -> v1.MetricHistoryResource:
         match since, after:
             case None, str() as cursor if cursor.isdigit():
-                return await metrics.after(compute_id, cursor, node, name)
+                return recast(await metrics.after(compute_id, cursor, node, name), v1.MetricHistoryResource)
             case None, str():
                 raise ValidationException("`after` takes the `cursor` a previous answer handed out")
             case int() as start, None:
@@ -61,7 +62,7 @@ class MetricController(Controller):
                     raise ValidationException(f"a range of raw samples spans at most {RAW_SPAN} ms; ask for a `step`")
                 if step is not None and span > step * BUCKETS:
                     raise ValidationException(f"a range is answered in at most {BUCKETS} steps; ask for a longer `step`")
-                return await metrics.series(compute_id, start, until, step, agg, node, name)
+                return recast(await metrics.series(compute_id, start, until, step, agg, node, name), v1.MetricHistoryResource)
             case _:
                 raise ValidationException("ask with exactly one of `since` and `after`")
 
@@ -81,5 +82,5 @@ class MetricController(Controller):
         metrics: ports.Metrics,
         node: list[str] | None = Parameter(default=None, description="Keeps the nodes named."),
         name: list[str] | None = Parameter(default=None, description="Keeps the metrics named."),
-    ) -> Page[MetricSample]:
-        return Page(items=await metrics.latest(compute_id, node, name))
+    ) -> v1.Page[v1.MetricSampleResource]:
+        return v1.Page(items=recast(await metrics.latest(compute_id, node, name), tuple[v1.MetricSampleResource, ...]), next_cursor=None, total=None)

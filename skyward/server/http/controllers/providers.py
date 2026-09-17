@@ -1,9 +1,11 @@
 from litestar import Controller, delete, get, post, put
 
+from skyward.api import v1
 from skyward.providers import registry
 from skyward.server.application import ports
 from skyward.server.http.exceptions import failures
-from skyward.shared.schemas import Page, Provider, ProviderCreate, ProviderKind
+from skyward.server.http.representation import recast
+from skyward.shared.schemas import ProviderCreate
 
 
 class ProviderKindController(Controller):
@@ -17,8 +19,8 @@ class ProviderKindController(Controller):
             "needs and how long its offers stay fresh. A kind absent from this list cannot be registered."
         ),
     )
-    async def list(self) -> tuple[ProviderKind, ...]:
-        return registry.kinds()
+    async def list(self) -> tuple[v1.ProviderKindResource, ...]:
+        return recast(registry.kinds(), tuple[v1.ProviderKindResource, ...])
 
 
 class ProviderController(Controller):
@@ -29,8 +31,8 @@ class ProviderController(Controller):
         summary="List registered providers",
         description="The accounts this daemon can buy machines from. Credentials are not among the fields returned.",
     )
-    async def list(self, providers: ports.Providers) -> Page[Provider]:
-        return await providers.list()
+    async def list(self, providers: ports.Providers) -> v1.Page[v1.ProviderResource]:
+        return recast(await providers.list(), v1.Page[v1.ProviderResource])
 
     @post(
         status_code=201,
@@ -43,8 +45,8 @@ class ProviderController(Controller):
         ),
         responses=failures(409, 422),
     )
-    async def create(self, data: ProviderCreate, providers: ports.Providers) -> Provider:
-        return await providers.create(data)
+    async def create(self, data: v1.CreateProviderResource, providers: ports.Providers) -> v1.ProviderResource:
+        return recast(await providers.create(recast(data, ProviderCreate)), v1.ProviderResource)
 
     @get(
         "/{provider_id:str}",
@@ -52,8 +54,8 @@ class ProviderController(Controller):
         description="Accepts an id or a name. Credentials are never included.",
         responses=failures(404),
     )
-    async def read(self, provider_id: str, providers: ports.Providers) -> Provider:
-        return await providers.get(provider_id)
+    async def read(self, provider_id: str, providers: ports.Providers) -> v1.ProviderResource:
+        return recast(await providers.get(provider_id), v1.ProviderResource)
 
     @put(
         "/{provider_id:str}",
@@ -64,8 +66,8 @@ class ProviderController(Controller):
         ),
         responses=failures(404, 409, 422),
     )
-    async def update(self, provider_id: str, data: ProviderCreate, providers: ports.Providers) -> Provider:
-        return await providers.update(provider_id, data)
+    async def update(self, provider_id: str, data: v1.CreateProviderResource, providers: ports.Providers) -> v1.ProviderResource:
+        return recast(await providers.update(provider_id, recast(data, ProviderCreate)), v1.ProviderResource)
 
     @delete(
         "/{provider_id:str}",

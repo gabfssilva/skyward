@@ -107,6 +107,10 @@ class NodeStore:
         """The machine has an address. Somebody can now try to log into it."""
         await self._machine(node_id, machine, "connecting")
 
+    async def seen(self, node_id: str, machine: Machine) -> None:
+        """What the provider last said about a machine still short of an address, kept for whoever reads the node later."""
+        await NodeRow.update({NodeRow.provider_binding: await packed(machine), NodeRow.revision: NodeRow.revision + 1}).where(NodeRow.id == node_id).run()
+
     async def _machine(self, node_id: str, machine: Machine, state: NodeState, extra: dict[Column, Any] | None = None) -> None:
         """The machine is kept whole, not filleted into columns.
 
