@@ -69,7 +69,7 @@ with sky.Compute(
     train(data) >> embedded
 ```
 
-The default database is `~/.skyward/skyward.sqlite`, and the daemon that owns it owns the resources created through it. A client whose version differs from the daemon's is refused at connection time rather than halfway through a provision.
+The default database is `~/.skyward/skyward.sqlite`, and the daemon that owns it owns the resources created through it. A client whose version differs from the daemon's warns at connection time, and with `strict_version` is refused there rather than halfway through a provision.
 
 ## Resource model
 

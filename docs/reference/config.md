@@ -12,7 +12,7 @@ The resolution order is:
 
 `Compute` starts a daemon at that address when none answers, printing `no server is running, starting it now`. The daemon detaches, so it outlives the process that started it and goes on reconciling the machines it bought. Stop it with `sky server stop`. The CLI never starts one: it reports that nothing answers.
 
-A daemon is refused when it runs a different version of Skyward than the client, because the same routes carry other wire types. Stop it and let the client start one, or point the client at a daemon on its version.
+A daemon that runs a different version of Skyward than the client is warned about and used: the same routes may carry other wire types, and a type the two disagree on fails where it is read. `sky.Options(strict_version=True)` refuses it instead, before a machine is bought; stop it and let the client start one, or point the client at a daemon on its version.
 
 Passing `database=` to `Compute` runs the control plane inside the current process over that file instead of reaching a daemon. `sky server start --database` gives a daemon its own. Either way the default is `~/.skyward/skyward.sqlite`, and a database is ignored when a URL is given.
 

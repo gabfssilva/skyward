@@ -262,6 +262,7 @@ class Compute:
         self._callbacks = tuple(callbacks)
         self._ready_timeout = options.ready_timeout
         self._shutdown_timeout = options.shutdown_timeout
+        self._strict_version = options.strict_version
 
         self._loop: Loop | None = None
         self._client: Client | None = None
@@ -315,7 +316,7 @@ class Compute:
         what the caller sees, not whatever the teardown ran into.
         """
         self._loop = Loop()
-        self._client = self.loop.run(connect(self._url, self._database))
+        self._client = self.loop.run(connect(self._url, self._database, strict=self._strict_version))
         try:
             self.loop.run(self._provision())
             for plugin in self._plugins:

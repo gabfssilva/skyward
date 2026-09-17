@@ -93,13 +93,13 @@ def describe_a_pool_that_names_no_daemon() -> None:
 
         async def resolved() -> list[str]:
             await _register(alone, "written-through-the-daemon")
-            return await _accounts(await connect(None, None))
+            return await _accounts(await connect(None, None, strict=True))
 
         assert "written-through-the-daemon" in asyncio.run(resolved()), "the pool hosted its own plane instead of using the daemon"
 
     def it_starts_one_when_nothing_answers(nowhere: str, capsys: pytest.CaptureFixture[str]) -> None:
         async def started() -> bool:
-            await (await connect(None, None)).close()
+            await (await connect(None, None, strict=True)).close()
             return await _answers(nowhere)
 
         assert asyncio.run(started()), "nothing was serving where the pool had just started a daemon"
@@ -108,7 +108,7 @@ def describe_a_pool_that_names_no_daemon() -> None:
 
     def it_leaves_the_daemon_it_started_running(nowhere: str) -> None:
         async def start_and_leave() -> bool:
-            await (await connect(None, None)).close()
+            await (await connect(None, None, strict=True)).close()
             return await _answers(nowhere)
 
         assert asyncio.run(start_and_leave()), "the pool took the daemon with it"
@@ -119,7 +119,7 @@ def describe_a_pool_that_names_a_daemon() -> None:
         monkeypatch.setattr(daemon, "PID_FILE", tmp_path / "server.pid")
 
         with pytest.raises(DaemonError, match="no daemon answers"):
-            asyncio.run(connect("http://127.0.0.1:1", None))
+            asyncio.run(connect("http://127.0.0.1:1", None, strict=True))
 
         assert not (tmp_path / "server.pid").exists(), "a named daemon that is not there is an error, not an address to bind"
 
@@ -130,18 +130,31 @@ def describe_a_pool_that_names_a_database() -> None:
 
         async def resolved() -> list[str]:
             await _register(alone, "only-in-the-daemon")
-            return await _accounts(await connect(None, tmp_path / "own.sqlite"))
+            return await _accounts(await connect(None, tmp_path / "own.sqlite", strict=True))
 
         assert asyncio.run(resolved()) == [], "a named database is the file to be the plane for, not a hint"
 
 
 def describe_a_daemon_running_another_skyward() -> None:
-    def it_is_refused_before_a_single_machine_is_bought(alone: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    def it_is_warned_about_and_used(alone: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        _local(monkeypatch, alone)
+        monkeypatch.setattr("skyward.core.client.current", lambda: "0.0.0+other")
+
+        async def reached() -> list[str]:
+            await _register(alone, "on-another-version")
+            return await _accounts(await connect(None, None, strict=False))
+
+        assert asyncio.run(reached()) == ["on-another-version"], "a skew that is only warned about still reaches the daemon"
+        warned = capsys.readouterr().err
+        assert "0.0.0+other" in warned
+        assert "strict_version=True" in warned, "the warning has to say how to refuse instead"
+
+    def it_is_refused_before_a_single_machine_is_bought_when_the_pool_is_strict(alone: str, monkeypatch: pytest.MonkeyPatch) -> None:
         _local(monkeypatch, alone)
         monkeypatch.setattr("skyward.core.client.current", lambda: "0.0.0+other")
 
         with pytest.raises(DaemonError, match="0.0.0\\+other") as refusal:
-            asyncio.run(connect(None, None))
+            asyncio.run(connect(None, None, strict=True))
 
         assert "sky server stop" in str(refusal.value), "the refusal has to say what to do about it"
 
@@ -196,7 +209,7 @@ def describe_leaving_a_pool_that_borrowed_a_daemon() -> None:
         _local(monkeypatch, alone)
 
         async def borrow_and_return() -> bool:
-            await (await connect(None, None)).close()
+            await (await connect(None, None, strict=True)).close()
             return await _answers(alone)
 
         assert asyncio.run(borrow_and_return()), "closing a borrowed client must not end the daemon it borrowed"
@@ -305,7 +318,7 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
         control.append((request.method, request.url.path))
         return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(Lease()))
 
-    async def fake_connect(url: str | None, database: Path | None) -> Client:
+    async def fake_connect(url: str | None, database: Path | None, *, strict: bool) -> Client:
         http = httpx.AsyncClient(transport=httpx.MockTransport(main), base_url="http://skyward")
         kept = httpx.AsyncClient(transport=httpx.MockTransport(lease), base_url="http://skyward")
         return Client(http, kept, AsyncExitStack())

@@ -392,7 +392,7 @@ sky.Compute(provider=sky.AWS(), executor=sky.Executor(type="thread", concurrency
 
 `concurrency` is how many tasks run at once. `buffer` is the slack above it: that many more tasks are admitted and their payloads made ready, so a slot that frees finds the next one in hand rather than a round trip away. It's also the queue depth the daemon reads as backpressure when deciding to grow an elastic compute.
 
-`sky.Options(...)` carries the operational knobs — SSH timeouts, worker timeout, autoscaling, health probes. Most travel to the daemon; `ready_timeout` and `shutdown_timeout` stay client-side, because they govern how long *this* process waits for its own compute.
+`sky.Options(...)` carries the operational knobs — SSH timeouts, worker timeout, autoscaling, health probes. Most travel to the daemon; `ready_timeout`, `shutdown_timeout` and `strict_version` stay client-side, because they govern how *this* process waits for and reaches its own compute.
 
 ## Next steps
 

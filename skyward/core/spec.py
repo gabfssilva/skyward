@@ -151,9 +151,9 @@ class Options:
 
     Sensible defaults reproduce the runtime's built-in behavior, so most pools never
     construct one. The daemon-side knobs are carried to the control plane on the
-    spec; the two session timeouts (``ready_timeout``, ``shutdown_timeout``) stay in
-    this process, because they govern how long *this* client waits for its own pool
-    and never leave it.
+    spec; the two session timeouts (``ready_timeout``, ``shutdown_timeout``) and
+    ``strict_version`` stay in this process, because they govern how *this* client
+    waits for and reaches its own pool and never leave it.
 
     Parameters
     ----------
@@ -194,6 +194,11 @@ class Options:
         Seconds to wait for the pool to become ready before giving up.
     shutdown_timeout : float
         Seconds to wait for the pool to finish deleting on exit.
+    strict_version : bool
+        Refuse a daemon that runs another version of skyward, before a machine is
+        bought. Left ``False``, the pool warns and goes on: two versions apart are
+        often only two commits apart, and a wire type they disagree on fails where
+        it is read.
 
     Examples
     --------
@@ -217,6 +222,7 @@ class Options:
     cluster: bool | None = None
     ready_timeout: float = 300.0
     shutdown_timeout: float = 60.0
+    strict_version: bool = False
 
 
 SYSTEM_PATHS = frozenset({"/", "/opt", "/opt/skyward", "/root", "/tmp"})

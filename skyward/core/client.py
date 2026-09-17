@@ -524,7 +524,7 @@ def asgi(app: Litestar) -> Asgi:
     return cast(Asgi, app)
 
 
-async def connect(url: str | None, database: Path | None) -> Client:
+async def connect(url: str | None, database: Path | None, *, strict: bool) -> Client:
     """The daemon a pool speaks to: one it was named, one already up, or one it starts.
 
     A pool that names no daemon looks where ``sky server start`` binds, and starts
@@ -537,23 +537,30 @@ async def connect(url: str | None, database: Path | None) -> Client:
     Naming a database is the one way to be the plane instead of reaching one. That
     argument says which file to serve, and a daemon holding a different one has no
     answer to it.
+
+    ``strict`` is what a daemon on another version of skyward gets: refused, or
+    warned about — see :func:`dial`.
     """
     if target := url or os.environ.get("SKYWARD_URL"):
-        return await dial(target, start=False)
+        return await dial(target, start=False, strict=strict)
 
     if database is not None:
         return await Client.embedded(database)
 
-    return await dial(DEFAULT_URL, start=True)
+    return await dial(DEFAULT_URL, start=True, strict=strict)
 
 
-async def dial(url: str, *, start: bool) -> Client:
+async def dial(url: str, *, start: bool, strict: bool) -> Client:
     """A client on the daemon at ``url``, once it has answered for itself.
 
     The handshake is the liveness call, and what it is really asking is the version:
     a daemon of another skyward serves other wire types behind the same routes, and
     what that becomes is a decode error somewhere in the middle of a provision, long
-    after machines are billing. Refused here, it costs a round trip.
+    after machines are billing. ``strict`` refuses it here, for the cost of a round
+    trip. Without it the skew is only said: the version is the whole build string,
+    so a daemon one commit behind differs as much as one a release behind, and
+    msgspec reads past the fields it does not know — most of the time the two agree
+    on every type they exchange.
 
     ``start`` is for the address nobody named — a daemon may be started there
     because that is where one belongs. A named url is somewhere the caller says a
@@ -570,9 +577,13 @@ async def dial(url: str, *, start: bool) -> Client:
 
         if live.version != (here := current()):
             theirs = f"skyward {live.version}" if live.version else "a skyward too old to say which"
-            raise DaemonError(
-                f"the daemon at {url} runs {theirs}, this process runs skyward {here} — "
-                "stop it with `sky server stop` and run again, or point at a daemon on this version"
+            skew = f"the daemon at {url} runs {theirs}, this process runs skyward {here}"
+            if strict:
+                raise DaemonError(f"{skew} — stop it with `sky server stop` and run again, or point at a daemon on this version")
+            print(
+                f"skyward: {skew}; going on — a type they disagree on fails where it is read, and `Options(strict_version=True)` refuses the daemon instead",
+                file=sys.stderr,
+                flush=True,
             )
     except BaseException:
         await client.close()

@@ -53,7 +53,7 @@ Inside a `with Compute(...)` block, `>> sky` uses the active compute. The explic
 
 `Spec` accepts `provider`, `accelerator`, `cpus`, `memory_gb`, `region`, `disk_gb`, `architecture`, and `max_hourly_cost`.
 
-`Options` accepts provisioning and worker timeouts, retry settings, health checks, autoscaling settings, and the `cluster` capability flag. `ready_timeout` and `shutdown_timeout` control how long the current client waits for its compute.
+`Options` accepts provisioning and worker timeouts, retry settings, health checks, autoscaling settings, and the `cluster` capability flag. `ready_timeout` and `shutdown_timeout` control how long the current client waits for its compute, and `strict_version` refuses a daemon on another version of Skyward instead of warning about it.
 
 `Executor` supports `thread`, `process`, and `loky`. `concurrency` sets the number of task slots per node, and `buffer` sets how many additional tasks can be admitted ahead of those slots. `reuse=False` is valid only for the `process` executor.
 
