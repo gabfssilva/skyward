@@ -1,0 +1,58 @@
+#overlay:empty{display:none}
+dialog.scrim{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;border:0;color:inherit;
+  background:rgba(10,14,16,.45);padding:6svh 16px 4svh;overflow:auto;overscroll-behavior:contain}
+dialog.scrim[open]{display:flex;justify-content:center;align-items:flex-start}
+dialog.scrim::backdrop{background:none}
+dialog.scrim.palette{padding-top:13svh}
+html:has(dialog.scrim[open]){overflow:hidden}
+.sheet{width:min(900px,100%);background:var(--panel);border-radius:20px;overflow:hidden}
+.sheet-head{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.sheet-head b{font-size:16px;font-weight:700}
+.sheet-body{padding:20px;container:sheet/inline-size}
+.sheet-foot{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--line);background:var(--sunk)}
+.steps{display:flex;gap:5px;margin-inline:auto}
+.steps i{width:26px;height:4px;border-radius:2px;background:var(--edge)}
+.steps i.on{background:var(--accent)}
+.sheet.wizard{height:min(492px,90svh);display:flex;flex-direction:column}
+.wizard .sheet-body{flex:1;min-height:0;overflow-y:auto}
+.wizard .spec-i .mono{min-width:0}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.duo>*,.quad>*{min-width:0}
+.trio{display:grid;grid-template-columns:repeat(3,minmax(0,120px));gap:10px;margin-top:8px}
+.quad{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;align-items:end}
+.fnpick{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:10px}
+.portform{display:grid;grid-template-columns:1fr 90px 90px 80px auto;gap:9px;align-items:end}
+@container sheet (max-width:648px){.duo,.quad{grid-template-columns:1fr}}
+@container sheet (max-width:520px){
+  .portform{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .portform>.field:first-child{grid-column:1/-1}
+  .portform>button{justify-self:start}
+}
+@container sheet (max-width:400px){.fnpick{grid-template-columns:1fr}}
+.pkgs{display:flex;align-items:center;gap:5px;min-height:36px;padding:5px 6px;border-radius:var(--rs);background:var(--sunk);cursor:text;overflow-x:auto;scrollbar-width:thin}
+.pkgs:focus-within{outline:2px solid var(--accent)}
+.pkg{flex:none;display:inline-flex;align-items:center;gap:2px;height:24px;padding:0 3px 0 8px;border-radius:7px;background:var(--panel);color:var(--ink)}
+.pkg button{display:grid;place-items:center;width:24px;height:24px;border-radius:5px;color:var(--faint);font-size:12px}
+@media (hover:hover){.pkg button:hover{color:var(--ink);background:var(--sunk)}}
+.field .pkgs input{flex:1;min-width:10ch;height:24px;padding:0 4px;background:none}
+.field .pkgs input:focus{outline:none}
+.palette{width:min(540px,100%);background:var(--panel);border-radius:18px;overflow:hidden}
+.palette .pin{display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--faint);font-size:20px}
+.palette input{flex:1;height:52px;border:0;background:none;font-size:15px}
+.palette input:focus{outline:none}
+.palette ul{list-style:none;margin:0;padding:6px;max-height:42svh;overflow:auto}
+.palette li{padding:9px 12px;border-radius:10px;display:flex;gap:10px;font-size:13px;cursor:pointer}
+.palette li[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
+.pop{position:absolute;z-index:50;right:0;top:40px;background:var(--panel);box-shadow:0 0 0 1px var(--line);border-radius:14px;padding:14px;width:260px;font-size:12.5px}
+.tip{position:fixed;inset:auto;margin:0;border:0;overflow:visible;pointer-events:none;background:var(--ink);color:var(--ground);border-radius:8px;
+  padding:6px 9px;font-size:11.5px;font-family:var(--mono);max-width:280px}
+
+/* On a phone a sheet holding a form or a long read is the whole screen, with its head and foot kept in reach. */
+@media (max-width:37.5em){
+  dialog.scrim.full{padding:0}
+  dialog.scrim.full>.sheet{width:100%;min-height:100%;border-radius:0;overflow:visible;display:flex;flex-direction:column}
+  dialog.scrim.full>.sheet.wizard{height:100%}
+  dialog.scrim.full .sheet-head{position:sticky;top:0;z-index:1;background:var(--panel)}
+  dialog.scrim.full .sheet-body{flex:1;align-content:start}
+  dialog.scrim.full .sheet-foot{position:sticky;bottom:0;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+}

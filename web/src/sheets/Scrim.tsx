@@ -1,14 +1,44 @@
-import type { ReactNode } from 'react'
+import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import { Icon } from '../ui/icons'
 import { useStore } from '../state/store'
 
-/** The dimmed backdrop every sheet sits on; a click outside the sheet closes it. */
-export function Scrim({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
+/**
+ * How a sheet sits on the screen. A `full` sheet holds a form or a long read and takes the whole screen of a phone;
+ * a `prompt` asks one question and stays a small box; the `palette` hangs from the top so the list under it has room.
+ */
+export type Layout = 'full' | 'prompt' | 'palette'
+
+/**
+ * The modal every sheet sits in.
+ *
+ * `showModal` puts it in the top layer and makes the page under it inert, so focus stays inside and Escape arrives as
+ * `cancel`, which closes the sheet through the store like every other way out. A click on the dimmed margin closes
+ * only a sheet that is `dismissible`: one holding a form would throw away what was typed.
+ */
+export function Scrim({ label, layout = 'full', dismissible = false, children }: { label: string; layout?: Layout; dismissible?: boolean; children: ReactNode }) {
   const close = useStore((s) => s.closeSheet)
+  const ref = useRef<HTMLDialogElement>(null)
+
+  useLayoutEffect(() => {
+    if (ref.current && !ref.current.open) ref.current.showModal()
+  }, [])
+
   return (
-    <div className="scrim" style={style} onMouseDown={(e) => { if (e.target === e.currentTarget) close() }}>
+    <dialog
+      ref={ref}
+      className={`scrim ${layout}`}
+      aria-label={label}
+      onCancel={(e) => {
+        e.preventDefault()
+        close()
+      }}
+      onClose={close}
+      onMouseDown={(e) => {
+        if (dismissible && e.target === e.currentTarget) close()
+      }}
+    >
       {children}
-    </div>
+    </dialog>
   )
 }
 

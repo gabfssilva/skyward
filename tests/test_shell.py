@@ -18,15 +18,23 @@ import asyncio
 import socket
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import suppress
+from pathlib import Path
 
 import asyncssh
 import httpx
 import pytest
 
+from skyward.server.application import ports
+from skyward.server.application.mock import MockComputes
 from skyward.server.application.node import Node
 from skyward.server.application.runtimes import Runtime, Runtimes, Terminal, keypair
 from skyward.server.application.source import Source
 from skyward.server.http.app import create_app, with_real
+from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.tables import ComputeRow
 from skyward.shared.errors import ComputeNotConnectedError
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Image, Options
@@ -175,6 +183,26 @@ def describe_a_terminal_over_one_socket() -> None:
 
             assert await session.next() == {"type": "websocket.close", "code": 4409, "reason": "compute_not_connected"}
 
+    async def it_reaches_a_compute_by_its_name(tmp_path: Path) -> None:
+        computes = await _training(tmp_path)
+        async with _Holding(0) as runtime, _Socket(runtime, "", compute="training", computes=computes) as session:
+            await session.next()
+
+            assert "rank 0" in await session.painted("rank 0"), "the name is the compute this daemon holds as cmp_1"
+
+    async def a_compute_nobody_has_is_an_error_frame_and_then_a_close(tmp_path: Path) -> None:
+        computes = await _training(tmp_path)
+        async with _Socket(Runtime("cmp_1", "pypi", private_key=KEY), "", compute="nobody", computes=computes) as session:
+            assert await session.next() == {"type": "websocket.accept", "subprotocol": None, "headers": []}
+
+            match await session.next():
+                case {"text": str(refusal)}:
+                    assert '"code":"not_found"' in refusal.replace(" ", "")
+                case other:
+                    raise AssertionError(f"the refusal has to arrive before the close: {other}")
+
+            assert await session.next() == {"type": "websocket.close", "code": 4409, "reason": "not_found"}
+
     async def a_shell_that_exits_closes_the_socket() -> None:
         async with _Holding(0) as runtime, _Socket(runtime, "") as session:
             await session.next()
@@ -197,6 +225,13 @@ def _daemon(runtime: Runtime) -> httpx.AsyncClient:
     runtimes._runtimes[runtime.compute] = runtime
     app = create_app(with_real(runtimes=runtimes, shell=Terminal(runtimes)), logging=False)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://daemon")
+
+
+async def _training(tmp_path: Path) -> ComputeStore:
+    """A store holding one compute, named ``training``, under the id the runtimes here are held by."""
+    await connect(tmp_path / "skyward.sqlite")
+    await ComputeRow(id="cmp_1", name="training", status_state="ready").save().run()
+    return ComputeStore(EventStore(), NodeStore())
 
 
 async def _quiet(*_: object) -> None:
@@ -329,10 +364,11 @@ class _Socket:
     anywhere else.
     """
 
-    def __init__(self, runtime: Runtime, query: str) -> None:
+    def __init__(self, runtime: Runtime, query: str, compute: str = "cmp_1", computes: ports.Computes | None = None) -> None:
         runtimes = Runtimes(listener=lambda *_: None, output=_quiet, sample=_quiet, phase=_quiet)
         runtimes._runtimes[runtime.compute] = runtime
-        self._app = create_app(with_real(runtimes=runtimes, shell=Terminal(runtimes)), logging=False)
+        self._app = create_app(with_real(runtimes=runtimes, shell=Terminal(runtimes), computes=computes or MockComputes()), logging=False)
+        self._path = f"/v1/computes/{compute}/shell/attach"
         self._query = query
         self._to_daemon: asyncio.Queue[dict[str, object]] = asyncio.Queue()
         self._from_daemon: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -343,8 +379,8 @@ class _Socket:
             "asgi": {"version": "3.0", "spec_version": "2.3"},
             "http_version": "1.1",
             "scheme": "ws",
-            "path": "/v1/computes/cmp_1/shell/attach",
-            "raw_path": b"/v1/computes/cmp_1/shell/attach",
+            "path": self._path,
+            "raw_path": self._path.encode(),
             "query_string": self._query.encode(),
             "root_path": "",
             "headers": [(b"host", b"daemon")],

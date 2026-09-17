@@ -18,6 +18,7 @@ export const ICON = {
   ports: '<path d="M4 12h6M14 12h6"/><circle cx="12" cy="12" r="3"/><path d="M4 8v8M20 8v8"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
+  more: '<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   node: '<path d="M12 3l7 4v8l-7 4-7-4V7z"/>',
   alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',

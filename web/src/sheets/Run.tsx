@@ -88,14 +88,14 @@ export function Run({ lineage, version, computeId, node }: { lineage?: string; v
   }
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(560px,100%)' }} role="dialog" aria-label="Run">
+    <Scrim label="Run">
+      <div className="sheet" style={{ width: 'min(560px,100%)' }}>
         <div className="sheet-head">
           <b>Run a function</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />
         </div>
         <div className="sheet-body" style={{ display: 'grid', gap: 10 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 170px', gap: 10 }}>
+          <div className="fnpick">
             <div className="field">
               <label htmlFor="run-fn">Function</label>
               <select
@@ -139,7 +139,7 @@ export function Run({ lineage, version, computeId, node }: { lineage?: string; v
               ))}
             </select>
           </div>
-          <div className="row" style={{ gap: 8 }}>
+          <div className="row wrap" style={{ gap: 8 }}>
             <Pick<Dispatch>
               value={dispatch}
               options={[

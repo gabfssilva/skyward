@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit -p . && vite build",
     "preview": "vite preview",
-    "api:types": "openapi-typescript ../docs/openapi.json -o src/api/schema.d.ts"
+    "api:types": "openapi-typescript ../docs/openapi.json -o src/api/schema.d.ts",
+    "test:responsive": "playwright test"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -18,6 +19,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",

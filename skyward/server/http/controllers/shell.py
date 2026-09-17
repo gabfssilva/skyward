@@ -31,7 +31,7 @@ the same :class:`Error` every other endpoint answers with, and only then is it c
 
 
 class ShellController(Controller):
-    path = "/computes/{compute_id:str}/shell"
+    path = "/computes/{compute:str}/shell"
     tags = ["shell"]
 
     @post(
@@ -99,9 +99,10 @@ class ShellController(Controller):
     @websocket("/attach")
     async def attach(
         self,
-        compute_id: str,
+        compute: str,
         socket: WebSocket,
         shell: ports.Shell,
+        computes: ports.Computes,
         node: int | None = Parameter(query="node", default=None, description="The rank to open the terminal on; omit for the lowest one held."),
         command: str | None = Parameter(query="command", default=None, description="What to run; omit for the login shell."),
         term: str = Parameter(query="term", default="xterm-256color", description="The terminal type to claim."),
@@ -124,11 +125,13 @@ class ShellController(Controller):
         The machine need not be ready: every machine that has answered SSH takes a
         terminal, and one still booting takes it the moment it does, so the socket
         may be open a while before the first byte comes back. One that cannot be
-        opened at all is an :class:`Error` in a text frame and then a close.
+        opened at all is an :class:`Error` in a text frame and then a close — and so is
+        a compute nobody has, which is why the name is looked up after the socket is
+        accepted rather than by the dependency every other route resolves it with.
         """
         await socket.accept()
         try:
-            pty = await shell.open(compute_id, node, command, term, (columns, rows))
+            pty = await shell.open(await computes.identify(compute), node, command, term, (columns, rows))
         except SkywardError as refused:
             await socket.send_json(Error(code=refused.code, message=refused.message, retryable=refused.retryable, details=refused.details or None))
             await socket.close(code=REFUSED, reason=refused.code)

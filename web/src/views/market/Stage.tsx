@@ -1,10 +1,12 @@
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { openWizard } from '../../sheets'
 import { useOffers, useStore } from '../../state/store'
 import { money } from '../../state/model'
 import type { Offer } from '../../api/client'
 import { ACCELS } from '../../sheets/catalog'
-import { Chip, Pick } from '../../ui/primitives'
+import { Icon } from '../../ui/icons'
+import { Chip, Pick, TableScroll } from '../../ui/primitives'
 
 const ondemand = (o: Offer): number => o.on_demand_price ?? o.price ?? 0
 const spot = (o: Offer): number | null => o.spot_price ?? null
@@ -27,6 +29,7 @@ const vocabulary = (rows: readonly Offer[]): string[] => {
 }
 
 export function Stage() {
+  const navigate = useNavigate()
   const rows = useStore((s) => s.offers)
   const catalog = useOffers()
   const f = useStore((s) => s.market)
@@ -46,6 +49,10 @@ export function Stage() {
         <span className="sub">
           {rows.length} of {catalog?.total ?? rows.length} offers
         </span>
+        <button className="btn sm compact-only" style={{ marginLeft: 'auto' }} onClick={() => navigate('/providers')}>
+          <Icon name="providers" />
+          Provider accounts
+        </button>
       </div>
       <div className="row wrap" style={{ gap: 8, marginBottom: 10 }}>
         <div className="chips">
@@ -75,7 +82,7 @@ export function Stage() {
           onChange={(v) => setUi({ market: { ...f, sort: v } })}
         />
       </div>
-      <div className="scroll">
+      <TableScroll label="Offers">
         <table>
           <thead>
             <tr>
@@ -130,7 +137,7 @@ export function Stage() {
             })}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {catalog && catalog.total !== null && rows.length < catalog.total ? (
         <button className="btn sm" style={{ marginTop: 10 }} disabled={catalog.loading} onClick={() => void moreOffers()}>
           Show more

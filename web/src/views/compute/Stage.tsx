@@ -7,7 +7,7 @@ import { CAUSE, HOUR, UNIT, ago, busyOf, callsOf, dateOf, dur, endedAt, execsOf,
 import type { MetricKey } from '../../state/model'
 import { combNodes, valuesFor } from '../../state/nodes'
 import { dispatchLine } from '../tasks/Stage'
-import { Fn, Legend, Pill } from '../../ui/primitives'
+import { Fn, Legend, Pill, TableScroll } from '../../ui/primitives'
 import { Comb } from '../../ui/comb'
 import { Spark } from '../../ui/charts'
 import { Icon } from '../../ui/icons'
@@ -382,41 +382,43 @@ function TasksBlock({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; n
       </div>
       {list.length ? (
         <>
-          <table>
-            <thead>
-              <tr>
-                <th>Function</th>
-                <th>State</th>
-                <th>Submitted</th>
-                <th className="right">Took</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((t) => {
-                const attempt = attemptOf(t)
-                return (
-                  <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
-                    <td>
-                      <Fn sha={t.function} weight={700} />
-                      <div className="mono faint">
-                        {dispatchLine(t, nodes)}
-                        {attempt > 1 ? ` · attempt ${attempt}` : ''}
-                      </div>
-                    </td>
-                    <td>
-                      <Pill state={t.state} />
-                    </td>
-                    <td className="mono faint" style={{ whiteSpace: 'nowrap' }}>
-                      {ago(ms(t.submitted_at))}
-                    </td>
-                    <td className="right mono" style={{ whiteSpace: 'nowrap' }}>
-                      {dur((t.finished_at ? ms(t.finished_at) : Date.now()) - ms(t.submitted_at))}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <TableScroll label="Tasks">
+            <table>
+              <thead>
+                <tr>
+                  <th>Function</th>
+                  <th>State</th>
+                  <th>Submitted</th>
+                  <th className="right">Took</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((t) => {
+                  const attempt = attemptOf(t)
+                  return (
+                    <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
+                      <td>
+                        <Fn sha={t.function} weight={700} />
+                        <div className="mono faint">
+                          {dispatchLine(t, nodes)}
+                          {attempt > 1 ? ` · attempt ${attempt}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <Pill state={t.state} />
+                      </td>
+                      <td className="mono faint" style={{ whiteSpace: 'nowrap' }}>
+                        {ago(ms(t.submitted_at))}
+                      </td>
+                      <td className="right mono" style={{ whiteSpace: 'nowrap' }}>
+                        {dur((t.finished_at ? ms(t.finished_at) : Date.now()) - ms(t.submitted_at))}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </TableScroll>
           {more > 0 ? (
             <button
               className="btn sm ghost"

@@ -27,8 +27,8 @@ export function AddProvider({ provider }: { provider?: string }) {
   }
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(500px,100%)' }} role="dialog" aria-label="Add account">
+    <Scrim label="Add account">
+      <div className="sheet" style={{ width: 'min(500px,100%)' }}>
         <div className="sheet-head">
           <b>Add account</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />

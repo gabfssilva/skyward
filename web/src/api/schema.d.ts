@@ -80,7 +80,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}": {
+    "/v1/computes/{compute}": {
         parameters: {
             query?: never;
             header?: never;
@@ -91,7 +91,7 @@ export interface paths {
          * Read a compute
          * @description Accepts an id or a name. The response always carries both.
          */
-        get: operations["V1ComputesComputeIdRead"];
+        get: operations["V1ComputesRead"];
         put?: never;
         post?: never;
         /**
@@ -100,7 +100,7 @@ export interface paths {
          *
          *     No process shutdown ever issues this command.
          */
-        delete: operations["V1ComputesComputeIdDestroy"];
+        delete: operations["V1ComputesDestroy"];
         options?: never;
         head?: never;
         /**
@@ -111,10 +111,10 @@ export interface paths {
          *
          *     The rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the compute; a different one is a different compute.
          */
-        patch: operations["V1ComputesComputeIdUpdate"];
+        patch: operations["V1ComputesUpdate"];
         trace?: never;
     };
-    "/v1/computes/{compute_id}/exec": {
+    "/v1/computes/{compute}/exec": {
         parameters: {
             query?: never;
             header?: never;
@@ -129,14 +129,14 @@ export interface paths {
          *
          *     A task is the other thing, and `POST /tasks` is where it goes.
          */
-        post: operations["V1ComputesComputeIdExecRun"];
+        post: operations["V1ComputesExecRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/files": {
+    "/v1/computes/{compute}/files": {
         parameters: {
             query?: never;
             header?: never;
@@ -147,26 +147,26 @@ export interface paths {
          * List a path on the compute
          * @description `ls -la` of `path`, per node. Defaults to rank 0 — one listing is usually the question.
          */
-        get: operations["V1ComputesComputeIdFilesLs"];
+        get: operations["V1ComputesFilesLs"];
         /**
          * Write a file onto the compute
          * @description The request body, written to `path`. Defaults to every node: code and data a task will read have to be wherever the task lands, and which node that is belongs to the dispatcher.
          *
          *     The answer is per node — a machine that refused the write is a line of it, not the end of it.
          */
-        put: operations["V1ComputesComputeIdFilesUpload"];
+        put: operations["V1ComputesFilesUpload"];
         post?: never;
         /**
          * Remove a path on the compute
          * @description `rm -rf` of `path`, per node. Defaults to every node, because a file left on one machine of four is the state a later broadcast reads and disagrees about.
          */
-        delete: operations["V1ComputesComputeIdFilesRm"];
+        delete: operations["V1ComputesFilesRm"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/files/content": {
+    "/v1/computes/{compute}/files/content": {
         parameters: {
             query?: never;
             header?: never;
@@ -177,7 +177,7 @@ export interface paths {
          * Read a file off the compute
          * @description `path` from one node, as a raw byte stream. `node=all` is refused rather than picked between: four machines hold four files, and concatenating them would answer a question nobody asked.
          */
-        get: operations["V1ComputesComputeIdFilesContentDownload"];
+        get: operations["V1ComputesFilesContentDownload"];
         put?: never;
         post?: never;
         delete?: never;
@@ -186,7 +186,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/forward/down": {
+    "/v1/computes/{compute}/forward/down": {
         parameters: {
             query?: never;
             header?: never;
@@ -201,7 +201,7 @@ export interface paths {
          *
          *     Not resumable. A dropped stream is a dead connection; open another.
          */
-        get: operations["V1ComputesComputeIdForwardDownDown"];
+        get: operations["V1ComputesForwardDownDown"];
         put?: never;
         post?: never;
         delete?: never;
@@ -210,7 +210,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/forward/up": {
+    "/v1/computes/{compute}/forward/up": {
         parameters: {
             query?: never;
             header?: never;
@@ -227,14 +227,14 @@ export interface paths {
          *
          *     Paired with `GET .../down` by the `cid` the caller mints — the two are one connection, and HTTP/1.1 will not carry both directions on a single request.
          */
-        post: operations["V1ComputesComputeIdForwardUpUp"];
+        post: operations["V1ComputesForwardUpUp"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/generations": {
+    "/v1/computes/{compute}/generations": {
         parameters: {
             query?: never;
             header?: never;
@@ -245,7 +245,7 @@ export interface paths {
          * List definition history
          * @description Every definition this compute has had, newest last. A rollback is a generation too, so this grows.
          */
-        get: operations["V1ComputesComputeIdGenerationsListGenerations"];
+        get: operations["V1ComputesGenerationsListGenerations"];
         put?: never;
         /**
          * Create a generation (roll back to an earlier one)
@@ -253,14 +253,14 @@ export interface paths {
          *
          *     Nothing is replaced: a size that differs is reconciled as a resize would be, and a machine bought from now on is built to the definition now current.
          */
-        post: operations["V1ComputesComputeIdGenerationsCreateGeneration"];
+        post: operations["V1ComputesGenerationsCreateGeneration"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/generations/{number}": {
+    "/v1/computes/{compute}/generations/{number}": {
         parameters: {
             query?: never;
             header?: never;
@@ -271,7 +271,7 @@ export interface paths {
          * Read a generation
          * @description One definition as it was frozen, and whether the machines were ever built to match it.
          */
-        get: operations["V1ComputesComputeIdGenerationsNumberGetGeneration"];
+        get: operations["V1ComputesGenerationsNumberGetGeneration"];
         put?: never;
         post?: never;
         delete?: never;
@@ -280,7 +280,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/lease": {
+    "/v1/computes/{compute}/lease": {
         parameters: {
             query?: never;
             header?: never;
@@ -294,19 +294,19 @@ export interface paths {
          *
          *     Claiming requires the current lease to be expired or absent — it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.
          */
-        put: operations["V1ComputesComputeIdLeaseClaimLease"];
+        put: operations["V1ComputesLeaseClaimLease"];
         post?: never;
         /**
          * Release ownership
          * @description Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.
          */
-        delete: operations["V1ComputesComputeIdLeaseReleaseLease"];
+        delete: operations["V1ComputesLeaseReleaseLease"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/metrics": {
+    "/v1/computes/{compute}/metrics": {
         parameters: {
             query?: never;
             header?: never;
@@ -323,7 +323,7 @@ export interface paths {
          *
          *     Samples reach this a couple of seconds after the node takes them. `node` and `name` narrow it, each repeatable.
          */
-        get: operations["V1ComputesComputeIdMetricsHistory"];
+        get: operations["V1ComputesMetricsHistory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -332,7 +332,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/metrics/latest": {
+    "/v1/computes/{compute}/metrics/latest": {
         parameters: {
             query?: never;
             header?: never;
@@ -343,7 +343,7 @@ export interface paths {
          * Read the newest value of each metric
          * @description One item per node and metric: the newest sample the daemon holds. A node that has been quiet for longer than a compaction window is answered from its compacted history, so a compute that is gone still says where its nodes were when they stopped. `node` and `name` narrow it, each repeatable.
          */
-        get: operations["V1ComputesComputeIdMetricsLatestLatest"];
+        get: operations["V1ComputesMetricsLatestLatest"];
         put?: never;
         post?: never;
         delete?: never;
@@ -352,7 +352,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/nodes": {
+    "/v1/computes/{compute}/nodes": {
         parameters: {
             query?: never;
             header?: never;
@@ -363,7 +363,7 @@ export interface paths {
          * List a compute's nodes
          * @description Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until the provider confirms termination — that is what stops an instance from going missing with nobody knowing.
          */
-        get: operations["V1ComputesComputeIdNodesList"];
+        get: operations["V1ComputesNodesList"];
         put?: never;
         post?: never;
         delete?: never;
@@ -372,7 +372,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/nodes/{node_id}": {
+    "/v1/computes/{compute}/nodes/{node_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -383,7 +383,7 @@ export interface paths {
          * Read a node
          * @description One machine as the control plane knows it, including the `provider_binding` it was launched under.
          */
-        get: operations["V1ComputesComputeIdNodesNodeIdRead"];
+        get: operations["V1ComputesNodesNodeIdRead"];
         put?: never;
         post?: never;
         /**
@@ -392,13 +392,13 @@ export interface paths {
          *
          *     If the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with a new `id`. The old node's tombstone remains.
          */
-        delete: operations["V1ComputesComputeIdNodesNodeIdDrain"];
+        delete: operations["V1ComputesNodesNodeIdDrain"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/shell/down": {
+    "/v1/computes/{compute}/shell/down": {
         parameters: {
             query?: never;
             header?: never;
@@ -413,7 +413,7 @@ export interface paths {
          *
          *     Not resumable. A dropped stream is a dead session; open another.
          */
-        get: operations["V1ComputesComputeIdShellDownDown"];
+        get: operations["V1ComputesShellDownDown"];
         put?: never;
         post?: never;
         delete?: never;
@@ -422,7 +422,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute_id}/shell/up": {
+    "/v1/computes/{compute}/shell/up": {
         parameters: {
             query?: never;
             header?: never;
@@ -441,7 +441,7 @@ export interface paths {
          *
          *     Paired with `GET .../down` by the `cid` the caller mints — the two are one session, and HTTP/1.1 will not carry both directions on a single request.
          */
-        post: operations["V1ComputesComputeIdShellUpUp"];
+        post: operations["V1ComputesShellUpUp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2451,12 +2451,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdRead: {
+    V1ComputesRead: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2497,7 +2498,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdDestroy: {
+    V1ComputesDestroy: {
         parameters: {
             query?: never;
             header: {
@@ -2505,7 +2506,8 @@ export interface operations {
                 "Idempotency-Key": string;
             };
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2564,14 +2566,15 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdUpdate: {
+    V1ComputesUpdate: {
         parameters: {
             query?: never;
             header: {
                 "If-Match": string;
             };
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2634,7 +2637,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdExecRun: {
+    V1ComputesExecRun: {
         parameters: {
             query: {
                 /** @description The command line, run by the node's shell. */
@@ -2644,7 +2647,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2705,7 +2709,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdFilesLs: {
+    V1ComputesFilesLs: {
         parameters: {
             query: {
                 /** @description The path to list, on the node. */
@@ -2715,7 +2719,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2776,7 +2781,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdFilesUpload: {
+    V1ComputesFilesUpload: {
         parameters: {
             query: {
                 /** @description Where to write it, on the node. */
@@ -2786,7 +2791,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2847,7 +2853,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdFilesRm: {
+    V1ComputesFilesRm: {
         parameters: {
             query: {
                 /** @description The path to remove, on the node. */
@@ -2857,7 +2863,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2918,7 +2925,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdFilesContentDownload: {
+    V1ComputesFilesContentDownload: {
         parameters: {
             query: {
                 /** @description The path to read, on the node. */
@@ -2928,7 +2935,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -2987,7 +2995,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdForwardDownDown: {
+    V1ComputesForwardDownDown: {
         parameters: {
             query: {
                 /** @description The connection id shared with `up`. */
@@ -2995,7 +3003,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3054,7 +3063,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdForwardUpUp: {
+    V1ComputesForwardUpUp: {
         parameters: {
             query: {
                 /** @description The connection id, minted by the caller, shared with `down`. */
@@ -3065,7 +3074,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3113,12 +3123,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdGenerationsListGenerations: {
+    V1ComputesGenerationsListGenerations: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3159,7 +3170,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdGenerationsCreateGeneration: {
+    V1ComputesGenerationsCreateGeneration: {
         parameters: {
             query?: never;
             header: {
@@ -3167,7 +3178,8 @@ export interface operations {
                 "Idempotency-Key": string;
             };
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3239,12 +3251,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdGenerationsNumberGetGeneration: {
+    V1ComputesGenerationsNumberGetGeneration: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
                 number: number;
             };
             cookie?: never;
@@ -3286,12 +3299,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdLeaseClaimLease: {
+    V1ComputesLeaseClaimLease: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3345,12 +3359,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdLeaseReleaseLease: {
+    V1ComputesLeaseReleaseLease: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3389,7 +3404,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdMetricsHistory: {
+    V1ComputesMetricsHistory: {
         parameters: {
             query?: {
                 /** @description Milliseconds since the epoch the range starts at. */
@@ -3409,7 +3424,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3450,7 +3466,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdMetricsLatestLatest: {
+    V1ComputesMetricsLatestLatest: {
         parameters: {
             query?: {
                 /** @description Keeps the nodes named. */
@@ -3460,7 +3476,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3501,7 +3518,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdNodesList: {
+    V1ComputesNodesList: {
         parameters: {
             query?: {
                 include_terminal?: boolean;
@@ -3509,7 +3526,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3550,12 +3568,13 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdNodesNodeIdRead: {
+    V1ComputesNodesNodeIdRead: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
                 node_id: string;
             };
             cookie?: never;
@@ -3597,14 +3616,15 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdNodesNodeIdDrain: {
+    V1ComputesNodesNodeIdDrain: {
         parameters: {
             query?: never;
             header: {
                 "Idempotency-Key": string;
             };
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
                 node_id: string;
             };
             cookie?: never;
@@ -3655,7 +3675,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdShellDownDown: {
+    V1ComputesShellDownDown: {
         parameters: {
             query: {
                 /** @description The session id shared with `up`. */
@@ -3663,7 +3683,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3722,7 +3743,7 @@ export interface operations {
             };
         };
     };
-    V1ComputesComputeIdShellUpUp: {
+    V1ComputesShellUpUp: {
         parameters: {
             query: {
                 /** @description The session id, minted by the caller, shared with `down`. */
@@ -3740,7 +3761,8 @@ export interface operations {
             };
             header?: never;
             path: {
-                compute_id: string;
+                /** @description The compute's name or id. */
+                compute: string;
             };
             cookie?: never;
         };
@@ -3800,6 +3822,7 @@ export interface operations {
     V1EventsStream: {
         parameters: {
             query?: {
+                /** @description The compute's name or id. */
                 compute?: string | null;
                 task?: string | null;
                 types?: string[] | null;
@@ -3841,9 +3864,10 @@ export interface operations {
     V1EventsLogLog: {
         parameters: {
             query?: {
+                /** @description The compute's name or id. */
+                compute?: string | null;
                 cursor?: string | null;
                 limit?: number;
-                compute?: string | null;
                 task?: string | null;
                 node?: string | null;
                 types?: string[] | null;
@@ -4547,9 +4571,10 @@ export interface operations {
     V1TasksList: {
         parameters: {
             query?: {
+                /** @description The compute's name or id. */
+                compute?: string | null;
                 cursor?: string | null;
                 limit?: number;
-                compute?: string | null;
                 /** @description Any of these; repeat it for more than one. */
                 state?: ("queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate")[] | null;
                 /** @description Groups the tasks of an `&`/`gather`/`map`. A field, not a resource. */

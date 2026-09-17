@@ -71,8 +71,8 @@ export function Write({ from }: { from?: FunctionRef }) {
   }
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(760px,100%)' }} role="dialog" aria-label="Write a function">
+    <Scrim label="Write a function">
+      <div className="sheet" style={{ width: 'min(760px,100%)' }}>
         <div className="sheet-head">
           <b>{from ? `Edit ${from.name ?? 'function'}` : 'New function'}</b>
           <span className="sub">runs on a machine, not here</span>

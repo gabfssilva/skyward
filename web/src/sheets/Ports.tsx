@@ -25,8 +25,8 @@ export function Ports({ computeId }: { computeId: string }) {
   }
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(560px,100%)' }} role="dialog" aria-label="Ports">
+    <Scrim label="Ports">
+      <div className="sheet" style={{ width: 'min(560px,100%)' }}>
         <div className="sheet-head">
           <b>Ports on {compute.name}</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />
@@ -50,7 +50,7 @@ export function Ports({ computeId }: { computeId: string }) {
           ) : (
             <div className="sub">No port is bridged yet.</div>
           )}
-          <form style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 80px auto', gap: 9, alignItems: 'end' }} onSubmit={submit}>
+          <form className="portform" onSubmit={submit}>
             <div className="field">
               <label htmlFor="pt-route">Route</label>
               <input id="pt-route" name="route" placeholder="inference" required />

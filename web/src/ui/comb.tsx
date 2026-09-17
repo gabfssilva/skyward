@@ -1,4 +1,4 @@
-import { memo, type CSSProperties } from 'react'
+import { memo, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { KIND, KIND_FILL, SQ3, clamp, hexCols, hexPts, hexSize, hive, hiveSize, money, ringsFor, spiral, type NodeMetrics } from '../state/model'
 import { Tick } from './primitives'
 
@@ -84,7 +84,7 @@ function Hexes({
   const { W, H, width, height, pos } = layout === 'hive' ? hiveGeometry(n, forcedSize || hiveSize(n, room ?? 980, room ?? 640)) : gridGeometry(n, forcedCols, forcedSize, room)
   const P = `${W / 2},0 ${W},${(H / 4).toFixed(2)} ${W},${((H * 3) / 4).toFixed(2)} ${W / 2},${H.toFixed(2)} 0,${((H * 3) / 4).toFixed(2)} 0,${(H / 4).toFixed(2)}`
   return (
-    <div className="comb" style={{ maxWidth: Math.ceil(width), '--w': `${Math.ceil(width)}px` } as CSSProperties}>
+    <div className="comb" style={{ maxWidth: Math.ceil(width), '--w': `${Math.ceil(width)}px` }}>
       <svg viewBox={`-1 -1 ${(width + 2).toFixed(1)} ${(height + 2).toFixed(1)}`} style={{ width: '100%' }} role="img" aria-label={`${n} nodes${name ? ' of ' + name : ''}`}>
         {nodes.map((node, i) => {
           const [x, y] = pos(i)
@@ -93,7 +93,7 @@ function Hexes({
             <g
               key={node.rank}
               className={`hx ${k}`}
-              style={{ '--x': `${x.toFixed(1)}px`, '--y': `${y.toFixed(1)}px` } as CSSProperties}
+              style={{ '--x': `${x.toFixed(1)}px`, '--y': `${y.toFixed(1)}px` }}
               data-id={computeId}
               data-rank={node.rank}
               data-tip={tipOf(node)}
@@ -165,6 +165,8 @@ const busyLabel = (item: HiveItem, rank: number): string => {
  *
  * A row's captions are a grid under the drawing rather than text inside it: a name
  * wider than its column scrolls within it, where SVG text would run into its neighbour's.
+ * The room is the card's width up to ``room``, measured rather than assumed, so a phone
+ * gets the spiral whose captions wrap instead of a row too narrow to caption.
  */
 export function Hives({
   items,
@@ -177,6 +179,16 @@ export function Hives({
   tall?: number
   onOpen?: (computeId: string) => void
 }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(room)
+  useLayoutEffect(() => {
+    const at = box.current
+    if (!at) return
+    const watch = new ResizeObserver(() => setWidth(at.clientWidth))
+    watch.observe(at)
+    return () => watch.disconnect()
+  }, [items.length > 0])
+  const wide = Math.min(room, width)
   const order = items.slice().sort((a, b) => b.nodes.length - a.nodes.length)
   const C = order.length
   if (!C) return null
@@ -185,7 +197,7 @@ export function Hives({
     { cells: spiral(C), row: false },
   ].map(({ cells, row }) => {
     const bb = bounds(cells)
-    return { cells, bb, row, R: Math.min(room / (bb.w * GAP), tall / (bb.h * GAP)) }
+    return { cells, bb, row, R: Math.min(wide / (bb.w * GAP), tall / (bb.h * GAP)) }
   })
   const pick = fits.sort((x, y) => y.R - x.R)[0]!
   const R = Math.min(170, pick.R)
@@ -207,7 +219,7 @@ export function Hives({
           const [x, y] = lay.cells[j]!
           const kind = KIND(node.state)
           const tip = `${item.name} · rank ${node.rank} · ${node.state === 'ready' ? `gpu ${Math.round(node.m?.gpu ?? 0)}% · ${busyLabel(item, node.rank)}` : node.state}`
-          const style = { '--x': `${(cx + x - lay.w / 2).toFixed(1)}px`, '--y': `${(cy + y - lay.h / 2).toFixed(1)}px` } as CSSProperties
+          const style: CSSProperties = { '--x': `${(cx + x - lay.w / 2).toFixed(1)}px`, '--y': `${(cy + y - lay.h / 2).toFixed(1)}px` }
           return (
             <g key={node.rank} className={`hx ${kind}`} style={style} data-id={item.id} data-rank={node.rank} data-tip={tip} onClick={() => onOpen?.(item.id)}>
               <polygon className="cell" points={P} fill={tone(node)} />
@@ -220,7 +232,7 @@ export function Hives({
   })
 
   return (
-    <>
+    <div ref={box}>
       <div className="comb" style={{ maxWidth: Math.ceil(W), margin: '0 auto' }}>
         <svg viewBox={`-2 -2 ${(W + 4).toFixed(1)} ${(H + 4).toFixed(1)}`} style={{ width: '100%' }} role="img" aria-label={`${C} computes`}>
           {groups}
@@ -254,6 +266,6 @@ export function Hives({
           })}
         </div>
       )}
-    </>
+    </div>
   )
 }

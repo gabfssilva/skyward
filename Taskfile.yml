@@ -242,6 +242,13 @@ tasks:
       - npm ci
       - npm run build
 
+  web:responsive:
+    desc: Check the browser console at phone, iPad and desktop widths, in Chromium and WebKit
+    dir: web
+    cmds:
+      - npx playwright install chromium webkit
+      - npm run test:responsive -- {{.CLI_ARGS}}
+
   # ── Dev ──────────────────────────────────────────────────
 
   setup:

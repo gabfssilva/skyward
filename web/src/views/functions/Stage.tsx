@@ -3,6 +3,7 @@ import { useLibrary, useStore } from '../../state/store'
 import { whereOf } from '../../state/functions'
 import { ago, ms } from '../../state/model'
 import { Icon } from '../../ui/icons'
+import { TableScroll } from '../../ui/primitives'
 import { openFunction, openRun, openWrite } from '../../sheets'
 
 const NONE: never[] = []
@@ -55,8 +56,8 @@ export function Stage() {
           New function
         </button>
       </div>
-      <div className="scroll">
-        <table>
+      <TableScroll label="Functions">
+        <table className="cards fnlist">
           <thead>
             <tr>
               <th>Function</th>
@@ -78,7 +79,7 @@ export function Stage() {
             )}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {library?.cursor ? (
         <button className="btn sm" style={{ marginTop: 10 }} disabled={library.loading} onClick={() => void pageLibrary()}>
           Show older functions

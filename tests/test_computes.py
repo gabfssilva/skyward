@@ -100,6 +100,45 @@ def describe_naming_a_compute() -> None:
         assert first.id != second.id, "a name nobody gave is not a name two computes share"
 
 
+ROUTES = (
+    "/v1/computes/{}",
+    "/v1/computes/{}/nodes",
+    "/v1/computes/{}/generations",
+    "/v1/computes/{}/generations/1",
+    "/v1/computes/{}/metrics/latest",
+    "/v1/tasks?compute={}",
+    "/v1/events/log?compute={}",
+)
+"""The routes that read a compute, each with a hole where the compute goes."""
+
+
+def describe_reaching_a_compute_by_name() -> None:
+    @pytest.mark.parametrize("route", ROUTES[1:])
+    async def every_route_answers_by_name_what_it_answers_by_id(tmp_path: Path, route: str) -> None:
+        await connect(tmp_path / "skyward.sqlite")
+        svc = services()
+        assert isinstance(svc.tasks, TaskStore) and isinstance(svc.nodes, NodeStore)
+        compute, _ = await svc.computes.create(ComputeCreate(spec=SPEC, name="training"), idempotency_key="training")
+        await svc.nodes.request(compute.id, compute.generation)
+        await _submit(svc.tasks, compute.id)
+
+        async with AsyncTestClient(app=create_app(svc, logging=False)) as http:
+            by_id = await http.get(route.format(compute.id))
+            by_name = await http.get(route.format("training"))
+
+        assert by_id.status_code == 200, by_id.text
+        assert by_name.json() == by_id.json()
+
+    @pytest.mark.parametrize("route", ROUTES)
+    async def a_compute_nobody_has_is_not_found(tmp_path: Path, route: str) -> None:
+        await connect(tmp_path / "skyward.sqlite")
+        async with AsyncTestClient(app=create_app(services(), logging=False)) as http:
+            answer = await http.get(route.format("nobody"))
+
+        assert answer.status_code == 404, answer.text
+        assert answer.json()["code"] == "not_found"
+
+
 def describe_listing_computes() -> None:
     async def an_empty_page_has_no_cursor(tmp_path: Path) -> None:
         store = await _store(tmp_path)

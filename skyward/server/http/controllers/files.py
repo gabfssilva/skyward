@@ -22,17 +22,6 @@ def _target(node: str) -> ports.Target:
     return _rank(node)
 
 
-async def _identified(computes: ports.Computes, ref: str) -> str:
-    """The id behind a reference, because the links a compute is reached over are keyed by it.
-
-    Every other route takes a name or an id and means the same compute by either.
-    These reach the SSH connections this daemon is holding, which are indexed by
-    id alone — so a name handed straight through would look like a compute nobody
-    is connected to, which is a different answer entirely.
-    """
-    return (await computes.get(ref)).id
-
-
 def _rank(node: str) -> int:
     """The same, for the endpoints that answer from exactly one node."""
     if not node.lstrip("-").isdigit():
@@ -41,7 +30,7 @@ def _rank(node: str) -> int:
 
 
 class FileController(Controller):
-    path = "/computes/{compute_id:str}"
+    path = "/computes/{compute:str}"
     tags = ["files"]
 
     @get(
@@ -54,11 +43,10 @@ class FileController(Controller):
         self,
         compute_id: str,
         files: ports.Files,
-        computes: ports.Computes,
         path: str = Parameter(query="path", description="The path to list, on the node."),
         node: str = Parameter(query="node", default="0", description=NODE),
     ) -> dict[str, Result]:
-        return dict(await files.ls(await _identified(computes, compute_id), _target(node), path))
+        return dict(await files.ls(compute_id, _target(node), path))
 
     @delete(
         "/files",
@@ -74,11 +62,10 @@ class FileController(Controller):
         self,
         compute_id: str,
         files: ports.Files,
-        computes: ports.Computes,
         path: str = Parameter(query="path", description="The path to remove, on the node."),
         node: str = Parameter(query="node", default="all", description=NODE),
     ) -> dict[str, Result]:
-        return dict(await files.rm(await _identified(computes, compute_id), _target(node), path))
+        return dict(await files.rm(compute_id, _target(node), path))
 
     @put(
         "/files",
@@ -96,11 +83,10 @@ class FileController(Controller):
         compute_id: str,
         request: Request,
         files: ports.Files,
-        computes: ports.Computes,
         path: str = Parameter(query="path", description="Where to write it, on the node."),
         node: str = Parameter(query="node", default="all", description=NODE),
     ) -> dict[str, str | None]:
-        return dict(await files.put(await _identified(computes, compute_id), _target(node), path, await request.body()))
+        return dict(await files.put(compute_id, _target(node), path, await request.body()))
 
     @get(
         "/files/content",
@@ -124,13 +110,12 @@ class FileController(Controller):
         self,
         compute_id: str,
         files: ports.Files,
-        computes: ports.Computes,
         path: str = Parameter(query="path", description="The path to read, on the node."),
         node: str = Parameter(query="node", default="0", description="Which node to read from: a rank."),
     ) -> Stream:
         if node == "all":
             raise CapabilityMismatchError("a download comes from one node; name a rank")
-        return Stream(files.get(await _identified(computes, compute_id), _rank(node), path), media_type=BYTES)
+        return Stream(files.get(compute_id, _rank(node), path), media_type=BYTES)
 
     @post(
         "/exec",
@@ -148,8 +133,7 @@ class FileController(Controller):
         self,
         compute_id: str,
         files: ports.Files,
-        computes: ports.Computes,
         command: str = Parameter(query="command", description="The command line, run by the node's shell."),
         node: str = Parameter(query="node", default="all", description=NODE),
     ) -> dict[str, Result]:
-        return dict(await files.run(await _identified(computes, compute_id), _target(node), command))
+        return dict(await files.run(compute_id, _target(node), command))

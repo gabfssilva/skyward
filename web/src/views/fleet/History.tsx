@@ -3,7 +3,7 @@ import type { Compute, Offer } from '../../api/client'
 import { useHistory, useStore } from '../../state/store'
 import type { HistoryFilters } from '../../state/store'
 import { CAUSE, DAY, ago, callsOf, dur, endedAt, failedOf, money, ranOf, targetOf } from '../../state/model'
-import { Pill } from '../../ui/primitives'
+import { Pill, TableScroll } from '../../ui/primitives'
 
 const SINCE: Record<HistoryFilters['since'], number> = { '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY, all: Infinity }
 
@@ -98,7 +98,7 @@ export function History() {
           ))}
         </div>
       </div>
-      <div className="scroll">
+      <TableScroll label="History">
         <table>
           <thead>
             <tr>
@@ -152,7 +152,7 @@ export function History() {
             )}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {pages?.cursor ? (
         <button className="btn sm" style={{ marginTop: 10 }} disabled={pages.loading} onClick={() => void pageHistory()}>
           Show older

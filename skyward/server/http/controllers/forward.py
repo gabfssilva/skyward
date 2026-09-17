@@ -12,7 +12,7 @@ BYTES = "application/octet-stream"
 
 
 class ForwardController(Controller):
-    path = "/computes/{compute_id:str}/forward"
+    path = "/computes/{compute:str}/forward"
     tags = ["forward"]
 
     @post(

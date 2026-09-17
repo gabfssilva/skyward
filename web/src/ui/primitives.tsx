@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Icon, type IconName } from './icons'
 import { clamp, legendOf, tally } from '../state/model'
 import { useFunctionLabel } from '../state/store'
@@ -153,7 +154,7 @@ export function Tick({ text }: { text: string }) {
   }, [])
 
   return (
-    <span className={lap === null ? 'tick' : 'tick moving'} ref={box} style={lap === null ? undefined : ({ '--lap': `${lap}s` } as CSSProperties)}>
+    <span className={lap === null ? 'tick' : 'tick moving'} ref={box} style={lap === null ? undefined : { '--lap': `${lap}s` }}>
       <span>
         <span ref={copy}>{text}</span>
         {lap === null ? null : <span aria-hidden="true">{text}</span>}
@@ -162,26 +163,98 @@ export function Tick({ text }: { text: string }) {
   )
 }
 
-/** The one floating tooltip, fed by any `data-tip` attribute on the page. */
+/** A table that scrolls sideways inside its card when the card is narrower, and a stop for the keyboard that scrolls it. */
+export function TableScroll({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="tablebox" role="region" aria-label={label} tabIndex={0}>
+      {children}
+    </div>
+  )
+}
+
+/** The element a `data-tip` belongs to, and its text. */
+const tipAt = (at: Element | null): readonly [Element, string] | null => {
+  const text = at?.getAttribute('data-tip')
+  return at && text ? [at, text] : null
+}
+
+const targetOf = (e: Event): Element | null => (e.target instanceof Element ? e.target : null)
+
+/**
+ * The one floating tooltip, fed by any `data-tip` attribute on the page.
+ *
+ * A mouse or a pen shows it beside the pointer while it rests on the element, and keyboard focus shows it under the
+ * element. A finger has no hover, so a tap shows it under what was tapped, and the next tap, a scroll, Escape or a
+ * new page takes it away; only a tapped one goes with a scroll, or a log that follows its tail would keep taking a
+ * resting pointer's away. It is a popover rather than a fixed box so that it is drawn over an open sheet, which sits
+ * in the top layer too.
+ */
 export function Tip() {
   const ref = useRef<HTMLDivElement>(null)
+  const { pathname } = useLocation()
+
   useEffect(() => {
-    const move = (e: MouseEvent) => {
-      const tip = ref.current
-      if (!tip) return
-      const target = e.target instanceof Element ? e.target.closest('[data-tip]') : null
-      const text = target instanceof HTMLElement || target instanceof SVGElement ? target.getAttribute('data-tip') : null
-      if (!text) {
-        tip.classList.remove('on')
-        return
-      }
-      tip.textContent = text
-      tip.classList.add('on')
-      tip.style.left = clamp(e.clientX + 14, 8, innerWidth - tip.offsetWidth - 8) + 'px'
-      tip.style.top = clamp(e.clientY - tip.offsetHeight - 12, 8, innerHeight - tip.offsetHeight - 8) + 'px'
+    if (ref.current?.matches(':popover-open')) ref.current.hidePopover()
+  }, [pathname])
+
+  useEffect(() => {
+    const tip = ref.current
+    if (!tip) return
+    let tapped = false
+    const hide = () => {
+      tapped = false
+      if (tip.matches(':popover-open')) tip.hidePopover()
     }
-    document.addEventListener('mousemove', move)
-    return () => document.removeEventListener('mousemove', move)
+    const show = ([at, text]: readonly [Element, string], pointer?: PointerEvent) => {
+      tip.textContent = text
+      if (!tip.matches(':popover-open')) tip.showPopover()
+      const box = at.getBoundingClientRect()
+      const [left, top] = pointer
+        ? [pointer.clientX + 14, pointer.clientY - tip.offsetHeight - 12]
+        : [box.left + box.width / 2 - tip.offsetWidth / 2, box.bottom + 8]
+      tip.style.left = clamp(left, 8, innerWidth - tip.offsetWidth - 8) + 'px'
+      tip.style.top = clamp(top, 8, innerHeight - tip.offsetHeight - 8) + 'px'
+    }
+    const move = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return
+      const hit = tipAt(targetOf(e)?.closest('[data-tip]') ?? null)
+      if (hit) show(hit, e)
+      else hide()
+    }
+    const tap = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      const hit = tipAt(targetOf(e)?.closest('[data-tip]') ?? null)
+      if (!hit) return hide()
+      show(hit)
+      tapped = true
+    }
+    const scroll = () => {
+      if (tapped) hide()
+    }
+    const focus = (e: FocusEvent) => {
+      const at = targetOf(e)
+      if (!at?.matches(':focus-visible')) return
+      const hit = tipAt(at.closest('[data-tip]') ?? at.querySelector('[data-tip]'))
+      if (hit) show(hit)
+    }
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hide()
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', tap)
+    document.addEventListener('focusin', focus)
+    document.addEventListener('focusout', hide)
+    document.addEventListener('keydown', escape)
+    document.addEventListener('scroll', scroll, { capture: true, passive: true })
+    return () => {
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', tap)
+      document.removeEventListener('focusin', focus)
+      document.removeEventListener('focusout', hide)
+      document.removeEventListener('keydown', escape)
+      document.removeEventListener('scroll', scroll, { capture: true })
+    }
   }, [])
-  return <div className="tip" id="tip" ref={ref} />
+
+  return <div className="tip" id="tip" ref={ref} popover="manual" role="tooltip" />
 }

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 import msgspec
 from litestar import Controller, MediaType, Response, delete, get, post
+from litestar.di import Provide
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -11,6 +12,7 @@ from litestar.response import Stream
 from skyward.server.application import ports
 from skyward.server.application.reconciler import Wakeup
 from skyward.server.http.exceptions import failures
+from skyward.server.http.references import narrowed
 from skyward.shared import codec
 from skyward.shared.schemas import (
     Execution,
@@ -55,6 +57,7 @@ async def framed(frames: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
 class TaskController(Controller):
     path = "/tasks"
     tags = ["tasks"]
+    dependencies = {"compute_id": Provide(narrowed)}
 
     @get(
         summary="List tasks",
@@ -70,15 +73,15 @@ class TaskController(Controller):
     async def list(
         self,
         tasks: ports.Tasks,
+        compute_id: str | None,
         cursor: str | None = None,
         limit: int = Parameter(default=50, ge=1),
-        compute: str | None = None,
         task_states: list[TaskState] | None = Parameter(query="state", default=None, description="Any of these; repeat it for more than one."),
         correlation_id: str | None = Parameter(default=None, description="Groups the tasks of an `&`/`gather`/`map`. A field, not a resource."),
         function: str | None = Parameter(default=None, description="A function's name, which takes in every upload of its code."),
         order: TaskOrder = "submitted",
     ) -> Page[Task]:
-        return await tasks.list(cursor, limit, compute, tuple(task_states or ()), correlation_id, function, order)
+        return await tasks.list(cursor, limit, compute_id, tuple(task_states or ()), correlation_id, function, order)
 
     @post(
         status_code=201,
@@ -108,7 +111,7 @@ class TaskController(Controller):
     ) -> Response[Task]:
         task, created = await tasks.submit(await pickled(data), idempotency_key)
         wake("task.changed", task_id=task.id)
-        wake("compute.changed", compute_id=data.compute)
+        wake("compute.changed", compute_id=task.compute_id)
         return Response(task, status_code=201 if created else 200)
 
     @get(

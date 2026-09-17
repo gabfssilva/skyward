@@ -25,8 +25,8 @@ export function Function({ lineage }: { lineage: string }) {
   const text = fn?.source ?? fn?.excerpt
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(820px,100%)' }} role="dialog" aria-label="Function">
+    <Scrim label="Function" dismissible>
+      <div className="sheet" style={{ width: 'min(820px,100%)' }}>
         <div className="sheet-head">
           <b>{fn?.qualname ?? fn?.name ?? 'Function'}</b>
           {fn ? <span className="tag">v{fn.version}</span> : null}
@@ -61,7 +61,7 @@ export function Function({ lineage }: { lineage: string }) {
                 </div>
               </div>
               {text ? (
-                <pre className="codebox" style={{ maxHeight: 'min(560px, 60vh)', whiteSpace: 'pre' }}>
+                <pre className="codebox" style={{ maxHeight: 'min(560px, 60svh)', whiteSpace: 'pre' }}>
                   {text}
                 </pre>
               ) : (

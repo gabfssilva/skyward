@@ -73,7 +73,7 @@ class ComputeController(Controller):
         return Response(compute, status_code=201 if created else 200, headers=etag(compute.revision))
 
     @get(
-        "/{compute_id:str}",
+        "/{compute:str}",
         summary="Read a compute",
         description="Accepts an id or a name. The response always carries both.",
         responses=failures(404),
@@ -83,7 +83,7 @@ class ComputeController(Controller):
         return Response(compute, headers=etag(compute.revision))
 
     @patch(
-        "/{compute_id:str}",
+        "/{compute:str}",
         summary="Change a compute's spec",
         description=(
             "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\n"
@@ -108,7 +108,7 @@ class ComputeController(Controller):
         return Response(compute, headers=etag(compute.revision))
 
     @delete(
-        "/{compute_id:str}",
+        "/{compute:str}",
         status_code=202,
         summary="Mark a compute for destruction",
         description=(
@@ -131,7 +131,7 @@ class ComputeController(Controller):
         return Response(compute, status_code=202, headers=etag(compute.revision))
 
     @get(
-        "/{compute_id:str}/generations",
+        "/{compute:str}/generations",
         summary="List definition history",
         description="Every definition this compute has had, newest last. A rollback is a generation too, so this grows.",
         responses=failures(404),
@@ -140,7 +140,7 @@ class ComputeController(Controller):
         return await generations.list(compute_id)
 
     @get(
-        "/{compute_id:str}/generations/{number:int}",
+        "/{compute:str}/generations/{number:int}",
         summary="Read a generation",
         description="One definition as it was frozen, and whether the machines were ever built to match it.",
         responses=failures(404),
@@ -149,7 +149,7 @@ class ComputeController(Controller):
         return await generations.get(compute_id, number)
 
     @post(
-        "/{compute_id:str}/generations",
+        "/{compute:str}/generations",
         status_code=202,
         summary="Create a generation (roll back to an earlier one)",
         description=(
@@ -174,7 +174,7 @@ class ComputeController(Controller):
         return generation
 
     @put(
-        "/{compute_id:str}/lease",
+        "/{compute:str}/lease",
         summary="Claim or renew ownership",
         description=(
             "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, "
@@ -189,7 +189,7 @@ class ComputeController(Controller):
         return await computes.claim_lease(compute_id, data)
 
     @delete(
-        "/{compute_id:str}/lease",
+        "/{compute:str}/lease",
         status_code=204,
         summary="Release ownership",
         description="Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",

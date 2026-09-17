@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from litestar import Controller, get
+from litestar.di import Provide
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
+from skyward.server.http.references import narrowed
 from skyward.shared.events import Event, LogEntry
 from skyward.shared.schemas import Page
 
@@ -23,6 +25,7 @@ hands over runs of events, and a run goes out as one write of one message per ev
 class EventController(Controller):
     path = "/events"
     tags = ["events"]
+    dependencies = {"compute_id": Provide(narrowed)}
 
     @get(
         summary="Event stream (SSE)",
@@ -66,13 +69,13 @@ class EventController(Controller):
     async def stream(
         self,
         events: ports.Events,
-        compute: str | None = None,
+        compute_id: str | None,
         task: str | None = None,
         types: list[str] | None = None,
         last_event_id: str | None = Parameter(header="Last-Event-ID", default=None),
     ) -> Stream:
         async def messages() -> AsyncGenerator[bytes, None]:
-            async for run in events.stream(last_event_id, compute, task, tuple(types) if types else None):
+            async for run in events.stream(last_event_id, compute_id, task, tuple(types) if types else None):
                 yield b"".join(MESSAGE % (sequence, event_type.encode(), payload) for sequence, event_type, payload in run)
 
         return Stream(
@@ -99,9 +102,9 @@ class EventController(Controller):
     async def log(
         self,
         events: ports.Events,
+        compute_id: str | None,
         cursor: str | None = None,
         limit: int = Parameter(default=200, ge=1, le=1000),
-        compute: str | None = None,
         task: str | None = None,
         node: str | None = None,
         types: list[str] | None = None,
@@ -110,7 +113,7 @@ class EventController(Controller):
         return await events.log(
             cursor,
             limit,
-            compute=compute,
+            compute=compute_id,
             task=task,
             node=node,
             types=tuple(types) if types else None,

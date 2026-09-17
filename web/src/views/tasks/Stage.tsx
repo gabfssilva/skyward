@@ -3,7 +3,7 @@ import type { Node, Task } from '../../api/client'
 import { computeById, freshest, useStore, useTasks } from '../../state/store'
 import type { TaskFilters } from '../../state/store'
 import { ago, dur, ms, readyOf } from '../../state/model'
-import { Fn, Pill } from '../../ui/primitives'
+import { Fn, Pill, TableScroll } from '../../ui/primitives'
 
 const NONE: never[] = []
 
@@ -107,8 +107,8 @@ export function Stage() {
           ))}
         </select>
       </div>
-      <div className="scroll">
-        <table>
+      <TableScroll label="Tasks">
+        <table className="cards tasklist">
           <thead>
             <tr>
               <th>Function</th>
@@ -132,7 +132,7 @@ export function Stage() {
             )}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {feed?.cursor ? (
         <button className="btn sm" style={{ marginTop: 10 }} disabled={feed.loading} onClick={() => void pageTasks()}>
           Show older tasks

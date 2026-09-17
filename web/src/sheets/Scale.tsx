@@ -33,8 +33,8 @@ export function Scale({ computeId }: { computeId: string }) {
   }
 
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(480px,100%)' }} role="dialog" aria-label="Scale">
+    <Scrim label="Scale">
+      <div className="sheet" style={{ width: 'min(480px,100%)' }}>
         <div className="sheet-head">
           <b>Scale {compute.name}</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />

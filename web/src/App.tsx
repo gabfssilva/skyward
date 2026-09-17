@@ -17,7 +17,7 @@ import { money, rateOf } from './state/model'
 import { api } from './api/client'
 import { MOCK } from './api/mock'
 import { applyStoredTheme, setTheme, type Theme } from './theme'
-import './theme.css'
+import './styles/index.css'
 
 const VIEWS: readonly (readonly [string, string, IconName])[] = [
   ['/', 'Computes', 'fleet'],
@@ -52,10 +52,12 @@ function FleetTag() {
     <button className="tag fleet" title="Computes" onClick={() => navigate('/')}>
       {money(rate, 0)}
       <small>/h</small>
-      <i />
-      {ready.length} nodes
-      <i />
-      {gpus} GPUs
+      <span className="fleet-more">
+        <i />
+        {ready.length} nodes
+        <i />
+        {gpus} GPUs
+      </span>
     </button>
   )
 }
@@ -83,34 +85,39 @@ function Bar() {
       </div>
       <nav id="nav" role="tablist">
         {VIEWS.map(([path, label, icon]) => (
-          <button key={path} role="tab" aria-selected={at === path} onClick={() => navigate(path)}>
+          <button key={path} role="tab" aria-selected={at === path} aria-label={label} data-view={path} onClick={() => navigate(path)}>
             <Icon name={icon} />
             <span>{label}</span>
           </button>
         ))}
       </nav>
-      <div className="row" style={{ marginLeft: 'auto', gap: 6, minWidth: 0 }}>
-        {MOCK ? <span className="tag proto">example data</span> : null}
+      <div className="bar-end">
         {pathname === '/' ? null : <FleetTag />}
-        <span className="tag" id="daemon-tag" title={version ? `v${version}` : undefined}>
-          <i className="dot ready" /> <span className="tag-t">127.0.0.1:17590{version ? ` · v${version}` : ''}</span>
-        </span>
-        <div className="theme" id="theme">
-          {THEMES.map(([key, icon]) => (
-            <button
-              key={key}
-              className="iconbtn"
-              aria-pressed={theme === key}
-              title={key}
-              onClick={() => {
-                setTheme(key)
-                setThemeState(key)
-              }}
-            >
-              <Icon name={icon} />
-            </button>
-          ))}
+        <div className="bar-status" id="bar-status" popover="auto">
+          {MOCK ? <span className="tag proto">example data</span> : null}
+          <span className="tag" id="daemon-tag" title={version ? `v${version}` : undefined}>
+            <i className="dot ready" /> <span className="tag-t">127.0.0.1:17590{version ? ` · v${version}` : ''}</span>
+          </span>
+          <div className="theme" id="theme">
+            {THEMES.map(([key, icon]) => (
+              <button
+                key={key}
+                className="iconbtn"
+                aria-pressed={theme === key}
+                title={key}
+                onClick={() => {
+                  setTheme(key)
+                  setThemeState(key)
+                }}
+              >
+                <Icon name={icon} />
+              </button>
+            ))}
+          </div>
         </div>
+        <button className="iconbtn bar-more" popoverTarget="bar-status" title="Daemon and theme" aria-label="Daemon and theme">
+          <Icon name="more" />
+        </button>
         <button className="iconbtn" title="Search  ⌘K" aria-label="Search" onClick={openPalette}>
           <Icon name="search" />
         </button>

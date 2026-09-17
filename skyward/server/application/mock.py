@@ -171,6 +171,9 @@ class MockComputes:
     async def get(self, ref: str) -> Compute:
         return COMPUTE
 
+    async def identify(self, ref: str) -> str:
+        return ref
+
     async def list(
         self,
         cursor: str | None,

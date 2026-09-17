@@ -1,0 +1,69 @@
+.btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px;border-radius:var(--rs);
+  background:var(--sunk);font-size:13px;font-weight:600;transition:background .12s,color .12s}
+.btn svg{font-size:17px}
+.btn.primary{background:var(--accent);color:var(--on-accent)}
+.btn.ghost{background:transparent;color:var(--muted)}
+.btn.danger{color:var(--bad)}
+@media (hover:hover){
+  .btn:hover{background:var(--edge)}
+  .btn.primary:hover{filter:brightness(1.08);background:var(--accent)}
+  .btn.ghost:hover{background:var(--sunk);color:var(--ink)}
+  .btn.danger:hover{background:var(--bad-soft)}
+}
+.btn.sm{height:28px;padding:0 10px;font-size:12px;border-radius:8px}
+.btn.sm svg{font-size:15px}
+.btn[disabled]{opacity:.4;pointer-events:none}
+.iconbtn{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;color:var(--muted);font-size:19px}
+@media (hover:hover){.iconbtn:hover{background:var(--sunk);color:var(--ink)}}
+.iconbtn[aria-pressed="true"]{background:var(--panel);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+.tag{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:10px;background:var(--panel);color:var(--muted);font-size:12px;white-space:nowrap}
+.tag.proto{color:var(--warn);background:var(--warn-soft)}
+.kbd{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:5px;background:var(--sunk);color:var(--faint)}
+.pick{display:flex;flex-wrap:wrap;gap:2px;background:var(--sunk);border-radius:10px;padding:2px;font-size:12.5px}
+.pick button{color:var(--muted);font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap}
+.inspector .pick button{padding:4px 7px}
+.pick button[aria-selected="true"]{color:var(--ink);background:var(--panel)}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--sunk);font-size:12px;font-weight:500;color:var(--muted)}
+.chip[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:12px;color:var(--muted);font-weight:500}
+.field input,.field select{height:36px;padding:0 11px;border-radius:var(--rs);border:0;background:var(--sunk);font-size:13px}
+.field input:focus,.field select:focus{outline:2px solid var(--accent)}
+textarea.code{border:0;border-radius:var(--rs);background:var(--sunk);padding:10px 12px;resize:vertical;tab-size:4;
+  font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre;overflow:auto}
+textarea.code:focus{outline:2px solid var(--accent)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.dot.ready,.dot.running,.dot.succeeded{background:var(--ok)}
+.dot.requested,.dot.queued{background:var(--warn)}
+.dot.provisioning,.dot.connecting,.dot.bootstrapping{background:var(--boot)}
+.dot.deleting,.dot.draining{background:var(--faint)}
+.dot.failed,.dot.lost,.dot.degraded,.dot.timed_out{background:var(--bad)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
+.state.ready,.state.running,.state.succeeded{color:var(--ok)}
+.state.failed,.state.degraded,.state.lost,.state.timed_out{color:var(--bad)}
+.state.requested,.state.queued{color:var(--warn)}
+.state.deleted{color:var(--muted)}
+.state.provisioning,.state.connecting,.state.bootstrapping{color:var(--boot)}
+select.search{min-width:0;padding-right:8px;color:var(--ink)}
+.search{height:30px;border:0;border-radius:var(--rs);background:var(--sunk);padding:0 10px;font-size:12.5px;min-width:220px;font-family:inherit}
+.search:focus{outline:2px solid var(--accent-soft)}
+@media not all and (max-width:37.5em){.compact-only{display:none}}
+
+/* A finger gets a 44px target whatever the control looks like, and text fields at 16px, under which iOS zooms in on focus. */
+@media (any-pointer:coarse){
+  .btn,.iconbtn,.chip,.pick button,.bar nav button,.pkg button{position:relative}
+  .btn::after,.iconbtn::after,.chip::after,.pick button::after,.bar nav button::after,.pkg button::after{
+    content:"";position:absolute;left:50%;top:50%;width:max(100%,44px);height:max(100%,44px);transform:translate(-50%,-50%)}
+  .field input,.field select,.search,textarea.code,.palette input{font-size:16px}
+}
+
+/* ---------- a text that scrolls when it does not fit ---------- */
+.tick{display:block;min-width:0;overflow:hidden;white-space:nowrap}
+.tick span{display:inline-block}
+.tick.moving{mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent)}
+.tick.moving>span>span{margin-right:4ch}
+.tick.moving>span{animation:tick var(--lap) linear 1s infinite}
+@media (hover:hover){.tick.moving:hover>span{animation-play-state:paused}}
+@keyframes tick{to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.tick{overflow-x:auto}.tick.moving{mask-image:none}.tick [aria-hidden]{display:none}}

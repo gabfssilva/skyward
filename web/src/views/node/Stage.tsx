@@ -7,7 +7,7 @@ import type { Store } from '../../state/store'
 import { METRICS, UNIT, busyOf, dur, execsOf, hexPts, hive, holderOf, money, ms, slotsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
 import type { PhaseMark } from '../../state/nodes'
-import { Fn, Pill } from '../../ui/primitives'
+import { Fn, Pill, TableScroll } from '../../ui/primitives'
 import { Spark } from '../../ui/charts'
 import { Icon } from '../../ui/icons'
 import { LogLineRow } from '../../ui/lines'
@@ -175,30 +175,32 @@ function RanHere({ rows }: { rows: readonly { t: Task; x: ExecRow }[] }) {
       <div className="cap" style={{ marginBottom: 8 }}>
         Ran on this node
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Function</th>
-            <th>State</th>
-            <th>Attempt</th>
-            <th className="right">Took</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ t, x }) => (
-            <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
-              <td>
-                <Fn sha={t.function} weight={600} />
-              </td>
-              <td>
-                <Pill state={x.state} />
-              </td>
-              <td className="mono">#{x.ordinal}</td>
-              <td className="right mono">{dur(x.ms)}</td>
+      <TableScroll label="Ran on this node">
+        <table>
+          <thead>
+            <tr>
+              <th>Function</th>
+              <th>State</th>
+              <th>Attempt</th>
+              <th className="right">Took</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map(({ t, x }) => (
+              <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
+                <td>
+                  <Fn sha={t.function} weight={600} />
+                </td>
+                <td>
+                  <Pill state={x.state} />
+                </td>
+                <td className="mono">#{x.ordinal}</td>
+                <td className="right mono">{dur(x.ms)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroll>
     </section>
   )
 }

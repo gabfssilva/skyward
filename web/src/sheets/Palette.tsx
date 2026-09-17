@@ -107,8 +107,8 @@ export function Palette() {
   }
 
   return (
-    <Scrim style={{ paddingTop: '13vh' }}>
-      <div className="palette" role="dialog" aria-label="Search" onKeyDown={keys}>
+    <Scrim label="Search" layout="palette" dismissible>
+      <div className="palette" onKeyDown={keys}>
         <div className="pin">
           <Icon name="search" />
           <input

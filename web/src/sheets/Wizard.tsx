@@ -92,8 +92,6 @@ const WORDS: Readonly<Record<string, string>> = {
   ti: 'Ti', super: 'Super', ada: 'Ada', laptop: 'Laptop', maxq: 'Max-Q', wk: 'Workstation', sff: 'SFF', xt: 'XT', xtx: 'XTX',
 }
 
-const DUO: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }
-const TRIO: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,120px))', gap: 10, marginTop: 8 }
 const STACK: CSSProperties = { display: 'flex', flexDirection: 'column', minHeight: '100%' }
 
 const newDraft = (offer: Offer | undefined): Draft => ({
@@ -211,8 +209,8 @@ export function Wizard() {
   }
 
   return (
-    <Scrim>
-      <div className="sheet wizard" role="dialog" aria-label="New compute">
+    <Scrim label="New compute">
+      <div className="sheet wizard">
         <div className="sheet-head">
           <b>New compute</b>
           <div className="steps">
@@ -348,7 +346,7 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
   const chosen = accounts.filter((p) => w.providers.includes(p.id)).map((p) => p.name)
   return (
     <div style={{ ...STACK, gap: 16 }}>
-      <div className="r2" style={DUO}>
+      <div className="duo">
         <div className="field">
           <label htmlFor="wiz-name">Name</label>
           <input id="wiz-name" value={w.name} placeholder="llama-3-sft" onChange={(e) => patch({ name: e.target.value })} />
@@ -361,7 +359,7 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
         </div>
       </div>
 
-      <div className="r2" style={DUO}>
+      <div className="duo">
         <div className="field">
           <label htmlFor="wiz-accel">
             Accelerator{' '}
@@ -409,10 +407,10 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
         </div>
       </div>
 
-      <div className="r2" style={DUO}>
+      <div className="duo">
         <div>
           <div className="cap">Each node</div>
-          <div style={TRIO}>
+          <div className="trio">
             <Num id="wiz-count" label="Accelerators" min={0} value={w.count} onChange={(count) => patch({ count })} />
             <Num id="wiz-cpus" label="vCPUs" placeholder="any" optional value={w.cpus} onChange={(cpus) => patch({ cpus })} />
             <Num id="wiz-mem" label="RAM (GB)" placeholder="any" optional value={w.memory} onChange={(memory) => patch({ memory })} />
@@ -420,7 +418,7 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
         </div>
         <div>
           <div className="cap">How many nodes</div>
-          <div style={TRIO}>
+          <div className="trio">
             <Num id="wiz-min" label="Floor" min={0} placeholder={String(w.initial)} optional value={w.min} onChange={(min) => patch({ min })} />
             <Num id="wiz-max" label="Ceiling" placeholder="none" optional value={w.max} onChange={(max) => patch({ max })} />
             <Num id="wiz-initial" label="Start at" min={0} value={w.initial} onChange={(initial) => patch({ initial })} />
@@ -440,7 +438,7 @@ function Runs({ w, patch, m }: StepProps) {
   const containers = kinds.filter((k) => CONTAINERS.has(k))
   return (
     <div style={{ ...STACK, gap: 14 }}>
-      <div className="r2" style={{ ...DUO, gap: 10 }}>
+      <div className="duo" style={{ gap: 10 }}>
         {containers.length ? (
           <div className="field">
             <label htmlFor="wiz-base">
@@ -470,7 +468,7 @@ function Runs({ w, patch, m }: StepProps) {
           ))}
         </div>
       </div>
-      <div className="r2" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, alignItems: 'end' }}>
+      <div className="quad">
         <div>
           <div className="cap">Executor</div>
           <div style={{ marginTop: 6 }}>

@@ -18,7 +18,7 @@ BUCKETS = 2000
 
 
 class MetricController(Controller):
-    path = "/computes/{compute_id:str}/metrics"
+    path = "/computes/{compute:str}/metrics"
     tags = ["metrics"]
 
     @get(
@@ -41,7 +41,6 @@ class MetricController(Controller):
     async def history(
         self,
         compute_id: str,
-        computes: ports.Computes,
         metrics: ports.Metrics,
         since: int | None = Parameter(default=None, description="Milliseconds since the epoch the range starts at."),
         until: int | None = Parameter(default=None, description="Milliseconds since the epoch the range stops before."),
@@ -51,10 +50,9 @@ class MetricController(Controller):
         node: list[str] | None = Parameter(default=None, description="Keeps the nodes named."),
         name: list[str] | None = Parameter(default=None, description="Keeps the metrics named."),
     ) -> MetricHistory:
-        compute = await computes.get(compute_id)
         match since, after:
             case None, str() as cursor if cursor.isdigit():
-                return await metrics.after(compute.id, cursor, node, name)
+                return await metrics.after(compute_id, cursor, node, name)
             case None, str():
                 raise ValidationException("`after` takes the `cursor` a previous answer handed out")
             case int() as start, None:
@@ -63,7 +61,7 @@ class MetricController(Controller):
                     raise ValidationException(f"a range of raw samples spans at most {RAW_SPAN} ms; ask for a `step`")
                 if step is not None and span > step * BUCKETS:
                     raise ValidationException(f"a range is answered in at most {BUCKETS} steps; ask for a longer `step`")
-                return await metrics.series(compute.id, start, until, step, agg, node, name)
+                return await metrics.series(compute_id, start, until, step, agg, node, name)
             case _:
                 raise ValidationException("ask with exactly one of `since` and `after`")
 
@@ -80,10 +78,8 @@ class MetricController(Controller):
     async def latest(
         self,
         compute_id: str,
-        computes: ports.Computes,
         metrics: ports.Metrics,
         node: list[str] | None = Parameter(default=None, description="Keeps the nodes named."),
         name: list[str] | None = Parameter(default=None, description="Keeps the metrics named."),
     ) -> Page[MetricSample]:
-        compute = await computes.get(compute_id)
-        return Page(items=await metrics.latest(compute.id, node, name))
+        return Page(items=await metrics.latest(compute_id, node, name))

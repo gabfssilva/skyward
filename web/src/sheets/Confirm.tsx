@@ -19,8 +19,8 @@ export function Confirm({
   const closeSheet = useStore((s) => s.closeSheet)
   const [busy, setBusy] = useState(false)
   return (
-    <Scrim>
-      <div className="sheet" style={{ width: 'min(420px,100%)' }} role="dialog" aria-label={title}>
+    <Scrim label={title} layout="prompt" dismissible>
+      <div className="sheet" style={{ width: 'min(420px,100%)' }}>
         <div className="sheet-head">
           <b>{title}</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />

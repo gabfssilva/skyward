@@ -3794,18 +3794,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}": {
+    "/v1/computes/{compute}": {
       "delete": {
         "deprecated": false,
         "description": "Writes `spec.desired: deleted`. Not synchronous, and not a detach: reconciliation continues until the provider **confirms the resources are gone**, and only then does `status.state` become `deleted`.\n\nNo process shutdown ever issues this command.",
-        "operationId": "V1ComputesComputeIdDestroy",
+        "operationId": "V1ComputesDestroy",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -3917,14 +3919,16 @@
       "get": {
         "deprecated": false,
         "description": "Accepts an id or a name. The response always carries both.",
-        "operationId": "V1ComputesComputeIdRead",
+        "operationId": "V1ComputesRead",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           }
@@ -3998,14 +4002,16 @@
       "patch": {
         "deprecated": false,
         "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nA compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.\n\nThe rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the compute; a different one is a different compute.",
-        "operationId": "V1ComputesComputeIdUpdate",
+        "operationId": "V1ComputesUpdate",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4116,18 +4122,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/exec": {
+    "/v1/computes/{compute}/exec": {
       "post": {
         "deprecated": false,
         "description": "`command` in a shell on each targeted node, and what each one said. The machine's shell, not the worker's \u2014 this reaches a node whose worker is busy, and answers questions about the machine rather than about the code running on it.\n\nA task is the other thing, and `POST /tasks` is where it goes.",
-        "operationId": "V1ComputesComputeIdExecRun",
+        "operationId": "V1ComputesExecRun",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4249,18 +4257,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/files": {
+    "/v1/computes/{compute}/files": {
       "delete": {
         "deprecated": false,
         "description": "`rm -rf` of `path`, per node. Defaults to every node, because a file left on one machine of four is the state a later broadcast reads and disagrees about.",
-        "operationId": "V1ComputesComputeIdFilesRm",
+        "operationId": "V1ComputesFilesRm",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4384,14 +4394,16 @@
       "get": {
         "deprecated": false,
         "description": "`ls -la` of `path`, per node. Defaults to rank 0 \u2014 one listing is usually the question.",
-        "operationId": "V1ComputesComputeIdFilesLs",
+        "operationId": "V1ComputesFilesLs",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4515,14 +4527,16 @@
       "put": {
         "deprecated": false,
         "description": "The request body, written to `path`. Defaults to every node: code and data a task will read have to be wherever the task lands, and which node that is belongs to the dispatcher.\n\nThe answer is per node \u2014 a machine that refused the write is a line of it, not the end of it.",
-        "operationId": "V1ComputesComputeIdFilesUpload",
+        "operationId": "V1ComputesFilesUpload",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4651,18 +4665,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/files/content": {
+    "/v1/computes/{compute}/files/content": {
       "get": {
         "deprecated": false,
         "description": "`path` from one node, as a raw byte stream. `node=all` is refused rather than picked between: four machines hold four files, and concatenating them would answer a question nobody asked.",
-        "operationId": "V1ComputesComputeIdFilesContentDownload",
+        "operationId": "V1ComputesFilesContentDownload",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4780,18 +4796,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/forward/down": {
+    "/v1/computes/{compute}/forward/down": {
       "get": {
         "deprecated": false,
         "description": "The node's bytes back to the caller, as a raw byte stream \u2014 no framing, because a byte proxy has no frames. Waits for the matching `up` to open the channel, then follows it until the node closes its side.\n\nThe wait is before the answer, not inside it: a channel that cannot be opened is refused here with a status, rather than answered 200 and cut off part-way through the body.\n\nNot resumable. A dropped stream is a dead connection; open another.",
-        "operationId": "V1ComputesComputeIdForwardDownDown",
+        "operationId": "V1ComputesForwardDownDown",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -4895,18 +4913,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/forward/up": {
+    "/v1/computes/{compute}/forward/up": {
       "post": {
         "deprecated": false,
         "description": "The caller's bytes into a node, as a streaming request body. **This request is the dispatch**: it opens the channel to a ready node \u2014 round-robin, unless `route` says otherwise \u2014 and pumps the body into it until the body ends.\n\nThe body is the socket. It has no length and closes only when the connection does, which is why it is streamed rather than read: waiting for the end would be waiting for the caller to hang up.\n\nPaired with `GET .../down` by the `cid` the caller mints \u2014 the two are one connection, and HTTP/1.1 will not carry both directions on a single request.",
-        "operationId": "V1ComputesComputeIdForwardUpUp",
+        "operationId": "V1ComputesForwardUpUp",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5020,18 +5040,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/generations": {
+    "/v1/computes/{compute}/generations": {
       "get": {
         "deprecated": false,
         "description": "Every definition this compute has had, newest last. A rollback is a generation too, so this grows.",
-        "operationId": "V1ComputesComputeIdGenerationsListGenerations",
+        "operationId": "V1ComputesGenerationsListGenerations",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           }
@@ -5105,14 +5127,16 @@
       "post": {
         "deprecated": false,
         "description": "Makes generation `source`'s definition current again, under a new generation number \u2014 the same `compute_id`, the same machines.\n\nNothing is replaced: a size that differs is reconciled as a resize would be, and a machine bought from now on is built to the definition now current.",
-        "operationId": "V1ComputesComputeIdGenerationsCreateGeneration",
+        "operationId": "V1ComputesGenerationsCreateGeneration",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5242,18 +5266,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/generations/{number}": {
+    "/v1/computes/{compute}/generations/{number}": {
       "get": {
         "deprecated": false,
         "description": "One definition as it was frozen, and whether the machines were ever built to match it.",
-        "operationId": "V1ComputesComputeIdGenerationsNumberGetGeneration",
+        "operationId": "V1ComputesGenerationsNumberGetGeneration",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5334,18 +5360,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/lease": {
+    "/v1/computes/{compute}/lease": {
       "delete": {
         "deprecated": false,
         "description": "Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",
-        "operationId": "V1ComputesComputeIdLeaseReleaseLease",
+        "operationId": "V1ComputesLeaseReleaseLease",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           }
@@ -5412,14 +5440,16 @@
       "put": {
         "deprecated": false,
         "description": "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).\n\nClaiming requires the current lease to be expired or absent \u2014 it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.",
-        "operationId": "V1ComputesComputeIdLeaseClaimLease",
+        "operationId": "V1ComputesLeaseClaimLease",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           }
@@ -5511,18 +5541,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/metrics": {
+    "/v1/computes/{compute}/metrics": {
       "get": {
         "deprecated": false,
         "description": "Every metric of every node, as one series per node and name: `at` in milliseconds since the epoch on the node's clock, and the value measured then. Ask with exactly one of `since` and `after`.\n\n**A range** \u2014 `since`, and optionally `until` (open when left out, so a node whose clock runs ahead is not cut off). Without `step` the samples come as they were taken, over at most an hour; with `step`, as one value per step of that many milliseconds, starting on a multiple of it, `agg` saying which: `avg`, `min`, `max` or `last`, over at most 2000 steps.\n\n**A cursor** \u2014 `after`, the `cursor` a previous answer handed out. It answers with what was recorded since that answer, whenever it was measured: a node whose link dropped delivers its backlog late, and the backlog is still new. `reset: true` means some of it has already been compacted out of reach of a cursor \u2014 read the range again.\n\nSamples reach this a couple of seconds after the node takes them. `node` and `name` narrow it, each repeatable.",
-        "operationId": "V1ComputesComputeIdMetricsHistory",
+        "operationId": "V1ComputesMetricsHistory",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5741,18 +5773,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/metrics/latest": {
+    "/v1/computes/{compute}/metrics/latest": {
       "get": {
         "deprecated": false,
         "description": "One item per node and metric: the newest sample the daemon holds. A node that has been quiet for longer than a compaction window is answered from its compacted history, so a compute that is gone still says where its nodes were when they stopped. `node` and `name` narrow it, each repeatable.",
-        "operationId": "V1ComputesComputeIdMetricsLatestLatest",
+        "operationId": "V1ComputesMetricsLatestLatest",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5870,18 +5904,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/nodes": {
+    "/v1/computes/{compute}/nodes": {
       "get": {
         "deprecated": false,
         "description": "Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until the provider confirms termination \u2014 that is what stops an instance from going missing with nobody knowing.",
-        "operationId": "V1ComputesComputeIdNodesList",
+        "operationId": "V1ComputesNodesList",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -5983,18 +6019,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/nodes/{node_id}": {
+    "/v1/computes/{compute}/nodes/{node_id}": {
       "delete": {
         "deprecated": false,
         "description": "Nodes are not directly creatable \u2014 they come from reconciling `spec.nodes`. But a node can be condemned: `desired: deleted` blocks new assignments, waits for the executions it is known to hold, then destroys the instance.\n\nIf the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with a new `id`. The old node's tombstone remains.",
-        "operationId": "V1ComputesComputeIdNodesNodeIdDrain",
+        "operationId": "V1ComputesNodesNodeIdDrain",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -6096,14 +6134,16 @@
       "get": {
         "deprecated": false,
         "description": "One machine as the control plane knows it, including the `provider_binding` it was launched under.",
-        "operationId": "V1ComputesComputeIdNodesNodeIdRead",
+        "operationId": "V1ComputesNodesNodeIdRead",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -6184,18 +6224,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/shell/down": {
+    "/v1/computes/{compute}/shell/down": {
       "get": {
         "deprecated": false,
         "description": "What the terminal paints, as a raw byte stream \u2014 no framing, because a terminal has none, and the error stream is folded in because a terminal has one output. Waits for the matching `up` to open the session, then follows it until the shell exits.\n\nThe wait is before the answer, not inside it: a session that cannot be opened \u2014 no machine at that rank, not this daemon's compute \u2014 is refused here with a status, rather than answered 200 and cut off part-way through the body.\n\nNot resumable. A dropped stream is a dead session; open another.",
-        "operationId": "V1ComputesComputeIdShellDownDown",
+        "operationId": "V1ComputesShellDownDown",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -6299,18 +6341,20 @@
         ]
       }
     },
-    "/v1/computes/{compute_id}/shell/up": {
+    "/v1/computes/{compute}/shell/up": {
       "post": {
         "deprecated": false,
         "description": "The caller's keystrokes into a machine's terminal, as a streaming request body. **This request is the dispatch**: it opens the pseudo-terminal \u2014 at `node` if given, else at the lowest rank this daemon holds a link to \u2014 and pumps the body into it until the body ends.\n\nThe machine does not have to be ready. Every machine that has answered SSH takes a terminal, which is how a bootstrap is watched while it is still happening; one that is still booting takes the session at the moment it answers, so the request may wait before the first byte comes back.\n\nThe body is the keyboard. It has no length and closes only when the session does.\n\nPaired with `GET .../down` by the `cid` the caller mints \u2014 the two are one session, and HTTP/1.1 will not carry both directions on a single request.",
-        "operationId": "V1ComputesComputeIdShellUpUp",
+        "operationId": "V1ComputesShellUpUp",
         "parameters": [
           {
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "path",
-            "name": "compute_id",
+            "name": "compute",
             "required": true,
             "schema": {
+              "description": "The compute's name or id.",
               "type": "string"
             }
           },
@@ -6500,10 +6544,12 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
+            "description": "The compute's name or id.",
             "in": "query",
             "name": "compute",
             "required": false,
             "schema": {
+              "description": "The compute's name or id.",
               "oneOf": [
                 {
                   "type": "string"
@@ -6730,6 +6776,26 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
+            "description": "The compute's name or id.",
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "description": "The compute's name or id.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -6756,24 +6822,6 @@
               "maximum": 1000.0,
               "minimum": 1.0,
               "type": "integer"
-            }
-          },
-          {
-            "allowEmptyValue": false,
-            "allowReserved": false,
-            "deprecated": false,
-            "in": "query",
-            "name": "compute",
-            "required": false,
-            "schema": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             }
           },
           {
@@ -8220,6 +8268,26 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
+            "description": "The compute's name or id.",
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "description": "The compute's name or id.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -8245,24 +8313,6 @@
               "default": 50,
               "minimum": 1.0,
               "type": "integer"
-            }
-          },
-          {
-            "allowEmptyValue": false,
-            "allowReserved": false,
-            "deprecated": false,
-            "in": "query",
-            "name": "compute",
-            "required": false,
-            "schema": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             }
           },
           {

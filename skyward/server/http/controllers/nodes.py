@@ -9,7 +9,7 @@ from skyward.shared.schemas import Node, Page
 
 
 class NodeController(Controller):
-    path = "/computes/{compute_id:str}/nodes"
+    path = "/computes/{compute:str}/nodes"
     tags = ["nodes"]
 
     @get(

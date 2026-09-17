@@ -54,6 +54,10 @@ class Computes(Protocol):
 
     async def get(self, ref: str) -> Compute: ...
 
+    async def identify(self, ref: str) -> str:
+        """The id behind a name or an id, which is what every other store is keyed by."""
+        ...
+
     async def list(
         self,
         cursor: str | None,

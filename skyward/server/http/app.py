@@ -39,6 +39,7 @@ from skyward.server.http.emitter import ReconcilingEventEmitter
 from skyward.server.http.exceptions import skyward_error_handler, unhandled_error_handler
 from skyward.server.http.listeners import build_listeners
 from skyward.server.http.openapi import TAGS, describe
+from skyward.server.http.references import identified
 from skyward.server.persistence.computes import ComputeStore, GenerationStore
 from skyward.server.persistence.db import DEFAULT_PATH, connect
 from skyward.server.persistence.events import EventStore
@@ -311,6 +312,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         route_handlers=[api, *([console(console_at)] if console_at else [])],
         dependencies={
             "computes": Provide(lambda: svc.computes, sync_to_thread=False),
+            "compute_id": Provide(identified),
             "generations": Provide(lambda: svc.generations, sync_to_thread=False),
             "nodes": Provide(lambda: svc.nodes, sync_to_thread=False),
             "functions": Provide(lambda: svc.functions, sync_to_thread=False),

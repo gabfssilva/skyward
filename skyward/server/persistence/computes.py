@@ -219,6 +219,9 @@ class ComputeStore:
     async def get(self, ref: str) -> Compute:
         return await self._served(await self._row(ref))
 
+    async def identify(self, ref: str) -> str:
+        return (await self._row(ref)).id
+
     async def list(
         self,
         cursor: str | None,

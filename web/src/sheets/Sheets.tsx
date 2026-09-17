@@ -35,7 +35,7 @@ export const openConfirm = (confirm: {
   onConfirm: () => void
 }): void => useStore.getState().openSheet({ kind: 'confirm', ...confirm })
 
-/** Everything the overlay can hold, plus the two keys that open and close it. */
+/** Everything the overlay can hold, plus the key that opens the palette over it; each sheet's dialog handles Escape. */
 export function Sheets() {
   const sheet = useStore((s) => s.sheet)
 
@@ -44,11 +44,6 @@ export function Sheets() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         openPalette()
-        return
-      }
-      if (e.key === 'Escape') {
-        const state = useStore.getState()
-        if (state.sheet) state.closeSheet()
       }
     }
     document.addEventListener('keydown', keydown)

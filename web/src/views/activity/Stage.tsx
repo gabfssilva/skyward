@@ -143,7 +143,7 @@ export function Stage() {
         </>
       ) : (
         <>
-          <div className="evbox" style={{ maxHeight: 'calc(100vh - 250px)' }}>
+          <div className="evbox tall">
             {matched.length ? matched.map((e) => <EvLineRow key={e.id} event={e} computeName={e.compute ? names.get(e.compute) : undefined} />) : <div className="sub">No event matches.</div>}
           </div>
           {events.cursor ? (
