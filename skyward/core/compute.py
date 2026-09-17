@@ -740,8 +740,8 @@ class Compute:
 
         match pending:
             case Streaming():
-                chosen = None
-            case Pending(retry=chosen):
+                chosen, wait = None, None
+            case Pending(retry=chosen, queue_timeout=wait):
                 pass
 
         decision: str | None | UnsetType
@@ -764,7 +764,8 @@ class Compute:
                     dispatch=dispatch,
                     args_inline=inline,
                     args_sha256=stored,
-                    timeout_seconds=int(pending.timeout) if pending.timeout else None,
+                    queue_timeout_seconds=wait,
+                    run_timeout_seconds=pending.timeout,
                     retry=decision,
                 ),
             ),
@@ -808,7 +809,8 @@ def _options(options: Options) -> OptionsRef:
         worker_timeout=options.worker_timeout,
         autoscale_idle_timeout=options.autoscale_idle_timeout,
         autoscale_cooldown=options.autoscale_cooldown,
-        default_compute_timeout=options.default_compute_timeout,
+        task_queue_timeout=options.task_queue_timeout,
+        task_run_timeout=options.task_run_timeout,
         health_command=options.health_command,
         health_interval=options.health_interval,
         health_failures=options.health_failures,

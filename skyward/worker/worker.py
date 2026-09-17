@@ -28,11 +28,11 @@ import casty
 import msgspec
 
 from skyward.shared import codec, retry
-from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Step, Unknown
+from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Step, Stopped, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
-from skyward.worker import distributed, ipc, plugins
+from skyward.worker import distributed, ipc, plugins, stopping
 from skyward.worker.api import Info, instance_info
 from skyward.worker.journal import Health, Journal, Phase, emit, task
 from skyward.worker.plugins import Plugin
@@ -102,6 +102,8 @@ pulling: set[str] = set()
 
 A close that lands mid-pull cannot close the generator — it is executing — so it
 only lets go of it, and the pull closes it once it comes back."""
+STOPPED = "the stream was stopped: it ran past its time"
+"""What a stream's next pull says once :meth:`Control.stop` let go of it."""
 KEEP_SECONDS = 3600.0
 """How long a settled outcome is kept for a daemon that has not said it recorded it.
 
@@ -353,6 +355,27 @@ class Control:
             case settled:
                 return await _encoded(await asyncio.shield(settled))
 
+    async def stop(self, id: str) -> bool:
+        """Stop an attempt that ran past its time, and say whether anything here was running it.
+
+        Here and not on :class:`Worker` because the attempt it is about is holding one of
+        that service's slots. The attempt's own call is what answers with ``Stopped``, once
+        the function has unwound; this one only says the request landed. An attempt that
+        has not started yet is remembered, and never starts. A stream is let go of the way
+        one whose reader left is, and its next pull says it was stopped.
+        """
+        stopping.asked.add(id)
+        asyncio.get_running_loop().call_later(KEEP_SECONDS, stopping.asked.discard, id)
+        if (iterator := generators.pop(id, None)) is not None:
+            if id not in pulling:
+                await _finish(iterator)
+            return True
+        match MODE:
+            case "thread":
+                return stopping.interrupt(id)
+            case "process" | "loky":
+                return subprocesses is not None and subprocesses.stop(id)
+
 
 async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Outcome:
     """Run one task, off the event loop, start to finish.
@@ -374,6 +397,10 @@ async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", atte
     than an exception thrown inside a casty handler. It is also the most common
     failure there is: it is what a version of pandas that differs between the two
     ends looks like from here.
+
+    An attempt :meth:`Control.stop` reached unwinds with :class:`stopping.Stop`, in
+    the thread or the subprocess running it, and is ``Stopped`` — not ``Lost``, whose
+    retry decision would run it again.
     """
     def call(fn: Callable[..., object], positional: tuple[object, ...], keyword: dict[str, object]) -> object:
         """Flush in the thread that wrote, and while the task's output policy still holds.
@@ -396,7 +423,7 @@ async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", atte
             fn = await function.decode(code)
             positional, keyword = await arguments.decode(args)
             wrapped = plugins.chain(installed, partial(call, fn, positional, keyword), instance_info())
-            value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, wrapped)
+            value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, partial(_stoppable, id, wrapped))
             return Done(value=await codec.payload.encode(value))
 
         assert subprocesses is not None
@@ -410,12 +437,20 @@ async def execute(id: str, code: bytes, args: bytes, decision: bytes = b"", atte
         assert isinstance(payload, tuple)
         error, trace, again = payload
         return Failed(error=error, traceback=trace, retry=again)
+    except stopping.Stop:
+        return Stopped()
     except Exception as exc:
         trace = traceback.format_exc()
         error = str(exc)
         return Failed(error=error, traceback=trace, retry=await asyncio.to_thread(_again, decision, exc, attempt))
     finally:
         task.reset(token)
+
+
+def _stoppable[T](id: str, call: Callable[[], T]) -> T:
+    """Run an attempt in this thread where :meth:`Control.stop` can interrupt it."""
+    with stopping.running(id):
+        return call()
 
 
 def _again(decision: bytes, exc: Exception, attempt: int) -> bool:
@@ -447,6 +482,8 @@ async def advance(id: str) -> Step:
     loop = asyncio.get_running_loop()
     token = task.set(id)
     try:
+        if id not in generators and id in stopping.asked:
+            return Failed(error=STOPPED, traceback="")
         iterator = generators[id]
 
         def pull() -> object:
@@ -466,7 +503,7 @@ async def advance(id: str) -> Step:
             pulling.discard(id)
         if id not in generators:
             await _finish(iterator)
-            return End()
+            return Failed(error=STOPPED, traceback="") if id in stopping.asked else End()
         if item is DONE:
             generators.pop(id, None)
             return End()
@@ -567,16 +604,17 @@ def _run_in_process(
         sys.stderr = Journal("stderr")
     token = task.set(id)
     try:
-        fn: Callable[..., object] = codec.loads(code)
-        decoded: Arguments = codec.loads(args)
-        positional, keyword = decoded
-        wrapped = plugins.chain(_installed(), partial(fn, *positional, **keyword), instance_info())
-        try:
-            value = wrapped()
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        return True, codec.dumps(value)
+        with ipc.attempt(id):
+            fn: Callable[..., object] = codec.loads(code)
+            decoded: Arguments = codec.loads(args)
+            positional, keyword = decoded
+            wrapped = plugins.chain(_installed(), partial(fn, *positional, **keyword), instance_info())
+            try:
+                value = wrapped()
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            return True, codec.dumps(value)
     except Exception as exc:
         return False, (str(exc), traceback.format_exc(), _again(decision, exc, attempt))
     finally:

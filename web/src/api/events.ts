@@ -85,7 +85,7 @@ const NODE_STATES = [
   'failed',
 ] as const
 
-const TASK_STATES = ['started', 'retrying', 'succeeded', 'failed', 'indeterminate'] as const
+const TASK_STATES = ['started', 'retrying', 'succeeded', 'failed', 'timed_out', 'indeterminate'] as const
 
 /** Every `event:` name a frame can go out under — an EventSource has no catch-all. */
 export const FRAMES: readonly string[] = [

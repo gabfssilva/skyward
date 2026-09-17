@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Compute, Offer } from '../../api/client'
 import { useHistory, useStore } from '../../state/store'
 import type { HistoryFilters } from '../../state/store'
-import { CAUSE, DAY, ago, dur, endedAt, money, ranOf, targetOf } from '../../state/model'
+import { CAUSE, DAY, ago, callsOf, dur, endedAt, failedOf, money, ranOf, targetOf } from '../../state/model'
 import { Pill } from '../../ui/primitives'
 
 const SINCE: Record<HistoryFilters['since'], number> = { '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY, all: Infinity }
@@ -130,8 +130,8 @@ export function History() {
                       {shapeOf(c)}
                     </td>
                     <td className="mono" style={{ whiteSpace: 'nowrap' }}>
-                      {ended?.calls || '—'}
-                      {ended?.failed ? <span style={{ color: 'var(--bad)' }}> {ended.failed} failed</span> : null}
+                      {callsOf(c) || '—'}
+                      {failedOf(c) ? <span style={{ color: 'var(--bad)' }}> {failedOf(c)} failed</span> : null}
                     </td>
                     <td className="mono faint" style={{ whiteSpace: 'nowrap' }}>
                       {ended ? ago(endedAt(c)) : '—'}

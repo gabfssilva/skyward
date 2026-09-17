@@ -236,7 +236,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         """
         while True:
             await asyncio.sleep(TICK_SECONDS)
-            await svc.tasks.expire()
+            await svc.dispatcher.expire()
             computes, tasks = await svc.reconciler.unsettled()
             logger.debug("tick: {} unsettled computes, {} unsettled tasks", len(computes), len(tasks))
             for compute_id in computes:

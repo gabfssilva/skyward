@@ -953,6 +953,8 @@ export interface components {
          *     ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
          *     ``generation`` counts definitions, not writes. ``offer`` is what the spec
          *     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
+         *     ``tasks`` counts every task it was given, by state, from the task rows on each
+         *     read — not the page of them a listing returns.
          */
         Compute: {
             cost: number;
@@ -967,6 +969,7 @@ export interface components {
             revision: number;
             spec: components["schemas"]["ComputeSpec"];
             status: components["schemas"]["ComputeStatus"];
+            tasks: components["schemas"]["TaskCounts"];
         };
         /** ComputeAbandoned */
         ComputeAbandoned: {
@@ -1187,19 +1190,15 @@ export interface components {
          * Ending
          * @description How a compute ended: when its last machine was gone, why, and what the run came to.
          *
-         *     Only a deleted compute has one. ``cost`` and the counts are derived from the node
-         *     and task rows each time the compute is read, the way the meter derives a live
-         *     compute's cost; ``failed`` counts the calls that ended in an error, failed or
-         *     timed out.
+         *     Only a deleted compute has one. ``cost`` is derived from the node rows each time
+         *     the compute is read, the way the meter derives a live compute's cost.
          */
         Ending: {
             /** Format: date-time */
             at: string;
-            calls: number;
             /** @enum {string} */
             cause: "requested" | "abandoned";
             cost: number;
-            failed: number;
         };
         /**
          * Error
@@ -1229,6 +1228,7 @@ export interface components {
          *     task, because the task id is the handle the caller is holding.
          */
         Execution: {
+            deadline_at?: string | null;
             error?: components["schemas"]["Error"] | null;
             finished_at?: string | null;
             id: string;
@@ -1240,6 +1240,8 @@ export interface components {
             started_at?: string | null;
             /** @enum {string} */
             state: "created" | "assigned" | "dispatching" | "accepted" | "started" | "cancel_requested" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
+            /** @default false */
+            stopping: boolean;
         };
         /**
          * ExecutionCreate
@@ -1647,7 +1649,6 @@ export interface components {
          *       "autoscale_cooldown": 0,
          *       "autoscale_idle_timeout": 120,
          *       "cluster": null,
-         *       "default_compute_timeout": 0,
          *       "health_command": null,
          *       "health_failures": 3,
          *       "health_function": null,
@@ -1658,6 +1659,8 @@ export interface components {
          *       "ssh_connect_timeout": 240,
          *       "ssh_reconnect_attempts": 30,
          *       "ssh_retry_delay": 2,
+         *       "task_queue_timeout": 0,
+         *       "task_run_timeout": 0,
          *       "worker_timeout": 180
          *     }
          */
@@ -1667,8 +1670,6 @@ export interface components {
             /** @default 120 */
             autoscale_idle_timeout: number;
             cluster?: boolean | null;
-            /** @default 0 */
-            default_compute_timeout: number;
             health_command?: string | null;
             /** @default 3 */
             health_failures: number;
@@ -1687,6 +1688,10 @@ export interface components {
             ssh_reconnect_attempts: number;
             /** @default 2 */
             ssh_retry_delay: number;
+            /** @default 0 */
+            task_queue_timeout: number;
+            /** @default 0 */
+            task_run_timeout: number;
             /** @default 180 */
             worker_timeout: number;
         };
@@ -2044,7 +2049,6 @@ export interface components {
             args_sha256: string;
             compute_id: string;
             correlation_id?: string | null;
-            deadline_at?: string | null;
             /** @enum {string} */
             dispatch: "one" | "all" | "stream";
             executions: components["schemas"]["Execution"][];
@@ -2052,13 +2056,28 @@ export interface components {
             function: string;
             generation: number;
             id: string;
+            queue_timeout_seconds?: number | null;
             rank?: number | null;
             result_sha256?: string | null;
             retry: string | null;
+            run_timeout_seconds?: number | null;
             /** @enum {string} */
             state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
             /** Format: date-time */
             submitted_at: string;
+        };
+        /**
+         * TaskCounts
+         * @description How many of a compute's tasks are in each state, one field per :data:`TaskState`.
+         */
+        TaskCounts: {
+            cancelled: number;
+            failed: number;
+            indeterminate: number;
+            queued: number;
+            running: number;
+            succeeded: number;
+            timed_out: number;
         };
         /**
          * TaskCreate
@@ -2078,9 +2097,10 @@ export interface components {
             /** @enum {string} */
             dispatch: "one" | "all" | "stream";
             function: string;
+            queue_timeout_seconds?: number | null;
             rank?: number | null;
             retry?: string | null;
-            timeout_seconds?: number | null;
+            run_timeout_seconds?: number | null;
         };
         /** TaskEvent */
         TaskEvent: {
@@ -2088,7 +2108,7 @@ export interface components {
             attempt: number;
             compute: string;
             /** @enum {string} */
-            state: "started" | "retrying" | "succeeded" | "failed" | "indeterminate";
+            state: "started" | "retrying" | "succeeded" | "failed" | "timed_out" | "indeterminate";
             task: string;
             /**
              * @description discriminator enum property added by openapi-typescript

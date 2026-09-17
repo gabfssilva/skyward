@@ -156,9 +156,6 @@ class Tasks(Protocol):
         """End every wait in :meth:`result` now: the daemon is going away."""
         ...
 
-    async def expire(self) -> tuple[str, ...]:
-        """Time out the tasks past their deadline. Returns the ones it timed out."""
-        ...
 
 
 @runtime_checkable
@@ -326,6 +323,10 @@ class Dispatcher(Protocol):
 
     async def deleted(self, compute_id: str) -> None:
         """Answer for every attempt a deleted compute still owed, with the verdict that is left."""
+        ...
+
+    async def expire(self) -> None:
+        """Time out the attempts past their deadline, and ask the machines still running one to stop."""
         ...
 
     def stream(self, task_id: str) -> AsyncIterator[bytes]:

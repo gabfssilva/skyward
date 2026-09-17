@@ -175,8 +175,14 @@ class Options:
         before an elastic pool may reclaim it.
     autoscale_cooldown : float
         Seconds between autoscaling decisions. ``0`` is no cooldown.
-    default_compute_timeout : float
-        Seconds a task may run when it names no deadline of its own. ``0`` is unbounded.
+    task_queue_timeout : float
+        Seconds an attempt may wait for a machine before it starts, for a function that
+        names no ``queue_timeout`` of its own. A retry waits on a clock of its own. ``0``
+        is unbounded.
+    task_run_timeout : float
+        Seconds an attempt may run once started, for a function that names no
+        ``timeout`` of its own. Counted from the start, not from the submission, and
+        from the start of each retry. ``0`` is unbounded.
     health_command : str | None
         A shell command run on each node to ask whether the machine is still usable.
         ``None`` probes nothing.
@@ -202,7 +208,8 @@ class Options:
     worker_timeout: float = 180.0
     autoscale_idle_timeout: float = 120.0
     autoscale_cooldown: float = 0.0
-    default_compute_timeout: float = 0.0
+    task_queue_timeout: float = 0.0
+    task_run_timeout: float = 0.0
     health_command: str | None = None
     health_interval: float = 30.0
     health_failures: int = 3

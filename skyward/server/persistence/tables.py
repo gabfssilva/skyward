@@ -248,7 +248,10 @@ class TaskRow(Table, tablename="tasks"):
     is the column that is read."""
     correlation_id = Varchar(null=True, default=None, index=True)
     submitted_at = Timestamptz()
-    deadline_at = Timestamptz(null=True, default=None)
+    queue_timeout = Float(null=True, default=None)
+    """Seconds each attempt may wait to start, settled at admission; null is no limit."""
+    run_timeout = Float(null=True, default=None)
+    """Seconds each attempt may run once started, settled at admission; null is no limit."""
     result_sha256 = Varchar(null=True, default=None)
     finished_at = Timestamptz(null=True, default=None)
 
@@ -272,6 +275,10 @@ class ExecutionRow(Table, tablename="executions"):
     error = JSONB(null=True, default=None)
     started_at = Timestamptz(null=True, default=None)
     finished_at = Timestamptz(null=True, default=None)
+    deadline_at = Timestamptz(null=True, default=None)
+    """When the phase the attempt is in runs out: its wait until it starts, its run after."""
+    stopping = Boolean(default=False)
+    """Answered for while a machine still runs it: the slot is the worker's until it lets go."""
 
 
 class EventRow(Table, tablename="events"):

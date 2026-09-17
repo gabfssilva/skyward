@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Icon, type IconName } from './icons'
 import { clamp, legendOf, tally } from '../state/model'
 import { useFunctionLabel } from '../state/store'
@@ -127,6 +127,38 @@ export function Empty({ icon, title, children }: { icon: IconName; title: string
       <b>{title}</b>
       {children ? <span>{children}</span> : null}
     </div>
+  )
+}
+
+/**
+ * A text longer than its box scrolls on a loop, which is what says there is more of it. The loop runs over two
+ * copies, so moving by one copy and its gap is one lap, at about the same speed whatever the length. The box and the text
+ * are watched rather than measured once: a box that narrows with the window, or a font that arrives late, changes
+ * whether the text fits.
+ */
+export function Tick({ text }: { text: string }) {
+  const box = useRef<HTMLSpanElement>(null)
+  const copy = useRef<HTMLSpanElement>(null)
+  const [lap, setLap] = useState<number | null>(null)
+
+  useLayoutEffect(() => {
+    const outer = box.current
+    const inner = copy.current
+    if (!outer || !inner) return
+    const fit = () => setLap(inner.offsetWidth > outer.clientWidth ? inner.offsetWidth / 30 : null)
+    const watch = new ResizeObserver(fit)
+    watch.observe(outer)
+    watch.observe(inner)
+    return () => watch.disconnect()
+  }, [])
+
+  return (
+    <span className={lap === null ? 'tick' : 'tick moving'} ref={box} style={lap === null ? undefined : ({ '--lap': `${lap}s` } as CSSProperties)}>
+      <span>
+        <span ref={copy}>{text}</span>
+        {lap === null ? null : <span aria-hidden="true">{text}</span>}
+      </span>
+    </span>
   )
 }
 

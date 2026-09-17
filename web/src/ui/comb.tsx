@@ -1,5 +1,6 @@
 import { memo, type CSSProperties } from 'react'
 import { KIND, KIND_FILL, SQ3, clamp, hexCols, hexPts, hexSize, hive, hiveSize, money, ringsFor, spiral, type NodeMetrics } from '../state/model'
+import { Tick } from './primitives'
 
 export type CombNode = {
   rank: number
@@ -151,7 +152,6 @@ const bounds = (cells: readonly Axial[]) => {
 }
 
 const GAP = 1.1
-const LABEL = 0.22
 
 const busyLabel = (item: HiveItem, rank: number): string => {
   const busy = item.busy[rank] ?? 0
@@ -162,6 +162,9 @@ const busyLabel = (item: HiveItem, rank: number): string => {
  * The prototype's ``hives``: every compute drawn as one honeycomb region of the same
  * outer size, laid out in a row with a caption under each, or — when a row would make
  * them too small — in a spiral with the captions in a row below the drawing.
+ *
+ * A row's captions are a grid under the drawing rather than text inside it: a name
+ * wider than its column scrolls within it, where SVG text would run into its neighbour's.
  */
 export function Hives({
   items,
@@ -178,17 +181,17 @@ export function Hives({
   const C = order.length
   if (!C) return null
   const fits = [
-    { cells: rowOf(C), cap: 1 },
-    { cells: spiral(C), cap: 0 },
-  ].map(({ cells, cap }) => {
+    { cells: rowOf(C), row: true },
+    { cells: spiral(C), row: false },
+  ].map(({ cells, row }) => {
     const bb = bounds(cells)
-    return { cells, bb, cap, R: Math.min(room / (bb.w * GAP), tall / ((bb.h + cap * LABEL) * GAP)) }
+    return { cells, bb, row, R: Math.min(room / (bb.w * GAP), tall / (bb.h * GAP)) }
   })
   const pick = fits.sort((x, y) => y.R - x.R)[0]!
   const R = Math.min(170, pick.R)
   const stepB = R * GAP
   const W = pick.bb.w * stepB
-  const H = (pick.bb.h + pick.cap * LABEL) * stepB
+  const H = pick.bb.h * stepB
   const at = ([q, r]: Axial): [number, number] => [(SQ3 * (q + r / 2) - pick.bb.minX + SQ3 / 2) * stepB, (1.5 * r - pick.bb.minY + 1) * stepB]
 
   const groups = order.map((item, i) => {
@@ -212,16 +215,6 @@ export function Hives({
             </g>
           )
         })}
-        {pick.cap ? (
-          <g className="hcap" transform={`translate(${cx.toFixed(1)},${(cy + R * 0.92 + 14).toFixed(1)})`} onClick={() => onOpen?.(item.id)}>
-            <text className="hname" y="4">
-              {item.name}
-            </text>
-            <text className="hmeta" y="19">
-              {n} node{n === 1 ? '' : 's'} · {money(item.rate)}/h
-            </text>
-          </g>
-        ) : null}
       </g>
     )
   })
@@ -233,7 +226,18 @@ export function Hives({
           {groups}
         </svg>
       </div>
-      {pick.cap ? null : (
+      {pick.row ? (
+        <div className="hivenames" style={{ maxWidth: Math.ceil(W), gridTemplateColumns: `repeat(${C}, minmax(0, 1fr))` }}>
+          {order.map((item) => (
+            <button key={item.id} className="hivename" onClick={() => onOpen?.(item.id)}>
+              <Tick text={item.name} />
+              <span className="hmeta">
+                {item.nodes.length} node{item.nodes.length === 1 ? '' : 's'} · {money(item.rate)}/h
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : (
         <div className="hivecaps">
           {order.map((item) => {
             const ready = item.nodes.filter((x) => x.state === 'ready')

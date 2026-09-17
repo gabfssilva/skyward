@@ -4,7 +4,7 @@ import { api } from '../../api/client'
 import type { Compute, Node } from '../../api/client'
 import { useStore, computeById, isLive, spentOf } from '../../state/store'
 import { valuesFor } from '../../state/nodes'
-import { dur, median, money, nodeLive, ranOf, rateOf, readyOf, targetOf } from '../../state/model'
+import { callsOf, dur, median, money, nodeLive, ranOf, rateOf, readyOf, targetOf } from '../../state/model'
 import { Icon } from '../../ui/icons'
 import { openRun } from '../../sheets'
 
@@ -35,7 +35,7 @@ export function ComputeStats({ c, nodes, live }: { c: Compute; nodes: readonly N
         <Stat value={cost ? money(cost, cost < 10 ? 2 : 0) : '—'} label="spent" />
         <Stat value={ran < 60e3 ? '—' : dur(ran)} label="ran" />
         <Stat value={nodes.length || targetOf(c)} label="nodes" />
-        <Stat value={c.ended?.calls || '—'} label="calls" />
+        <Stat value={callsOf(c) || '—'} label="calls" />
       </>
     )
   }

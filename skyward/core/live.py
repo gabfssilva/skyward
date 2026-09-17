@@ -334,6 +334,8 @@ class RichConsole:
                 _emit_task(self._console, "task", "done", "")
             case TaskEvent(state="failed"):
                 _emit_task(self._console, "task", "failed", "")
+            case TaskEvent(state="timed_out"):
+                _emit_task(self._console, "task", "timed out", "")
             case TaskEvent(state="retrying", attempt=attempt):
                 _emit_task(self._console, "task", f"retrying, attempt {attempt}", "yellow")
             case ComputeDegraded(error=error):

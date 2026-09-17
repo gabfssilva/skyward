@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import type { Compute, Node, Task } from '../../api/client'
 import { useStore, historyOf, computeById, isLive, useLogs, useEvents, spentOf } from '../../state/store'
 import type { Store } from '../../state/store'
-import { CAUSE, HOUR, UNIT, ago, busyOf, dateOf, dur, endedAt, execsOf, hiveSize, median, money, ms, offerPerGpu, perGpu, ranOf, rateOf, readyOf, slotsOf, targetOf } from '../../state/model'
+import { CAUSE, HOUR, UNIT, ago, busyOf, callsOf, dateOf, dur, endedAt, execsOf, failedOf, finishedOf, hiveSize, median, money, ms, offerPerGpu, perGpu, ranOf, rateOf, readyOf, slotsOf, targetOf } from '../../state/model'
 import type { MetricKey } from '../../state/model'
 import { combNodes, valuesFor } from '../../state/nodes'
 import { dispatchLine } from '../tasks/Stage'
@@ -65,7 +65,7 @@ export function Stage() {
             <ShapeLine c={c} nodes={nodes} live={live} />
           </div>
         </header>
-        <div className="cmp-main">{live ? <LiveBody c={c} nodes={nodes} tasks={tasks} /> : <EndedBody c={c} nodes={nodes} tasks={tasks} />}</div>
+        <div className="cmp-main">{live ? <LiveBody c={c} nodes={nodes} tasks={tasks} /> : <EndedBody c={c} nodes={nodes} />}</div>
         <footer className="cmp-foot">
           <SpecGrid c={c} live={live} />
         </footer>
@@ -169,10 +169,10 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
 
   const running = tasks.filter((t) => t.state === 'running')
   const inflight = running.reduce((s, t) => s + execsOf(t, nodes).filter((e) => e.state === 'started').length, 0)
-  const done = tasks.filter((t) => t.state === 'succeeded')
-  const failures = tasks.flatMap((t) => t.executions.filter((e) => e.state === 'failed').map((e) => ({ t, e })))
-  const lastDone = done.slice().sort((a, b) => ms(b.finished_at) - ms(a.finished_at))[0]
-  const lastErr = failures[failures.length - 1]
+  const latest = (states: readonly Task['state'][]) => tasks.filter((t) => states.includes(t.state)).sort((a, b) => ms(b.finished_at) - ms(a.finished_at))[0]
+  const lastDone = latest(['succeeded'])
+  const lastErr = latest(['failed', 'timed_out'])
+  const failed = failedOf(c)
   const fnName = (sha: string) => state.functions[sha]?.name ?? sha.slice(0, 8)
   const ranksOf = (t: Task) => new Set(execsOf(t, nodes).map((e) => e.rank)).size
   const cells = combNodes(id, nodes, metrics, state.progress)
@@ -207,20 +207,20 @@ function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tas
             label="in flight"
             sub={running.length ? running.map((t) => `${fnName(t.function)} on ${t.dispatch === 'one' ? 'one node' : `${ranksOf(t)} nodes`}`).join(', ') : 'nothing is running'}
           />
-          <Fig value={done.length} label="tasks done" sub={lastDone ? `${fnName(lastDone.function)}, ${ago(ms(lastDone.finished_at))}` : 'none yet'} />
-          <Fig value={failures.length} label="errors" sub={lastErr ? `${fnName(lastErr.t.function)} on rank ${lastErr.e.rank}` : 'none'} err={failures.length > 0} />
+          <Fig value={c.tasks.succeeded} label="tasks done" sub={lastDone ? `${fnName(lastDone.function)}, ${ago(ms(lastDone.finished_at))}` : c.tasks.succeeded ? '—' : 'none yet'} />
+          <Fig value={failed} label="errors" sub={lastErr ? `${fnName(lastErr.function)}, ${ago(ms(lastErr.finished_at))}` : failed ? '—' : 'none'} err={failed > 0} />
         </Figs>
-        <BillFigs c={c} nodes={nodes} tasks={tasks} live />
+        <BillFigs c={c} nodes={nodes} live />
       </div>
     </>
   )
 }
 
-function EndedBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[] }) {
+function EndedBody({ c, nodes }: { c: Compute; nodes: readonly Node[] }) {
   const bought = c.offer ?? c.spec.specs[0]
   const ran = ranOf(c)
-  const calls = c.ended?.calls ?? 0
-  const failed = c.ended?.failed ?? 0
+  const calls = callsOf(c)
+  const failed = failedOf(c)
   return (
     <>
       <div className="cmp-out">
@@ -234,7 +234,7 @@ function EndedBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; ta
           <Fig value={calls || '—'} label="calls" sub={calls ? `${Math.round(calls / (ran / HOUR))} an hour` : 'nothing ran here'} />
           <Fig value={failed} label="failed" sub={failed ? `${Math.round((failed / calls) * 1000) / 10}% of calls` : 'none'} err={failed > 0} />
         </Figs>
-        <BillFigs c={c} nodes={nodes} tasks={tasks} live={false} />
+        <BillFigs c={c} nodes={nodes} live={false} />
       </div>
     </>
   )
@@ -245,12 +245,12 @@ function EndedBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; ta
  * closed total once it has ended. The price per card comes from the nodes, and is
  * compared with the cheapest offer of the same accelerator.
  */
-function BillFigs({ c, nodes, tasks, live }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[]; live: boolean }) {
+function BillFigs({ c, nodes, live }: { c: Compute; nodes: readonly Node[]; live: boolean }) {
   const offers = useStore((s) => s.offers)
   const s0 = c.spec.specs[0]
   const kind = c.offer?.kind ?? s0?.provider.kind
   const accelerator = c.offer?.accelerator ?? s0?.accelerator
-  const calls = live ? tasks.filter((t) => t.finished_at).length : (c.ended?.calls ?? 0)
+  const calls = live ? finishedOf(c) : callsOf(c)
   const spent = useStore((s) => spentOf(s, c)) ?? 0
   const up = live ? Date.now() - ms(c.created_at) : ranOf(c)
   const hourly = live ? rateOf(nodes) : spent / (up / HOUR)
@@ -364,20 +364,20 @@ function TasksBlock({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; n
   const ended = c.ended
   const list = tasks.slice().sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at))
   const shown = list.slice(0, 8)
-  const running = list.filter((t) => t.state === 'running').length
-  const failed = list.filter((t) => t.state === 'failed').length
+  const calls = callsOf(c)
+  const failed = failedOf(c)
   /* the daemon keeps every task: what this card leaves out is in the Tasks view, filtered to this compute */
-  const more = (ended?.calls ?? list.length) - shown.length
+  const more = calls - shown.length
   return (
     <div>
       <div className="combhead">
         <b>Tasks</b>
         <span className="sub">
-          {ended?.calls
-            ? `showing the newest ${shown.length} of ${ended.calls} calls${ended.failed ? `, ${ended.failed} failed` : ''}`
-            : list.length
-              ? `${running} running · ${failed} failed · ${list.length - running - failed} succeeded`
-              : 'nothing ran here'}
+          {!calls
+            ? 'nothing ran here'
+            : ended
+              ? `showing the newest ${shown.length} of ${calls} calls${failed ? `, ${failed} failed` : ''}`
+              : `${c.tasks.running} running · ${c.tasks.queued} queued · ${failed} failed · ${c.tasks.succeeded} succeeded`}
         </span>
       </div>
       {list.length ? (

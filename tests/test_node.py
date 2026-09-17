@@ -21,6 +21,7 @@ from skyward.server.application.source import Source
 from skyward.server.application.ssh import Result, Ssh, SshUnavailableError
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Image, NodeState, Options
+from skyward.worker import bootstrap
 from skyward.worker.journal import LOCK, Console, Metric
 
 pytestmark = pytest.mark.local
@@ -70,9 +71,9 @@ async def _quiet(*_: object) -> None:
     pass
 
 
-def _node(link: _Link, reports: list[Report], ready: bool = True, options: Options = DEFAULT_OPTIONS) -> Node:
+def _node(link: _Link, reports: list[Report], ready: bool = True, options: Options = DEFAULT_OPTIONS, user: str = "root") -> Node:
     node = Node(
-        Machine(id="m-1", state="running", host="10.0.0.1"),
+        Machine(id="m-1", state="running", host="10.0.0.1", user=user),
         compute="cmp_test",
         private_key="key",
         image=Image(),
@@ -359,3 +360,31 @@ def describe_console_lines() -> None:
             await node._watch()
 
         assert batches == [("0", "1"), ("2", "3"), ("4",)]
+
+
+class _Venv(_Link):
+    """A machine bootstrapped as root: its venv's python resolves into ``/root``, which only root may enter."""
+
+    def __init__(self, user: str) -> None:
+        super().__init__(tails=[[]])
+        self._user = user
+
+    async def run(self, command: str, *, timeout: float | None = None) -> Result:
+        self.commands.append(command)
+        if "sysconfig" not in command:
+            return Result(exit_code=0, stdout="", stderr="")
+        if self._user == "root" or command.startswith("sudo "):
+            return Result(exit_code=0, stdout="/opt/skyward/.venv/lib/python3.13/site-packages\n", stderr="")
+        return Result(exit_code=126, stdout="", stderr=f"bash: line 1: {bootstrap.PYTHON}: Permission denied")
+
+
+def describe_the_code_the_client_shipped() -> None:
+    @pytest.mark.parametrize("user", ["root", "ubuntu"])
+    async def lands_in_the_venv_whether_the_machine_let_in_root_or_a_user_who_needs_sudo(user: str) -> None:
+        link = _Venv(user)
+        node = _node(link, [], user=user)
+        node._user_code = b"code"
+
+        await node._sync_user_code()
+
+        assert any("tar xzf /tmp/_user_code.tar.gz -C /opt/skyward/.venv/lib/python3.13/site-packages " in command for command in link.commands)

@@ -38,7 +38,7 @@ from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import ComputeNotConnectedError, NameTakenError, NotFoundError
 from skyward.shared.events import ComputeAbandoned, ComputeDeleted
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCreate, TaskOrder
+from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCounts, TaskCreate, TaskOrder
 
 pytestmark = pytest.mark.local
 
@@ -196,6 +196,44 @@ def describe_what_a_compute_has_cost() -> None:
         assert served.cost == pytest.approx(2 * 2.0) == served.ended.cost
 
 
+def describe_what_a_compute_has_run() -> None:
+    async def a_live_one_counts_every_task_by_its_state_not_a_page_of_them(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="busy")
+        tasks = TaskStore(store, NodeStore(), BlobStore())
+        for state in ("queued", "queued", "running", "succeeded", "succeeded", "failed", "timed_out", "indeterminate"):
+            task = await _submit(tasks, compute.id)
+            await TaskRow.update({TaskRow.state: state}).where(TaskRow.id == task.id).run()
+
+        served = await store.get(compute.id)
+
+        assert served.tasks == TaskCounts(queued=2, running=1, succeeded=2, failed=1, cancelled=0, timed_out=1, indeterminate=1)
+
+    async def a_deleted_one_keeps_the_count_of_how_its_tasks_turned_out(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="done")
+        tasks = TaskStore(store, NodeStore(), BlobStore())
+        for state in ("succeeded", "cancelled"):
+            task = await _submit(tasks, compute.id)
+            await TaskRow.update({TaskRow.state: state}).where(TaskRow.id == task.id).run()
+
+        await _delete(store, compute.id)
+
+        served = await store.get(compute.id)
+        assert served.tasks == TaskCounts(queued=0, running=0, succeeded=1, failed=0, cancelled=1, timed_out=0, indeterminate=0)
+
+    async def each_compute_on_a_page_counts_only_its_own(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        tasks = TaskStore(store, NodeStore(), BlobStore())
+        busy, _ = await store.create(ComputeCreate(spec=SPEC, name="busy"), idempotency_key="k1")
+        await store.create(ComputeCreate(spec=SPEC, name="idle"), idempotency_key="k2")
+        await _submit(tasks, busy.id)
+
+        page = await store.list(None, 50, None, None, None)
+
+        assert {compute.name: compute.tasks.queued for compute in page.items} == {"busy": 1, "idle": 0}
+
+
 def describe_a_compute_that_has_ended() -> None:
     async def a_live_one_has_no_ending(tmp_path: Path) -> None:
         store = await _store(tmp_path)
@@ -233,13 +271,10 @@ def describe_a_compute_that_has_ended() -> None:
         ended = (await store.get(compute.id)).ended
         assert ended is not None and ended.cause == "abandoned"
 
-    async def its_bill_is_its_machines_and_its_calls_are_counted_by_how_they_ended(tmp_path: Path) -> None:
+    async def its_bill_is_its_machines_up_to_when_the_last_of_them_was_gone(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="billed")
-        tasks, nodes = TaskStore(store, NodeStore(), BlobStore()), NodeStore()
-        for outcome in ("succeeded", "failed", "timed_out", "succeeded"):
-            task = await _submit(tasks, compute.id)
-            await TaskRow.update({TaskRow.state: outcome}).where(TaskRow.id == task.id).run()
+        nodes = NodeStore()
         launched = now() - timedelta(hours=3)
         for held, price, unit in ((timedelta(minutes=61), 2.0, "hour"), (timedelta(seconds=90), 3.6, "second")):
             node = await nodes.request(compute.id, compute.generation)
@@ -256,7 +291,6 @@ def describe_a_compute_that_has_ended() -> None:
         ended = (await store.get(compute.id)).ended
         assert ended is not None
         assert ended.cost == pytest.approx(2 * 2.0 + 90 / 3600 * 3.6)
-        assert (ended.calls, ended.failed) == (4, 2)
 
     async def a_page_carries_the_ending_of_each_deleted_compute_on_it(tmp_path: Path) -> None:
         store = await _store(tmp_path)

@@ -48,6 +48,7 @@ from skyward.shared.schemas import (
     Market,
     Offer,
     Page,
+    TaskCounts,
 )
 from skyward.shared.tls import Authority
 from skyward.worker import plugins
@@ -454,25 +455,20 @@ class ComputeStore:
     async def _served(self, row: ComputeRow) -> Compute:
         ended = await self._ended(row) if row.status_state == "deleted" else None
         cost = ended.cost if ended is not None else round(sum(accrued(node, now()) for node in await self._nodes.of(row.id)), 6)
-        return await _to_compute(row, cost, ended)
+        return await _to_compute(row, cost, ended, await _counted(row.id))
 
     async def _ended(self, row: ComputeRow) -> Ending:
         """What a deleted compute came to.
 
         Derived when read, like the meter's reading and from the same rows: the bill
-        is its machines' up to the moment the last of them was gone, and the calls
-        are its tasks, counted by how they turned out. Nothing was summed on the way
-        to ``deleted``, so there is no total to disagree with the rows it came from.
+        is its machines' up to the moment the last of them was gone. Nothing was summed
+        on the way to ``deleted``, so there is no total to disagree with the rows it came from.
         """
         nodes = await self._nodes.of(row.id)
-        outcomes = await TaskRow.select(TaskRow.state, Count()).where(TaskRow.compute_id == row.id).group_by(TaskRow.state)
-        counted = {outcome["state"]: outcome["count"] for outcome in outcomes}
         return Ending(
             at=row.deleted_at,
             cause=msgspec.convert(row.deletion_cause, DeletionCause),
             cost=round(sum(accrued(node, row.deleted_at) for node in nodes), 6),
-            calls=sum(counted.values()),
-            failed=counted.get("failed", 0) + counted.get("timed_out", 0),
         )
 
     async def _freeze(self, compute_id: str, number: int, spec: ComputeSpec) -> None:
@@ -549,7 +545,15 @@ async def _projected(event: Event) -> dict[Column, Any]:
     return columns
 
 
-async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None) -> Compute:
+async def _counted(compute_id: str) -> TaskCounts:
+    states = await TaskRow.select(TaskRow.state, Count()).where(TaskRow.compute_id == compute_id).group_by(TaskRow.state)
+    return msgspec.convert(
+        {**dict.fromkeys(TaskCounts.__struct_fields__, 0), **{state["state"]: state["count"] for state in states}},
+        TaskCounts,
+    )
+
+
+async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None, tasks: TaskCounts) -> Compute:
     return Compute(
         id=row.id,
         name=row.name,
@@ -566,6 +570,7 @@ async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None) -> Com
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
         created_at=row.created_at,
         cost=cost,
+        tasks=tasks,
         offer=await unpacked(row.offer, Offer) if row.offer else None,
         ended=ended,
     )

@@ -27,7 +27,7 @@ from skyward.core.compute import MOVES
 from skyward.core.errors import DaemonError
 from skyward.server import daemon
 from skyward.shared.schemas import Compute as ComputeResource
-from skyward.shared.schemas import ComputeSpec, ComputeStatus, Lease, NodeBounds, Page, Provider, ProviderCreate
+from skyward.shared.schemas import ComputeSpec, ComputeStatus, Lease, NodeBounds, Page, Provider, ProviderCreate, TaskCounts
 
 pytestmark = pytest.mark.local
 
@@ -288,6 +288,7 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
         lease=Lease(),
         created_at=datetime.now(UTC),
         cost=0.0,
+        tasks=TaskCounts(queued=0, running=0, succeeded=0, failed=0, cancelled=0, timed_out=0, indeterminate=0),
     )
 
     def main(request: httpx.Request) -> httpx.Response:

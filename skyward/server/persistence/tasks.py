@@ -10,6 +10,7 @@ from typing import Any, NamedTuple
 
 import msgspec
 from msgspec import UNSET
+from piccolo.columns import Column
 from piccolo.querystring import QueryString
 
 from skyward.server.persistence.computes import LIVE, ComputeStore
@@ -43,6 +44,9 @@ ACCEPTING: tuple[ComputeState, ...] = ("requested", "provisioning", "ready", "de
 
 PENDING: tuple[ExecutionState, ...] = ("created", "assigned", "dispatching", "accepted", "started", "cancel_requested")
 
+UNPLACED: tuple[ExecutionState, ...] = ("created", "assigned")
+"""Pending, and still in the daemon: no machine has been handed these."""
+
 BATCH = 500
 """How many tasks' attempts one query reads."""
 
@@ -53,6 +57,17 @@ class Pressure(NamedTuple):
     load: int
     holding: Counter[str]
     owed: frozenset[int]
+
+
+class Expired(NamedTuple):
+    """An attempt answered for because its time ran out."""
+
+    execution: str
+    task: str
+    compute: str
+    ordinal: int
+    node: str | None
+    """The machine still holding it, which has to be asked to stop; ``None`` for one that never left the queue."""
 
 
 class TaskStore:
@@ -76,8 +91,9 @@ class TaskStore:
         can ask about after a crash — and the worker will happily run it anyway.
         The order is not an implementation detail.
 
-        A task that named no timeout takes the compute's, and takes it here: the
-        deadline is a fact about the task, and a task is only admitted once.
+        A task that named no limits takes the compute's, and takes them here: they
+        are facts about the task, and a task is only admitted once. The deadlines are
+        the attempts', because each attempt waits and runs on a clock of its own.
         """
 
         async def insert() -> str:
@@ -91,7 +107,6 @@ class TaskStore:
 
             task = ident("tsk")
             retry = compute.spec.retry if body.retry is UNSET else body.retry
-            timeout = body.timeout_seconds or compute.spec.options.default_compute_timeout
             await TaskRow(
                 id=task,
                 compute_id=compute.id,
@@ -104,7 +119,8 @@ class TaskStore:
                 decision=retry,
                 correlation_id=body.correlation_id,
                 submitted_at=now(),
-                deadline_at=now() + timedelta(seconds=timeout) if timeout else None,
+                queue_timeout=_limit(body.queue_timeout_seconds, compute.spec.options.task_queue_timeout),
+                run_timeout=_limit(body.run_timeout_seconds, compute.spec.options.task_run_timeout),
             ).save().run()
 
             for rank in await self._ranks(compute.id, body):
@@ -232,32 +248,67 @@ class TaskStore:
         result_sha256: str | None = None,
         error: Error | None = None,
         again: bool = False,
-    ) -> None:
+        stopping: bool = False,
+    ) -> bool:
         """What a worker did with an attempt, and the outcome that follows from it.
+
+        The first verdict stands. An attempt already answered for is not written
+        again, and ``False`` says so: a worker whose answer arrives after the attempt
+        timed out is too late to turn it into a success, and a deadline passing a
+        moment after the answer landed is too late to turn it into a timeout. The
+        write is conditional on the row still pending, so the tick and the dispatcher
+        racing over one attempt cannot both win.
 
         ``again`` writes the next attempt down in the same breath as this one's end,
         so the task is never terminal in between: a caller waiting on the result
         would otherwise be woken by the ending and handed it, a moment before the
-        retry that was meant to spare them exactly that.
+        retry that was meant to spare them exactly that. ``stopping`` is an ending
+        written while a machine still runs the attempt, whose slot stays taken until
+        :meth:`release`.
+
+        Starting is when the run's clock starts: the deadline stops being the wait's
+        and becomes the run's, counted from here rather than from the submission.
         """
         row = await ExecutionRow.objects().where(ExecutionRow.id == execution_id).first()
         if row is None:
             raise NotFoundError(f"no such execution: {execution_id}")
+        if row.state not in PENDING:
+            return False
 
-        row.state = state
-        row.node_id = node_id or row.node_id
-        row.result_sha256 = result_sha256 or row.result_sha256
-        row.error = await packed(error) if error else row.error
+        changes: dict[Column | str, Any] = {ExecutionRow.state: state}
+        if node_id:
+            changes[ExecutionRow.node_id] = node_id
+        if result_sha256:
+            changes[ExecutionRow.result_sha256] = result_sha256
+        if error:
+            changes[ExecutionRow.error] = await packed(error)
         if state == "started" and row.started_at is None:
-            row.started_at = now()
+            started = now()
+            limit = await TaskRow.select(TaskRow.run_timeout).where(TaskRow.id == row.task_id).first()
+            run = limit["run_timeout"] if limit else None
+            changes[ExecutionRow.started_at] = started
+            changes[ExecutionRow.deadline_at] = started + timedelta(seconds=run) if run else None
         if state not in PENDING:
-            row.finished_at = now()
-        await row.save().run()
+            changes[ExecutionRow.finished_at] = now()
+            changes[ExecutionRow.stopping] = stopping
+
+        landed = await ExecutionRow.update(changes).where(
+            (ExecutionRow.id == execution_id) & ExecutionRow.state.is_in(list(PENDING)),
+        ).returning(ExecutionRow.id).run()
+        if not landed:
+            return False
 
         if again:
             await self.attempt(row.task_id, row.rank, row.ordinal + 1, retry_of=row.id)
 
         await self.settle(row.task_id)
+        return True
+
+    async def release(self, execution_id: str) -> None:
+        """The worker let go of an attempt that was answered for while it still ran: its slot is free again."""
+        await ExecutionRow.update({ExecutionRow.stopping: False}).where(
+            (ExecutionRow.id == execution_id) & ExecutionRow.stopping.eq(True),
+        ).run()
 
     async def settle(self, task_id: str) -> None:
         """Recompute the task from its attempts. The only writer of ``TaskRow.state``.
@@ -296,6 +347,9 @@ class TaskStore:
         return tuple(node.rank for node in nodes.items if node.state == "ready")
 
     async def attempt(self, task_id: str, rank: int, ordinal: int, retry_of: str | None) -> str:
+        """Write one attempt down, with the wait it is allowed starting now — a retry's included."""
+        limit = await TaskRow.select(TaskRow.queue_timeout).where(TaskRow.id == task_id).first()
+        wait = limit["queue_timeout"] if limit else None
         execution = ident("exe")
         await ExecutionRow(
             id=execution,
@@ -304,6 +358,7 @@ class TaskStore:
             ordinal=ordinal,
             state="created",
             retry_of=retry_of,
+            deadline_at=now() + timedelta(seconds=wait) if wait else None,
         ).save().run()
         return execution
 
@@ -320,12 +375,19 @@ class TaskStore:
     async def unsettled(self) -> tuple[str, ...]:
         """Tasks that have not reached a verdict and still have a compute to reach one on — what the sweep re-offers.
 
+        A task that has its verdict but an attempt still ``stopping`` is among them: its
+        machine has not let go yet, and a daemon that restarted meanwhile is the one that
+        has to ask it again.
+
         A deleted compute's tasks are not among them. Nothing is left to run them, and
         offering them anyway is a read per task per tick that grows with every compute
         the daemon has ever deleted; :meth:`stranded` is how the sweep finds them instead.
         """
         live = ComputeRow.select(ComputeRow.id).where(ComputeRow.status_state.is_in(list(LIVE)))
-        rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]) & TaskRow.compute_id.is_in(live))
+        held = ExecutionRow.select(ExecutionRow.task_id).where(ExecutionRow.stopping.eq(True))
+        rows = await TaskRow.select(TaskRow.id).where(
+            (TaskRow.state.is_in(["queued", "running"]) | TaskRow.id.is_in(held)) & TaskRow.compute_id.is_in(live),
+        )
         return tuple(row["id"] for row in rows)
 
     async def stranded(self) -> tuple[str, ...]:
@@ -355,29 +417,39 @@ class TaskStore:
         ).order_by(TaskRow.submitted_at)
         return tuple(row["id"] for row in rows)
 
-    async def expire(self) -> tuple[str, ...]:
-        """Time out the tasks whose deadline has passed.
+    async def expire(self) -> tuple[Expired, ...]:
+        """Time out the attempts whose deadline has passed.
 
-        The deadline is written at admission and nothing else reads it, so this is what
-        makes it mean anything. It runs on the tick because a deadline passing is not
-        something anybody does: there is no write to react to, and the only way to
-        notice is to look.
+        It runs on the tick because a deadline passing is not something anybody does:
+        there is no write to react to, and the only way to notice is to look.
 
-        Every attempt still in flight goes, the ones that never left included — a
-        caller who asked for an answer within a window is no better served by an
-        attempt still waiting for a machine than by one that is running.
+        Each attempt is on its own clock — the wait until it starts, then the run — so
+        a task submitted with a week of work ahead of it is not timed out by the week.
+        One still waiting for a machine is simply over, and certain never to have run.
+        One a machine holds is answered for too, since its caller asked for an answer
+        within a window, but it is written ``stopping``: the function is still running
+        there, its slot stays taken until the worker lets go, and asking it to stop is
+        the dispatcher's.
         """
-        rows = await TaskRow.select(TaskRow.id).where(
-            TaskRow.state.is_in(["queued", "running"]) & (TaskRow.deadline_at < now()),
-        )
-        expired = tuple(row["id"] for row in rows)
+        rows = await ExecutionRow.select(
+            ExecutionRow.id, ExecutionRow.task_id, ExecutionRow.ordinal, ExecutionRow.node_id, ExecutionRow.state, ExecutionRow.started_at
+        ).where(ExecutionRow.state.is_in(list(PENDING)) & (ExecutionRow.deadline_at < now()))
 
-        for task_id in expired:
-            for execution in await self.attempts(task_id):
-                if execution.state in PENDING:
-                    await self.observe(execution.id, "timed_out")
+        expired: list[Expired] = []
+        for row in rows:
+            task = await TaskRow.select(TaskRow.compute_id, TaskRow.queue_timeout, TaskRow.run_timeout).where(TaskRow.id == row["task_id"]).first()
+            if task is None:
+                continue
+            held = None if row["state"] in UNPLACED else row["node_id"]
+            error = (
+                Error(code="task_failed", message=f"ran for more than {task['run_timeout']:g}s", retryable=False, details={"timeout": "run"})
+                if row["started_at"]
+                else Error(code="task_failed", message=f"waited more than {task['queue_timeout']:g}s to start", retryable=False, details={"timeout": "queue"})
+            )
+            if await self.observe(row["id"], "timed_out", error=error, stopping=held is not None):
+                expired.append(Expired(row["id"], row["task_id"], task["compute_id"], row["ordinal"], held))
 
-        return expired
+        return tuple(expired)
 
     async def pressure(self, compute: str) -> Pressure:
         """What this compute's queue asks of its nodes, from one read.
@@ -386,11 +458,18 @@ class TaskStore:
         and running together, because they are the same demand seen a moment apart.
         Sizing the pool to what is running would size it to what the pool can
         already do, and a queue would never be a reason to grow.
+
+        An attempt timed out while its machine still runs it holds that machine and
+        is not demand: nothing more will be asked of the queue on its behalf, but the
+        slot is not free until the worker lets go of it.
         """
         pending = await self._pending(compute)
+        stopping = await ExecutionRow.select(ExecutionRow.node_id).where(
+            ExecutionRow.stopping.eq(True) & ExecutionRow.task_id.is_in(TaskRow.select(TaskRow.id).where(TaskRow.compute_id == compute)),
+        )
         return Pressure(
             load=len(pending),
-            holding=Counter(row["node_id"] for row in pending if row["node_id"]),
+            holding=Counter(row["node_id"] for row in (*pending, *stopping) if row["node_id"]),
             owed=frozenset(row["rank"] for row in pending),
         )
 
@@ -567,10 +646,16 @@ async def _to_task(row: TaskRow, attempts: Sequence[ExecutionRow]) -> Task:
         submitted_at=row.submitted_at,
         rank=row.rank,
         correlation_id=row.correlation_id,
-        deadline_at=row.deadline_at,
+        queue_timeout_seconds=row.queue_timeout,
+        run_timeout_seconds=row.run_timeout,
         result_sha256=row.result_sha256,
         finished_at=row.finished_at,
     )
+
+
+def _limit(asked: float | None, default: float) -> float | None:
+    """The limit a task runs under: its own when it named one, the compute's otherwise, and none at all for ``0``."""
+    return (default if asked is None else asked) or None
 
 
 def _cursor(order: TaskOrder, position: int, task: str) -> str:
@@ -600,4 +685,6 @@ async def _to_execution(row: ExecutionRow) -> Execution:
         error=await unpacked(row.error, Error) if row.error else None,
         started_at=row.started_at,
         finished_at=row.finished_at,
+        deadline_at=row.deadline_at,
+        stopping=row.stopping,
     )

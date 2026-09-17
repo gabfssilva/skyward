@@ -6,7 +6,7 @@ import type { Accelerator, ComputeCreate, ComputeSpec, Offer, Provider, Worker }
 import { useStore } from '../state/store'
 import { money } from '../state/model'
 import { Icon } from '../ui/icons'
-import { Chip, Pick } from '../ui/primitives'
+import { Chip, Pick, Tick } from '../ui/primitives'
 import { Scrim, CloseBtn } from './Scrim'
 import { COLLECTIVE, PLUGINS } from './catalog'
 
@@ -674,30 +674,5 @@ function Packages({ pip, onChange }: { pip: readonly string[]; onChange: (pip: r
         />
       </div>
     </div>
-  )
-}
-
-/**
- * A list longer than its cell scrolls on a loop, which is what says there is more of it. The loop runs over two
- * copies, so moving by half is one lap, at the same speed whatever the length.
- */
-function Tick({ text }: { text: string }) {
-  const box = useRef<HTMLSpanElement>(null)
-  const track = useRef<HTMLSpanElement>(null)
-  const [moving, setMoving] = useState(false)
-
-  useLayoutEffect(() => {
-    if (!box.current || !track.current) return
-    if (!moving) setMoving(box.current.scrollWidth > box.current.clientWidth)
-    else box.current.style.setProperty('--lap', `${track.current.offsetWidth / 2 / 30}s`)
-  }, [moving])
-
-  return (
-    <span className={moving ? 'tick moving' : 'tick'} ref={box}>
-      <span ref={track}>
-        <span>{text}</span>
-        {moving ? <span aria-hidden="true">{text}</span> : null}
-      </span>
-    </span>
   )
 }

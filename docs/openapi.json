@@ -64,7 +64,7 @@
         "type": "object"
       },
       "Compute": {
-        "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.",
+        "description": "A set of machines held under one intention, as the API serves it.\n\n``spec`` is what was asked for and ``status`` is what was observed, written by\ndifferent actors and kept in one resource so that reading both is one call.\n``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;\n``generation`` counts definitions, not writes. ``offer`` is what the spec\nresolved to once the compute was bound, and ``ended`` is how a deleted one ended.\n``tasks`` counts every task it was given, by state, from the task rows on each\nread \u2014 not the page of them a listing returns.",
         "properties": {
           "cost": {
             "type": "number"
@@ -120,6 +120,9 @@
           },
           "status": {
             "$ref": "#/components/schemas/ComputeStatus"
+          },
+          "tasks": {
+            "$ref": "#/components/schemas/TaskCounts"
           }
         },
         "required": [
@@ -131,7 +134,8 @@
           "name",
           "revision",
           "spec",
-          "status"
+          "status",
+          "tasks"
         ],
         "title": "Compute",
         "type": "object"
@@ -686,14 +690,11 @@
         "type": "object"
       },
       "Ending": {
-        "description": "How a compute ended: when its last machine was gone, why, and what the run came to.\n\nOnly a deleted compute has one. ``cost`` and the counts are derived from the node\nand task rows each time the compute is read, the way the meter derives a live\ncompute's cost; ``failed`` counts the calls that ended in an error, failed or\ntimed out.",
+        "description": "How a compute ended: when its last machine was gone, why, and what the run came to.\n\nOnly a deleted compute has one. ``cost`` is derived from the node rows each time\nthe compute is read, the way the meter derives a live compute's cost.",
         "properties": {
           "at": {
             "format": "date-time",
             "type": "string"
-          },
-          "calls": {
-            "type": "integer"
           },
           "cause": {
             "enum": [
@@ -704,17 +705,12 @@
           },
           "cost": {
             "type": "number"
-          },
-          "failed": {
-            "type": "integer"
           }
         },
         "required": [
           "at",
-          "calls",
           "cause",
-          "cost",
-          "failed"
+          "cost"
         ],
         "title": "Ending",
         "type": "object"
@@ -785,6 +781,17 @@
       "Execution": {
         "description": "One physical attempt at a task.\n\n``ordinal`` counts the attempts and ``rank`` says which node took it. A retry\nis another execution pointing ``retry_of`` at the last one \u2014 never another\ntask, because the task id is the handle the caller is holding.",
         "properties": {
+          "deadline_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "error": {
             "oneOf": [
               {
@@ -871,6 +878,10 @@
               "indeterminate"
             ],
             "type": "string"
+          },
+          "stopping": {
+            "default": false,
+            "type": "boolean"
           }
         },
         "required": [
@@ -1968,7 +1979,6 @@
           "autoscale_cooldown": 0.0,
           "autoscale_idle_timeout": 120.0,
           "cluster": null,
-          "default_compute_timeout": 0.0,
           "health_command": null,
           "health_failures": 3,
           "health_function": null,
@@ -1979,6 +1989,8 @@
           "ssh_connect_timeout": 240.0,
           "ssh_reconnect_attempts": 30,
           "ssh_retry_delay": 2.0,
+          "task_queue_timeout": 0.0,
+          "task_run_timeout": 0.0,
           "worker_timeout": 180.0
         },
         "description": "Operational knobs the daemon reads off the spec.\n\nEach defaults to the value the runtime hard-coded before the knob existed, so a\nspec built without options behaves exactly as one built with ``Options()``. The\nclient-side timeouts are not here: they govern how long the owning process waits\nfor its own pool, never leave it, and so ride the SDK's ``Options`` rather than\nthe wire.",
@@ -2000,10 +2012,6 @@
                 "type": "null"
               }
             ]
-          },
-          "default_compute_timeout": {
-            "default": 0.0,
-            "type": "number"
           },
           "health_command": {
             "oneOf": [
@@ -2055,6 +2063,14 @@
           },
           "ssh_retry_delay": {
             "default": 2.0,
+            "type": "number"
+          },
+          "task_queue_timeout": {
+            "default": 0.0,
+            "type": "number"
+          },
+          "task_run_timeout": {
+            "default": 0.0,
             "type": "number"
           },
           "worker_timeout": {
@@ -2849,17 +2865,6 @@
               }
             ]
           },
-          "deadline_at": {
-            "oneOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "dispatch": {
             "enum": [
               "one",
@@ -2894,6 +2899,16 @@
           "id": {
             "type": "string"
           },
+          "queue_timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "rank": {
             "oneOf": [
               {
@@ -2918,6 +2933,16 @@
             "oneOf": [
               {
                 "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
               },
               {
                 "type": "null"
@@ -2954,6 +2979,43 @@
           "submitted_at"
         ],
         "title": "Task",
+        "type": "object"
+      },
+      "TaskCounts": {
+        "description": "How many of a compute's tasks are in each state, one field per :data:`TaskState`.",
+        "properties": {
+          "cancelled": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "indeterminate": {
+            "type": "integer"
+          },
+          "queued": {
+            "type": "integer"
+          },
+          "running": {
+            "type": "integer"
+          },
+          "succeeded": {
+            "type": "integer"
+          },
+          "timed_out": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cancelled",
+          "failed",
+          "indeterminate",
+          "queued",
+          "running",
+          "succeeded",
+          "timed_out"
+        ],
+        "title": "TaskCounts",
         "type": "object"
       },
       "TaskCreate": {
@@ -3013,6 +3075,16 @@
           "function": {
             "type": "string"
           },
+          "queue_timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "rank": {
             "oneOf": [
               {
@@ -3033,10 +3105,10 @@
               }
             ]
           },
-          "timeout_seconds": {
+          "run_timeout_seconds": {
             "oneOf": [
               {
-                "type": "integer"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -3067,6 +3139,7 @@
               "retrying",
               "succeeded",
               "failed",
+              "timed_out",
               "indeterminate"
             ],
             "type": "string"

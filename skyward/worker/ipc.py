@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 import queue
 import threading
 import traceback
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from concurrent.futures import BrokenExecutor, Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from multiprocessing.context import BaseContext
 from multiprocessing.queues import Queue
 from typing import Literal
 
-from skyward.worker import distributed, slot
+from skyward.worker import distributed, slot, stopping
 
 type Kind = Literal["process", "loky"]
 
@@ -51,6 +52,39 @@ class Call:
     method: str
     args: tuple[object, ...]
     params: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class Running:
+    """A subprocess saying which attempt it has just started, or with ``pid`` ``None``, just finished."""
+
+    id: str
+    pid: int | None
+
+
+type Tell = Callable[[Running], bool]
+
+_tell: Tell | None = None
+"""This subprocess's way to tell the worker what it is running. Set by :func:`_install`."""
+
+
+@contextmanager
+def attempt(id: str) -> Iterator[None]:
+    """Run the block as attempt ``id`` in this subprocess, where the worker can stop it.
+
+    The worker is told which process holds the attempt before it starts, and told
+    again once it is over, so a stop is only ever sent to the process running what it
+    is meant for. An attempt the worker was already asked to stop is answered for
+    here, before any of the user's code runs.
+    """
+    with stopping.current(id):
+        try:
+            if _tell is not None and _tell(Running(id, os.getpid())):
+                raise stopping.Stop
+            yield
+        finally:
+            if _tell is not None:
+                _tell(Running(id, None))
 
 
 def _install(registrations: Registrations, slots: Slots | None = None) -> None:
@@ -78,20 +112,30 @@ def _install(registrations: Registrations, slots: Slots | None = None) -> None:
         with suppress(queue.Empty):
             slot.set(slots.get(timeout=SLOT_TIMEOUT))
 
+    global _tell
+    stopping.arm()
     parent, child = multiprocessing.get_context("spawn").Pipe()
     registrations.put(parent)
     lock = threading.Lock()
 
-    def backend(kind: str, name: str, method: str, args: tuple[object, ...], params: Mapping[str, object]) -> object:
-        with lock:
-            child.send(Call(kind, name, method, args, params))
+    def exchange(request: Call | Running) -> tuple[bool, object]:
+        with stopping.deferred(), lock:
+            child.send(request)
             reply = child.recv()
         assert isinstance(reply, tuple)
-        ok, payload = reply
+        return reply
+
+    def backend(kind: str, name: str, method: str, args: tuple[object, ...], params: Mapping[str, object]) -> object:
+        ok, payload = exchange(Call(kind, name, method, args, params))
         if ok:
             return payload
         raise RuntimeError(payload)
 
+    def tell(running: Running) -> bool:
+        _, stop = exchange(running)
+        return stop is True
+
+    _tell = tell
     distributed.install(backend)
 
 
@@ -107,9 +151,14 @@ class Bridge:
     child that died between registering and being read has nothing to hand over.
     That is a child with no calls to answer, not a reason for the thread that
     answers every other child to stop.
+
+    It is also where the worker learns which child runs which attempt: ``pids`` is
+    what a stop is addressed by, and a child starting an attempt the worker was
+    already asked to stop hears so in the reply.
     """
 
     def __init__(self, registrations: Registrations) -> None:
+        self.pids: dict[str, int] = {}
         self._registrations = registrations
         self._stop = threading.Event()
         self._serving = threading.Thread(target=self._serve, name="skyward-ipc", daemon=True)
@@ -143,8 +192,15 @@ class Bridge:
                 except (EOFError, OSError):
                     live.discard(ready)
                     continue
-                assert isinstance(request, Call)
-                self._dispatch.submit(self._answer, ready, request)
+                match request:
+                    case Running(id=id, pid=None):
+                        self.pids.pop(id, None)
+                        ready.send((True, False))
+                    case Running(id=id, pid=int(pid)):
+                        self.pids[id] = pid
+                        ready.send((True, id in stopping.asked))
+                    case Call():
+                        self._dispatch.submit(self._answer, ready, request)
 
     def _answer(self, conn: Connection, call: Call) -> None:
         try:
@@ -170,8 +226,9 @@ class Pool:
     and the next task would pay for a new process and every import again.
     """
 
-    def __init__(self, kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations) -> None:
+    def __init__(self, kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations, pids: MutableMapping[str, int]) -> None:
         self._kind = kind
+        self._pids = pids
         self._reuse = reuse
         self._workers = workers
         self._spawn = spawn
@@ -195,6 +252,15 @@ class Pool:
                 executor.shutdown(wait=False)
                 self._executor = self._build()
             raise
+
+    def stop(self, id: str) -> bool:
+        """Signal the child running ``id`` to stop it. ``False`` if no child is running it."""
+        pid = self._pids.get(id)
+        if pid is None:
+            return False
+        with suppress(ProcessLookupError):
+            os.kill(pid, stopping.SIGNAL)
+        return True
 
     def close(self) -> None:
         self._executor.shutdown(wait=False)
@@ -242,7 +308,7 @@ def pool(kind: Kind, reuse: bool, workers: int) -> Iterator[Pool]:
     registrations: Registrations = spawn.Queue()
     bridge = Bridge(registrations)
     bridge.start()
-    subprocesses = Pool(kind, reuse, workers, spawn, registrations)
+    subprocesses = Pool(kind, reuse, workers, spawn, registrations, bridge.pids)
     try:
         yield subprocesses
     finally:

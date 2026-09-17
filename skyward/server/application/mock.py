@@ -36,6 +36,7 @@ from skyward.shared.schemas import (
     ProviderRef,
     Spec,
     Task,
+    TaskCounts,
     TaskCreate,
     TaskOrder,
     TaskState,
@@ -62,6 +63,7 @@ COMPUTE = Compute(
     lease=Lease(owner="ctl_1:epoch_9", expires_at=NOW),
     created_at=NOW,
     cost=18.4,
+    tasks=TaskCounts(queued=0, running=0, succeeded=1, failed=0, cancelled=0, timed_out=0, indeterminate=0),
 )
 
 NODE = Node(
@@ -274,9 +276,6 @@ class MockTasks:
     def close(self) -> None:
         return None
 
-    async def expire(self) -> tuple[str, ...]:
-        return ()
-
 
 class MockExecutions:
     async def list(self, task_id: str) -> Page[Execution]:
@@ -413,6 +412,9 @@ class MockDispatcher:
 
     async def deleted(self, compute_id: str) -> None:
         self.dispatched.append(f"deleted:{compute_id}")
+
+    async def expire(self) -> None:
+        return None
 
     async def stream(self, task_id: str) -> AsyncIterator[bytes]:
         self.dispatched.append(f"stream:{task_id}")

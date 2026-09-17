@@ -137,7 +137,7 @@ class Node:
 
     @property
     def _sudo(self) -> str:
-        """A machine reached as a non-root user needs a lift to write under ``/opt``."""
+        """A machine reached as a non-root user needs a lift to write under ``/opt``, and to run the venv's python, which lives under ``/root``."""
         return "" if self._machine.user == "root" else "sudo "
 
     @property
@@ -256,7 +256,7 @@ class Node:
         remote = "/tmp/_user_code.tar.gz"
         await self._ssh.put(remote, self._user_code)
 
-        query = await self._ssh.run(f"{bootstrap.PYTHON} -c \"import sysconfig; print(sysconfig.get_path('purelib'))\"")
+        query = await self._ssh.run(f"{self._sudo}{bootstrap.PYTHON} -c \"import sysconfig; print(sysconfig.get_path('purelib'))\"")
         target = query.stdout.strip()
         if not target:
             raise BootstrapFailedError(f"could not locate site-packages: {query.stderr}")

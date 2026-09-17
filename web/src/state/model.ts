@@ -148,6 +148,13 @@ export const targetOf = (c: Compute): number => c.spec.nodes.max ?? c.spec.nodes
 export const endedAt = (c: Compute): number => ms(c.ended?.at ?? c.created_at)
 export const ranOf = (c: Compute): number => endedAt(c) - ms(c.created_at)
 
+/** Every task the compute was given, in any state — the daemon's count, not the page the store holds. */
+export const callsOf = (c: Compute): number => Object.values(c.tasks).reduce((s, n) => s + n, 0)
+/** The tasks that ended in an error: failed or timed out. */
+export const failedOf = (c: Compute): number => c.tasks.failed + c.tasks.timed_out
+/** The tasks that are over, however they turned out. */
+export const finishedOf = (c: Compute): number => callsOf(c) - c.tasks.queued - c.tasks.running
+
 export const CAUSE: Record<Ending['cause'], string> = { requested: 'someone asked for it', abandoned: 'nobody renewed its lease' }
 
 /** The shape of a compute: how many nodes it is, of what, where. Unloaded nodes fall back to the target. */

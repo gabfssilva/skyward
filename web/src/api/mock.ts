@@ -13,6 +13,7 @@ import type {
   ProviderKind,
   Spec,
   Task,
+  TaskCounts,
   WireError,
   Worker,
 } from './client'
@@ -38,7 +39,6 @@ const OPTIONS: Options = {
   autoscale_cooldown: 0,
   autoscale_idle_timeout: 120,
   cluster: null,
-  default_compute_timeout: 0,
   health_command: null,
   health_failures: 3,
   health_function: null,
@@ -49,6 +49,8 @@ const OPTIONS: Options = {
   ssh_connect_timeout: 240,
   ssh_reconnect_attempts: 30,
   ssh_retry_delay: 2,
+  task_queue_timeout: 0,
+  task_run_timeout: 0,
   worker_timeout: 180,
 }
 
@@ -301,7 +303,7 @@ const mkCompute = (
   nodesReady: number,
   leaseIn: number,
   ended: Ending | null = null,
-): Compute => ({
+): Omit<Compute, 'tasks'> => ({
   cost: ended ? ended.cost : (rateOf(id) * createdAgo) / 3.6e6,
   created_at: iso(now() - createdAgo),
   ended,
@@ -342,6 +344,7 @@ const execution = (
   id: `${taskId}_${ordinal}`,
   node_id: null,
   ordinal,
+  stopping: false,
   rank,
   result_sha256: null,
   retry_of: null,
@@ -451,7 +454,6 @@ const task = (
   args_sha256: 'a'.repeat(64),
   compute_id: computeId,
   correlation_id: null,
-  deadline_at: null,
   dispatch,
   executions,
   finished_at: finishedAgo === null ? null : iso(now() - finishedAgo),
@@ -508,7 +510,7 @@ nodes[C6] = gone(C6, 2, { base: 0, net: '38.104.9', mach: 'rp-91b', accelerator:
 
 const ready = (id: string): number => nodes[id]!.filter((n) => n.state === 'ready').length
 
-const computes: Compute[] = [
+const computes: Omit<Compute, 'tasks'>[] = [
   mkCompute(
     C1,
     'llama-3-sft',
@@ -593,7 +595,7 @@ const computes: Compute[] = [
 ]
 
 /** What the daemon still remembers of computes it has released. */
-const retired: Compute[] = [
+const retired: Omit<Compute, 'tasks'>[] = [
   mkCompute(
     C5,
     'sft-ablation-7b',
@@ -612,7 +614,7 @@ const retired: Compute[] = [
     16,
     0,
     0,
-    { at: iso(now() - (9.2e6 - 7.56e6)), calls: 1421, cause: 'requested', cost: 16 * 12.24 * 2.1, failed: 3 },
+    { at: iso(now() - (9.2e6 - 7.56e6)), cause: 'requested', cost: 16 * 12.24 * 2.1 },
   ),
   mkCompute(
     C6,
@@ -633,11 +635,15 @@ const retired: Compute[] = [
     2,
     0,
     0,
-    { at: iso(now() - (2.7e6 - 2.28e6)), calls: 12, cause: 'abandoned', cost: (2 * 0.79 * 2.28e6) / 3.6e6, failed: 0 },
+    { at: iso(now() - (2.7e6 - 2.28e6)), cause: 'abandoned', cost: (2 * 0.79 * 2.28e6) / 3.6e6 },
   ),
 ]
 
-const everything = (): Compute[] => [...computes, ...retired]
+/** Every compute as the daemon serves it: its tasks counted from the rows on each read. */
+const everything = (): Compute[] => [...computes, ...retired].map((c) => ({ ...c, tasks: counted(tasks[c.id] ?? []) }))
+
+const counted = (ts: readonly Task[]): TaskCounts =>
+  ts.reduce((n, t) => ({ ...n, [t.state]: n[t.state] + 1 }), { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, timed_out: 0, indeterminate: 0 })
 
 const tasks: Record<string, Task[]> = {
   [C1]: [
@@ -732,6 +738,9 @@ const byState = (t: Task): number => {
   return t.state === 'running' ? 3e13 + submitted : t.state === 'queued' ? 2e13 - submitted : 1e13 + Date.parse(t.finished_at ?? t.submitted_at)
 }
 
+/** The daemon's ``finished`` order as one moment, largest first: the latest to finish first, then the unfinished, newest submitted first. */
+const byFinish = (t: Task): number => (t.finished_at ? 2e13 + Date.parse(t.finished_at) : Date.parse(t.submitted_at))
+
 /** The states a compute still owes something in: what ``live=true`` lists, and ``live=false`` the rest of. */
 const LIVE = new Set<Compute['status']['state']>(['requested', 'provisioning', 'ready', 'degraded', 'deleting'])
 
@@ -795,7 +804,6 @@ function submit(init: RequestInit | undefined): Response {
     args_sha256: 'a'.repeat(64),
     compute_id: body.compute,
     correlation_id: null,
-    deadline_at: null,
     dispatch: body.dispatch,
     executions: ranks.map((rank) => execution(id, rank, 1, 'created', 0, false, null)),
     finished_at: null,
@@ -847,7 +855,7 @@ function route(path: string, init: RequestInit | undefined): Response {
 
   if (parts[0] === 'computes') {
     if (!parts[1]) {
-      if (method === 'POST') return json(computes[0])
+      if (method === 'POST') return json(everything()[0])
       const query = new URLSearchParams(path.split('?')[1] ?? '')
       const state = query.get('state')
       const live = query.get('live')
@@ -886,7 +894,7 @@ function route(path: string, init: RequestInit | undefined): Response {
       const compute = query.get('compute')
       const state = query.get('state')
       const matched = (compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()).filter((t) => !state || t.state === state)
-      const moment = query.get('order') === 'state' ? byState : (t: Task) => Date.parse(t.submitted_at)
+      const moment = query.get('order') === 'state' ? byState : query.get('order') === 'finished' ? byFinish : (t: Task) => Date.parse(t.submitted_at)
       return json(paged(matched, moment, query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
     const t = Object.values(tasks)

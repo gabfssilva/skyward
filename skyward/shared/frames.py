@@ -37,6 +37,15 @@ class Lost(Struct, frozen=True, tag="lost", tag_field="status"):
     error: str
 
 
+class Stopped(Struct, frozen=True, tag="stopped", tag_field="status"):
+    """The daemon asked the attempt to stop, and it did.
+
+    Not ``Lost``: the process under it did not die of something unknown, it was
+    interrupted on purpose because the attempt ran past its time — and an ending the
+    daemon asked for is not one whose retry decision is worth asking.
+    """
+
+
 class Chunk(Struct, frozen=True, tag="chunk", tag_field="status"):
     """One thing a generator yielded."""
 
@@ -51,8 +60,8 @@ class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
     """The worker has never heard of the task."""
 
 
-type Outcome = Done | Failed | Lost
-type Lookup = Done | Failed | Lost | Unknown
+type Outcome = Done | Failed | Lost | Stopped
+type Lookup = Done | Failed | Lost | Stopped | Unknown
 """What a worker answers whoever waits on an attempt: its outcome once there is one, or that it never had it."""
 
 type Step = Chunk | Failed | End

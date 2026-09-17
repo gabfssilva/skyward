@@ -481,8 +481,16 @@ class Options(Struct, frozen=True):
     """
     autoscale_cooldown: float = 0.0
     """Seconds between autoscaling decisions. ``0`` is no cooldown — today's behavior."""
-    default_compute_timeout: float = 0.0
-    """Seconds a task may run when it names no deadline of its own. ``0`` is unbounded."""
+    task_queue_timeout: float = 0.0
+    """Seconds an attempt may wait for a machine before it starts, when its task names no limit of its own.
+
+    Counted from when the attempt was written down, so a retry waits on a clock of its
+    own. ``0`` is unbounded."""
+    task_run_timeout: float = 0.0
+    """Seconds an attempt may run once it has started, when its task names no limit of its own.
+
+    Counted from the start, not from the submission: a task that waited a week in the
+    queue has all of it. ``0`` is unbounded."""
     health_command: str | None = None
     """A shell command run on each node to ask whether the machine is still usable.
 
@@ -581,17 +589,25 @@ class Lease(Struct, frozen=True):
 class Ending(Struct, frozen=True):
     """How a compute ended: when its last machine was gone, why, and what the run came to.
 
-    Only a deleted compute has one. ``cost`` and the counts are derived from the node
-    and task rows each time the compute is read, the way the meter derives a live
-    compute's cost; ``failed`` counts the calls that ended in an error, failed or
-    timed out.
+    Only a deleted compute has one. ``cost`` is derived from the node rows each time
+    the compute is read, the way the meter derives a live compute's cost.
     """
 
     at: datetime
     cause: DeletionCause
     cost: float
-    calls: int
+
+
+class TaskCounts(Struct, frozen=True):
+    """How many of a compute's tasks are in each state, one field per :data:`TaskState`."""
+
+    queued: int
+    running: int
+    succeeded: int
     failed: int
+    cancelled: int
+    timed_out: int
+    indeterminate: int
 
 
 class Compute(Struct, frozen=True):
@@ -602,6 +618,8 @@ class Compute(Struct, frozen=True):
     ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
     ``generation`` counts definitions, not writes. ``offer`` is what the spec
     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
+    ``tasks`` counts every task it was given, by state, from the task rows on each
+    read — not the page of them a listing returns.
     """
 
     id: str
@@ -619,6 +637,7 @@ class Compute(Struct, frozen=True):
     every read from the node rows, by the rule the meter reads — nothing sums it on the
     way, so there is no total that can disagree with the rows it came from.
     """
+    tasks: TaskCounts
     offer: "Offer | None" = None
     ended: Ending | None = None
 
@@ -799,6 +818,12 @@ class Execution(Struct, frozen=True):
     error: Error | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    deadline_at: datetime | None = None
+    """When the phase the attempt is in runs out: waiting for a machine until it starts,
+    running from then on. ``None`` is a phase without a limit."""
+    stopping: bool = False
+    """The attempt was answered for while a machine still held it — it ran past its time
+    — and the machine was asked to stop. Its slot stays taken until the worker lets go."""
 
 
 class TaskCreate(Struct, frozen=True):
@@ -819,7 +844,12 @@ class TaskCreate(Struct, frozen=True):
     rank: int | None = None
     """The node to run on, for ``one`` and ``stream``. Omitted is any node with a slot
     going spare; given, the task waits for that one rather than settling for another."""
-    timeout_seconds: int | None = None
+    queue_timeout_seconds: float | None = None
+    """How long each attempt may wait to start. ``None`` takes the compute's
+    ``task_queue_timeout``; ``0`` is no limit, whatever the compute says."""
+    run_timeout_seconds: float | None = None
+    """How long each attempt may run once started. ``None`` takes the compute's
+    ``task_run_timeout``; ``0`` is no limit, whatever the compute says."""
     retry: str | None | UnsetType = UNSET
     """The digest of this task's retry decision. Unset takes the compute's; ``None``
     turns retrying off for this task alone."""
@@ -849,7 +879,10 @@ class Task(Struct, frozen=True):
     """The node this task named, when it named one. ``None`` is any node with a slot,
     which is what ``>>`` asks for."""
     correlation_id: str | None = None
-    deadline_at: datetime | None = None
+    queue_timeout_seconds: float | None = None
+    """The wait each attempt is allowed, settled at admission; ``None`` is no limit."""
+    run_timeout_seconds: float | None = None
+    """The run each attempt is allowed, settled at admission; ``None`` is no limit."""
     result_sha256: str | None = None
     finished_at: datetime | None = None
 
@@ -1042,7 +1075,7 @@ class Readiness(Struct, frozen=True):
 type PhaseMark = Literal["started", "completed", "failed"]
 """Whether a bootstrap phase opened, closed, or broke."""
 
-type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "indeterminate"]
+type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "timed_out", "indeterminate"]
 """What the stream says about a task: that it began, that it is being tried again, or how it ended.
 
 Narrower than :data:`TaskState`, which is the task resource's own vocabulary. A

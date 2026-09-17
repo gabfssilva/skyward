@@ -54,8 +54,12 @@ def _pool(target: Target) -> Pool:
 class Pending[T]:
     """One call, described and not yet made.
 
-    ``retry`` is the call's retry decision: unset takes the pool's, ``None`` turns
-    retrying off for this call, and a function decides — see :func:`function`.
+    ``timeout`` is how long each attempt may run once started, and ``queue_timeout``
+    how long it may wait for a machine before it starts: ``None`` takes the pool's
+    ``task_run_timeout`` and ``task_queue_timeout``, and ``0`` is no limit whatever
+    the pool says. ``retry`` is the call's retry decision: unset takes the pool's,
+    ``None`` turns retrying off for this call, and a function decides — see
+    :func:`function`.
     """
 
     fn: Callable[..., T]
@@ -63,9 +67,13 @@ class Pending[T]:
     kwargs: dict[str, object]
     timeout: float | None = None
     retry: Retry | None | UnsetType = UNSET
+    queue_timeout: float | None = None
 
     def with_timeout(self, timeout: float) -> Pending[T]:
         return replace(self, timeout=timeout)
+
+    def with_queue_timeout(self, queue_timeout: float) -> Pending[T]:
+        return replace(self, queue_timeout=queue_timeout)
 
     def with_retry(self, retry: Retry | None) -> Pending[T]:
         return replace(self, retry=retry)
@@ -114,6 +122,9 @@ class Group[T]:
 class Streaming[T]:
     """A call whose answer arrives in pieces.
 
+    ``timeout`` is how long the stream may run once started — ``None`` takes the
+    pool's ``task_run_timeout``, and ``0`` is no limit.
+
     What a generator function becomes. It is a separate type from ``Pending`` and
     not a flag on it, because it is a separate promise: ``>>`` gives back an
     iterator here, and the difference is worth knowing before the code runs rather
@@ -149,7 +160,7 @@ def function[**P, T](fn: Callable[P, T]) -> Callable[P, Pending[T]]: ...
 
 @overload
 def function[**P, T](
-    *, timeout: float | None = None, retry: Retry | None | UnsetType = UNSET
+    *, timeout: float | None = None, queue_timeout: float | None = None, retry: Retry | None | UnsetType = UNSET
 ) -> Callable[[Callable[P, T]], Callable[P, Pending[T]]]: ...
 
 
@@ -157,12 +168,21 @@ def function[**P, T](
     fn: Callable[P, T] | None = None,
     *,
     timeout: float | None = None,
+    queue_timeout: float | None = None,
     retry: Retry | None | UnsetType = UNSET,
 ) -> Callable[P, Pending[T]] | Callable[[Callable[P, T]], Callable[P, Pending[T]]]:
     """Turn a function into one that describes a call instead of making it.
 
     Bare (``@function``) or with defaults (``@function(timeout=600)``), which any
-    single call can override with ``.with_timeout`` and ``.with_retry``.
+    single call can override with ``.with_timeout``, ``.with_queue_timeout`` and
+    ``.with_retry``.
+
+    ``timeout`` is how long each attempt may run, counted from when it starts on a
+    machine — not from the submission, so a call behind a long queue keeps all of
+    it, and a retry starts the count again. One that runs past it is stopped on the
+    machine and ends ``timed_out``. ``queue_timeout`` is how long each attempt may
+    wait for a machine before it starts. ``None`` takes the pool's
+    ``task_run_timeout`` and ``task_queue_timeout``; ``0`` is no limit.
 
     ``retry`` is a ``(reason, attempt) -> bool`` asked when an attempt does not
     answer. ``reason`` is the exception the function raised, or a :class:`sky.Lost`
@@ -179,7 +199,7 @@ def function[**P, T](
             raise TypeError(f"{target.__name__} is a generator: decorate it with @stream, which gives back its items")
 
         def pending(*args: P.args, **kwargs: P.kwargs) -> Pending[T]:
-            return Pending(target, args, kwargs, timeout, retry)
+            return Pending(target, args, kwargs, timeout, retry, queue_timeout)
 
         return pending
 
