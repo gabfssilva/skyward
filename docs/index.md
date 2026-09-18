@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="logo_sky.png" alt="Skyward" width="400">
+  <img src="logo.svg#only-light" alt="Skyward" width="140">
+  <img src="logo-dark.svg#only-dark" alt="Skyward" width="140">
 </p>
 
 <p align="center">

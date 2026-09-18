@@ -6,8 +6,10 @@ repo_name: gabfssilva/skyward
 
 theme:
   name: material
-  logo: logo_sky.png
-  favicon: logo_sky.png
+  custom_dir: overrides
+  icon:
+    logo: skyward/logo
+  favicon: favicon.svg
   font:
     text: Space Grotesk
     code: Space Mono

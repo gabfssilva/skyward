@@ -1,9 +1,11 @@
 /*
- * One shape for the whole product: a node is a hexagon, a compute is a hive of them. The colour is the node's state,
+ * One shape for the whole product: a node is a hexagon with one chevron cut out of it, a compute is a hive of them,
+ * and the logo is the same hexagon cut twice. The colour is the node's state,
  * and a ready node deepens with its load — its accelerators where it has them, its CPUs where it has none — so a fleet,
  * a compute and a node all read the same way. Only a task's page
  * paints by execution instead.
  */
+.logo{display:block;flex:none;color:var(--accent);fill:currentColor;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round}
 .comb{display:block;width:100%}
 .comb svg{display:block;height:auto;max-width:100%;overflow:visible}
 .hx{cursor:pointer;transform-box:fill-box;transform-origin:center;transform:translate(var(--x),var(--y));transition:transform .4s cubic-bezier(.2,.7,.2,1),opacity .3s}

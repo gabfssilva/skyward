@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { SQ3, hexPts, hive, hiveSize } from '../state/model'
+import { hexPts, hive, hiveSize, nodePts } from '../state/model'
 
 /**
  * One hexagon of a hive: which node it is, what colour it carries and what it says when pointed at.
@@ -45,6 +45,7 @@ type HiveProps = {
 function Cells({ cells, computeId, size, label, onPick }: HiveProps) {
   const lay = hive(cells.length, size)
   const P = hexPts(size)
+  const [body, chevron] = nodePts(size)
   const placed = cells.map((cell, i) => ({ cell, at: lay.cells[i]! }))
   /* an outlined cell is drawn last, so its stroke is not painted over by the cell next to it */
   const order = placed.some((p) => p.cell.marked) ? [...placed.filter((p) => !p.cell.marked), ...placed.filter((p) => p.cell.marked)] : placed
@@ -62,7 +63,8 @@ function Cells({ cells, computeId, size, label, onPick }: HiveProps) {
               data-tip={cell.tip}
               onClick={() => onPick?.(cell.rank)}
             >
-              <polygon className="cell" points={P} fill={cell.fill} />
+              <polygon className="cell" points={body} fill={cell.fill} />
+              <polygon className="cell" points={chevron} fill={cell.fill} />
               <polygon className="edge" points={P} />
             </g>
           )
@@ -77,12 +79,23 @@ const shape = (p: HiveProps): string => `${p.computeId}|${p.size}|${p.cells.map(
 
 export const Hive = memo(Cells, (before, after) => shape(before) === shape(after))
 
+/** The mark: the hexagon cut twice, ``>>``. A node is the same hexagon cut once, which is what ``nodePts`` draws. */
+export function Logo({ width = 25 }: { width?: number }) {
+  return (
+    <svg className="logo" width={width} viewBox="8 13 84 74" aria-hidden="true">
+      <polygon points="70,15.36 90,50 70,84.64 55,84.64 75,50 55,15.36" />
+      <polygon points="45,15.36 65,50 45,84.64 30,84.64 50,50 30,15.36" />
+      <polygon points="40,50 25,75.98 10,50 25,24.02" />
+    </svg>
+  )
+}
+
 /** One hexagon per worker slot, lit while an execution occupies it. */
 export function Slots({ slots, busy, size = 13, tips = [] }: { slots: number; busy: number; size?: number; tips?: readonly string[] }) {
   const P = hexPts(size)
-  const step = size * SQ3 * 1.1
+  const step = size * 2 * 1.1
   const w = step * slots
-  const h = size * 2
+  const h = size * Math.sqrt(3)
   return (
     <svg className="slothive" viewBox={`-1 -1 ${(w + 2).toFixed(1)} ${(h + 2).toFixed(1)}`} style={{ width: Math.ceil(w), flex: 'none' }} role="img" aria-label={`${busy} of ${slots} slots busy`}>
       {Array.from({ length: slots }, (_, i) => (

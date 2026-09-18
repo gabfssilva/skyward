@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import * as fleet from './views/fleet'
 import * as compute from './views/compute'
 import * as node from './views/node'
@@ -10,6 +10,7 @@ import { Sheets, openPalette } from './sheets'
 import { Icon, type IconName } from './ui/icons'
 import { Tip } from './ui/primitives'
 import { pulse } from './ui/charts'
+import { Logo } from './ui/comb'
 import { useStore } from './state/store'
 import { money, rateOf } from './state/model'
 import { api } from './api/client'
@@ -81,12 +82,10 @@ function Bar() {
   const at = viewOf(pathname)
   return (
     <div className="bar">
-      <div className="brand">
-        <svg width="22" height="24" viewBox="0 0 17 19" aria-hidden="true" style={{ color: 'var(--accent)' }}>
-          <polygon points="8.5,0.6 16.4,5.1 16.4,14.1 8.5,18.6 0.6,14.1 0.6,5.1" fill="currentColor" />
-        </svg>
+      <Link className="brand" to="/" aria-label="Skyward, home">
+        <Logo />
         <span>Skyward</span>
-      </div>
+      </Link>
       <nav id="nav" role="tablist">
         {VIEWS.map(([path, label, icon]) => (
           <button key={path} role="tab" aria-selected={at === path} aria-label={label} data-view={path} onClick={() => navigate(path)}>

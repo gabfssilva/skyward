@@ -362,6 +362,9 @@ const DIRS: readonly (readonly [number, number])[] = [
 
 export type Axial = readonly [number, number]
 
+/** Where a flat-top cell sits, in units of the distance from a cell's centre to its corner. */
+const centre = ([q, r]: Axial): readonly [number, number] => [1.5 * q, SQ3 * (r + q / 2)]
+
 const ring = (k: number): Axial[] => {
   const out: Axial[] = []
   let q = -k
@@ -392,38 +395,50 @@ export const bloom = (n: number): Axial[] => {
       out.push(...cells)
       continue
     }
-    const fromBase = ([q, r]: Axial): number => Math.abs(Math.atan2(1.5 * r, SQ3 * (q + r / 2)) - Math.PI / 2)
+    const fromBase = (cell: Axial): number => {
+      const [x, y] = centre(cell)
+      return Math.abs(Math.atan2(y, x) - Math.PI / 2)
+    }
     out.push(...cells.sort((a, b) => fromBase(a) - fromBase(b)).slice(0, left))
   }
   return out
 }
 
-/** The points of a pointy-top hexagon of circumradius ``s``, centred on the origin. */
-export const hexPts = (s: number): string =>
-  Array.from({ length: 6 }, (_, i) => {
-    const a = (Math.PI / 180) * (60 * i - 90)
-    return `${(s * Math.cos(a)).toFixed(2)},${(s * Math.sin(a)).toFixed(2)}`
-  }).join(' ')
+const pts = (s: number, unit: readonly (readonly [number, number])[]): string => unit.map(([x, y]) => `${(s * x).toFixed(2)},${(s * y).toFixed(2)}`).join(' ')
+
+const H = SQ3 / 2
+
+/** The points of a flat-top hexagon of circumradius ``s``, centred on the origin. */
+export const hexPts = (s: number): string => pts(s, [[1, 0], [0.5, H], [-0.5, H], [-1, 0], [-0.5, -H], [0.5, -H]])
+
+/**
+ * A node: the same hexagon with one chevron cut out of it, as the two pieces either side of the cut.
+ *
+ * The logo is this hexagon cut twice — ``>>``, the dispatch — and a node is what receives one, so it carries one ``>``.
+ * The cut is a quarter of the circumradius wide and runs parallel to the two edges on the right.
+ */
+export const nodePts = (s: number): readonly [string, string] => [
+  pts(s, [[-0.125, -H], [0.375, 0], [-0.125, H], [-0.5, H], [-1, 0], [-0.5, -H]]),
+  pts(s, [[0.5, -H], [1, 0], [0.5, H], [0.125, H], [0.625, 0], [0.125, -H]]),
+]
 
 export type HiveLayout = { cells: readonly (readonly [number, number])[]; w: number; h: number }
 
 /** Where each of ``n`` cells of circumradius ``s`` sits, and the box that holds them. */
 export const hive = (n: number, s: number, gap = 0.12): HiveLayout => {
   const step = s * (1 + gap)
-  const pts = bloom(n).map(([q, r]) => [SQ3 * step * (q + r / 2), 1.5 * step * r] as const)
-  const xs = pts.map((p) => p[0])
-  const ys = pts.map((p) => p[1])
-  const minX = Math.min(...xs)
-  const minY = Math.min(...ys)
-  const ox = minX - (s * SQ3) / 2
-  const oy = minY - s
-  return { cells: pts.map(([x, y]) => [x - ox, y - oy] as const), w: Math.max(...xs) - ox + (s * SQ3) / 2, h: Math.max(...ys) - oy + s }
+  const at = bloom(n).map((cell) => centre(cell).map((v) => v * step) as [number, number])
+  const xs = at.map((p) => p[0])
+  const ys = at.map((p) => p[1])
+  const ox = Math.min(...xs) - s
+  const oy = Math.min(...ys) - s * H
+  return { cells: at.map(([x, y]) => [x - ox, y - oy] as const), w: Math.max(...xs) - ox + s, h: Math.max(...ys) - oy + s * H }
 }
 
 /** The cell radius that fits a hive of ``n`` in a box of ``room`` × ``tall``. */
 export const hiveSize = (n: number, room = 980, tall = 640): number => {
   const k = ringsFor(n)
-  return Math.min(room / ((2 * k + 1) * SQ3 * 1.12), tall / ((3 * k + 2) * 1.12))
+  return Math.min(room / ((3 * k + 2) * 1.12), tall / ((2 * k + 1) * SQ3 * 1.12))
 }
 
 /* ---------- dates ---------- */

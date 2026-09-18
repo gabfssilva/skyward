@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="https://github.com/gabfssilva/skyward/blob/main/docs/logo_sky.png?raw=true" alt="Skyward" width="400">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/gabfssilva/skyward/blob/main/docs/logo-dark.svg?raw=true">
+    <img src="https://github.com/gabfssilva/skyward/blob/main/docs/logo.svg?raw=true" alt="Skyward" width="140">
+  </picture>
 </p>
 
 <p align="center">
