@@ -4,10 +4,8 @@ import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import { BASE, type Compute, type Node, type WireError } from '../../api/client'
 import { MOCK } from '../../api/mock'
-import type { NodeMetrics } from '../../state/model'
 import { clamp, holderOf, nodeHeld, readyOf } from '../../state/model'
 import { useStore } from '../../state/store'
-import { Icon } from '../../ui/icons'
 
 /** How much memory each accelerator carries, the way the prototype's catalog reads. */
 export const VRAM: Record<string, number> = { b200: 192, h200: 141, h100: 80, a100: 80, l40s: 48, a10g: 24, l4: 24, mi300x: 192 }
@@ -49,7 +47,7 @@ const reasonOf = (frame: string): string => {
   }
 }
 
-type Context = { compute: Compute; node: Node; rank: number; count: number; peers: number; concurrency: number; head: string; metrics: NodeMetrics }
+type Context = { compute: Compute; node: Node; rank: number; count: number; peers: number; concurrency: number; head: string; readings: Record<string, number> }
 
 /**
  * The machine's own terminal, carried over one socket.
@@ -133,10 +131,13 @@ function fake(term: Terminal, context: () => Context): () => void {
   return () => typed.dispose()
 }
 
-function smi(n: Node, count: number, m: NodeMetrics): string {
+function smi(n: Node, count: number, m: Record<string, number>): string {
   const accel = n.accelerator ?? '?'
   const name = SMI_NAME[accel] ?? accel.toUpperCase()
   const total = (VRAM[accel] ?? 24) * 1024
+  const util = m['gpu_util'] ?? 0
+  const temp = m['gpu_temp_c'] ?? 42
+  const memory = m['gpu_mem_mb'] ?? 0
   const out = [
     '+-----------------------------------------------------------------------------+',
     '| NVIDIA-SMI 560.35.03      Driver Version: 560.35.03      CUDA Version: 12.8  |',
@@ -146,11 +147,11 @@ function smi(n: Node, count: number, m: NodeMetrics): string {
     '|===============================+======================+======================|',
   ]
   for (let i = 0; i < count; i++) {
-    const u = Math.round(clamp(m.gpu + (Math.random() - 0.5) * 8, 0, 100))
-    const used = Math.round((total * m.vram) / 100)
+    const u = Math.round(clamp(util + (Math.random() - 0.5) * 8, 0, 100))
+    const used = Math.round(memory / count) || Math.round(total * 0.6)
     out.push(`|   ${i}  ${name.padEnd(19).slice(0, 19)} On | 00000000:${(0x53 + i * 8).toString(16).toUpperCase()}:00.0 Off |                    0 |`)
     out.push(
-      `| N/A  ${Math.round(m.temp)}C   P0     ${(380 + u * 3).toFixed(0)}W / 700W |  ${String(used).padStart(6)}MiB / ${total}MiB |     ${String(u).padStart(3)}%      Default |`,
+      `| N/A  ${Math.round(temp)}C   P0     ${(380 + u * 3).toFixed(0)}W / 700W |  ${String(used).padStart(6)}MiB / ${total}MiB |     ${String(u).padStart(3)}%      Default |`,
     )
     out.push('+-------------------------------+----------------------+----------------------+')
   }
@@ -166,7 +167,7 @@ function answer(ctx: Context, raw: string): string {
   if (cmd === 'clear') return '\x1b[2J\x1b[H'
   if (head === 'help')
     return 'nvidia-smi · ls · pwd · whoami · uname -a · df -h · free -g · uv pip list · python -c "…" · env | grep SKYWARD · cat train.py · clear'
-  if (head === 'nvidia-smi') return smi(n, ctx.count, ctx.metrics)
+  if (head === 'nvidia-smi') return smi(n, ctx.count, ctx.readings)
   if (head === 'ls') return 'checkpoints/  data/  skyward/  train.py  pyproject.toml  events.jsonl'
   if (head === 'pwd') return '/root'
   if (head === 'whoami') return 'root'
@@ -273,50 +274,30 @@ const why = (n: Node): string =>
     ? 'This machine is still being bought. A terminal opens the moment it answers SSH, which is well before its bootstrap finishes.'
     : 'The daemon has no link to this machine. Every machine that answers SSH takes a terminal, and this one is not answering.'
 
-/** The prototype's ``shellCard``: a pty on one rank, in a card of its own on the node page. */
-export function ShellCard({ computeId, rank, onClose }: { computeId: string; rank: number; onClose: () => void }) {
+/** A pty on one rank, in the node page's Shell tab. */
+export function Shell({ computeId, rank }: { computeId: string; rank: number }) {
   const compute = useStore((s) => s.computes.find((c) => c.id === computeId))
   const nodes = useStore((s) => s.nodes[computeId])
-  const metrics = useStore((s) => s.metrics)
+  const readings = useStore((s) => s.readings)
 
   const node = holderOf(nodes ?? [], rank)
-  const head = (
-    <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-      <span className="cap">Shell on rank {rank}</span>
-      <span className="mono faint">{node?.address ?? '—'} · pty over the daemon</span>
-      <button className="btn sm ghost" onClick={onClose}>
-        <Icon name="close" />
-        Close
-      </button>
-    </div>
-  )
-
-  if (!compute || !node || !nodeHeld(node))
-    return (
-      <section className="card">
-        {head}
-        <div className="sub">{!compute || !node ? 'Only a live compute takes a shell.' : why(node)}</div>
-      </section>
-    )
+  if (!compute || !node || !nodeHeld(node)) return <div className="sub">{!compute || !node ? 'Only a live compute takes a shell.' : why(node)}</div>
 
   const all = nodes ?? []
   const spec = compute.spec.specs[0]
 
   return (
-    <section className="card">
-      {head}
-      <Screen
-        ctx={{
-          compute,
-          node,
-          rank,
-          count: spec?.accelerator_count ?? 1,
-          peers: readyOf(all).length,
-          concurrency: compute.spec.worker?.concurrency ?? 1,
-          head: holderOf(all, 0)?.address ?? '—',
-          metrics: metrics[`${compute.id}/${rank}`] ?? { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 },
-        }}
-      />
-    </section>
+    <Screen
+      ctx={{
+        compute,
+        node,
+        rank,
+        count: spec?.accelerator_count ?? 1,
+        peers: readyOf(all).length,
+        concurrency: compute.spec.worker?.concurrency ?? 1,
+        head: holderOf(all, 0)?.address ?? '—',
+        readings: readings[`${computeId}/${rank}`] ?? {},
+      }}
+    />
   )
 }

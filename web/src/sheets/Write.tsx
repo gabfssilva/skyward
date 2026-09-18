@@ -119,19 +119,18 @@ export function Write({ from }: { from?: FunctionRef }) {
               <span className="mono">{refusal}</span>
             </div>
           ) : null}
-          <div className="row" style={{ gap: 6 }}>
-            <button className="btn primary" disabled={busy || entry === null} onClick={() => void write(() => close())}>
-              Save
-            </button>
-            <button
-              className="btn"
-              disabled={busy || entry === null}
-              onClick={() => void write((written) => openSheet({ kind: 'run', lineage: written.lineage ?? undefined }))}
-            >
-              <Icon name="run" />
-              Save and run
-            </button>
-          </div>
+        </div>
+        <div className="sheet-foot">
+          <button
+            className="btn"
+            disabled={busy || entry === null}
+            onClick={() => void write((written) => openSheet({ kind: 'run', lineage: written.lineage ?? undefined }))}
+          >
+            Save and run
+          </button>
+          <button className="btn primary" disabled={busy || entry === null} onClick={() => void write(() => close())}>
+            Save function
+          </button>
         </div>
       </div>
     </Scrim>

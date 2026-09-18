@@ -192,9 +192,10 @@ class Reader:
         states: tuple[TaskState, ...],
         correlation_id: str | None,
         function: str | None,
+        lineage: str | None,
         order: TaskOrder,
     ) -> Page[TaskReading]:
-        page = await self._tasks.list(cursor, limit, compute, states, correlation_id, function, order)
+        page = await self._tasks.list(cursor, limit, compute, states, correlation_id, function, lineage, order)
         return Page(items=await self._named(page.items), next_cursor=page.next_cursor, total=page.total)
 
     async def _compute(self, compute: Compute, blocks: Collection[Block]) -> ComputeReading:

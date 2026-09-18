@@ -1,3 +1,9 @@
+/*
+ * Six sizes and three weights, and nothing outside them: 34 for the one number a screen leads with, 22 for the name of
+ * the object a page is about, 18 for the numbers that support it, 15 for a section, 13.5 for text and tables, 12 for
+ * labels and facts. Digits are tabular everywhere, so a column of them lines up without being set in the mono face —
+ * which is kept for what is literally code: ids, packages, instance types, logs and the terminal.
+ */
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.45;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
@@ -6,12 +12,28 @@ button{cursor:pointer;background:none;border:0;padding:0;text-align:left}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
 svg.ic{width:1em;height:1em;flex:0 0 auto;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+
+.hero{font-size:34px;font-weight:700;letter-spacing:-.03em;line-height:1;color:var(--ink)}
+.hero small{font-size:15px;font-weight:600;color:var(--muted);letter-spacing:0;margin-left:3px}
+.num{font-size:18px;font-weight:700;letter-spacing:-.015em;line-height:1.15;white-space:nowrap}
+.num small{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:0;margin-left:2px}
+.num.bad{color:var(--bad)}
+.h{font-size:15px;font-weight:700;letter-spacing:-.01em}
+/* A function's version, beside its name. */
+.v{font-weight:600;color:var(--faint);font-size:.82em;margin-left:4px;letter-spacing:0}
 .mono{font-family:var(--mono);font-size:12px}
-.sub{color:var(--muted);font-size:12.5px}
+.sub{color:var(--muted);font-size:12px}
+.cap{font-size:12px;color:var(--muted);font-weight:600}
 .faint{color:var(--faint)}
-.row{display:flex;align-items:center;gap:8px}
+.row{display:flex;align-items:center;gap:8px;min-width:0}
 .wrap{flex-wrap:wrap}
 .right{text-align:right}
 .trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cap{font-size:12px;color:var(--muted);font-weight:600}
+.nowrap{white-space:nowrap}
+.spread{margin-left:auto}
+
+/* A figure: the number, and under it what it is of. */
+.fig{display:grid;gap:3px;min-width:0;align-content:start}
+.fig>.l{font-size:12px;color:var(--muted)}
+
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

@@ -169,6 +169,7 @@ class Tasks(Protocol):
         states: Sequence[TaskState] = (),
         correlation_id: str | None = None,
         function: str | None = None,
+        lineage: str | None = None,
         order: TaskOrder = "submitted",
     ) -> Page[Task]: ...
 

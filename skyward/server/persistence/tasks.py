@@ -145,6 +145,7 @@ class TaskStore:
         states: Sequence[TaskState] = (),
         correlation_id: str | None = None,
         function: str | None = None,
+        lineage: str | None = None,
         order: TaskOrder = "submitted",
     ) -> Page[Task]:
         """A page of the tasks the filters match, in ``order``, and how many they match.
@@ -156,8 +157,10 @@ class TaskStore:
         is served, then the finished, latest to finish first. ``finished`` is latest to
         finish first, and then what has not finished, newest submitted first.
 
-        ``function`` is a name, and every upload of code under it: a function edited
-        and sent again is another digest and the same function.
+        ``function`` is a name, and every upload of code under it. ``lineage`` is the
+        function itself — the same name in the same file, however many times its code
+        was edited and sent again — which is what tells two functions called ``train``
+        in two different files apart.
 
         The cursor is the position the page ended on, not a task: a task that changes
         state moves in the ``state`` and ``finished`` orders, and a walk resumed from
@@ -169,6 +172,7 @@ class TaskStore:
             *([QueryString(f"state IN ({', '.join('{}' for _ in states)})", *states)] if states else []),
             *([QueryString("correlation_id = {}", correlation_id)] if correlation_id else []),
             *([QueryString("function IN (SELECT sha256 FROM functions WHERE name = {})", function)] if function else []),
+            *([QueryString("function IN (SELECT sha256 FROM functions WHERE lineage = {})", lineage)] if lineage else []),
         ]
         matched = QueryString(" AND ".join("{}" for _ in narrowed) or "1", *narrowed)
 

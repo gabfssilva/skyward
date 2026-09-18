@@ -174,9 +174,11 @@ export function Run({ lineage, version, computeId, node }: { lineage?: string; v
               <span className="mono">{refusal}</span>
             </div>
           ) : null}
-          <button className="btn primary" style={{ justifySelf: 'start' }} disabled={busy || !compute || !sha256} onClick={() => void submit()}>
+        </div>
+        <div className="sheet-foot">
+          <button className="btn primary" disabled={busy || !compute || !sha256} onClick={() => void submit()}>
             <Icon name="run" />
-            Submit
+            Run
           </button>
         </div>
       </div>

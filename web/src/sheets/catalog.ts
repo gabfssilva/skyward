@@ -17,8 +17,7 @@ export const COLLECTIVE: ReadonlySet<string> = new Set(['torch', 'jax', 'acceler
 export const VIEWS: readonly (readonly [string, string])[] = [
   ['/', 'Computes'],
   ['/tasks', 'Tasks'],
-  ['/functions', 'Functions'],
   ['/activity', 'Activity'],
   ['/market', 'Market'],
-  ['/providers', 'Providers'],
+  ['/market/accounts', 'Provider accounts'],
 ]

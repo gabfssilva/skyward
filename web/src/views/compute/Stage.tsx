@@ -1,21 +1,65 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Compute, Node, Task } from '../../api/client'
-import { useStore, historyOf, computeById, isLive, useLogs, useEvents, spentOf } from '../../state/store'
-import type { Store } from '../../state/store'
-import { CAUSE, HOUR, UNIT, ago, busyOf, callsOf, dateOf, dur, endedAt, execsOf, failedOf, finishedOf, hiveSize, median, money, ms, offerPerGpu, perGpu, ranOf, rateOf, readyOf, slotsOf, targetOf } from '../../state/model'
-import type { MetricKey } from '../../state/model'
-import { combNodes, valuesFor } from '../../state/nodes'
+import { useStore, computeById, isLive, useLogs, useEvents, spentOf } from '../../state/store'
+import {
+  CAUSE,
+  HOUR,
+  acceleratedOf,
+  ago,
+  boundOf,
+  busyOf,
+  byState,
+  callsOf,
+  dateOf,
+  dur,
+  endedAt,
+  execsOf,
+  failedOf,
+  finishedOf,
+  machineOf,
+  money,
+  ms,
+  perUnit,
+  ranOf,
+  rateOf,
+  runOf,
+  readyOf,
+  sizeOf,
+  slotsOf,
+  targetOf,
+} from '../../state/model'
+import { nodeCells, loadByRank } from '../../state/nodes'
 import { dispatchLine } from '../tasks/Stage'
-import { Fn, Legend, Pill, TableScroll } from '../../ui/primitives'
-import { Comb } from '../../ui/comb'
-import { Spark } from '../../ui/charts'
+import { Fn, Legend, Pill, TableScroll, useMeasure } from '../../ui/primitives'
+import { Hive, fillRoom } from '../../ui/comb'
+import { PageHead, Tabs } from '../../ui/head'
 import { Icon } from '../../ui/icons'
-import { EvLineRow, LogLineRow } from '../../ui/lines'
+import { EvBox, LogBox } from '../../ui/lines'
+import { openPorts, openRun, openScale, openConfirm } from '../../sheets'
+import { api } from '../../api/client'
 import { usePorts } from '../../sheets/port-state'
+import { Metrics } from './Metrics'
+import { Booting } from './Progress'
 
 const NONE: never[] = []
-const SERIES = 32
+
+/** How many of the slowest nodes are named beside the hive, and the fewest a compute must have for naming any to mean something. */
+const STRAGGLERS = 5
+const ENOUGH = 6
+
+/**
+ * The box the drawing fills: as tall as the figures standing beside it, as wide as the rings need.
+ *
+ * The home is where one compute's size is compared with another's; here the drawing is the way into a
+ * node, so it is drawn as large as the card allows — one node is one hexagon the width of its column,
+ * not a cell adrift in a column meant for a hundred. Taking its height from the figures is what keeps
+ * the two halves ending together, whether the card has nine numbers to show or two.
+ */
+const ROOM = 400
+const TALL: readonly [number, number] = [160, 300]
+
+type Tab = 'logs' | 'events' | 'tasks' | 'spec'
 
 /** A second hand for the page: what says `up 3h 43m` and `renews in 42s` moves without a store change. */
 function useTick(on: boolean): void {
@@ -29,10 +73,17 @@ function useTick(on: boolean): void {
 
 export function Stage() {
   const { id = '' } = useParams()
+  const navigate = useNavigate()
   const c = useStore((s) => computeById(s, id))
   const live = useStore((s) => isLive(s, id))
   const nodes = useStore((s) => s.nodes[id]) ?? NONE
   const tasks = useStore((s) => s.tasks[id]) ?? NONE
+  const readings = useStore((s) => s.readings)
+  const progress = useStore((s) => s.progress)
+  const kin = useStore((s) => [...s.computes, ...s.history].filter((k) => c?.name && k.name === c.name && k.id !== c.id).length)
+  const events = useEvents(id)
+  const [tab, setTab] = useState<Tab>('logs')
+  const [figures, beside] = useMeasure<HTMLDivElement>()
   const loaded = nodes.length > 0
   useTick(live)
   useEffect(() => {
@@ -45,245 +96,365 @@ export function Stage() {
   if (!c) return null
 
   const name = c.name ?? c.id
-  const when = live
-    ? `up ${dur(Date.now() - ms(c.created_at))} · generation ${c.generation}${c.lease.owner ? ` · held by ${c.lease.owner}` : ''}`
-    : `created ${dateOf(ms(c.created_at))} · ended ${c.ended ? ago(endedAt(c)) : '—'}`
+  const bound = boundOf(c)
+  const size = sizeOf(c, nodes, live)
+  const ready = readyOf(nodes)
+  const slots = slotsOf(c)
+  /*
+   * The least busy cells are outlined in the drawing and named beside it: what Stragglers was a
+   * list of is pointed at on the map instead, which is only worth doing where there are cells to compare.
+   */
+  const lowest = live && ready.length >= ENOUGH ? loadByRank(c, nodes, readings).sort((a, b) => a.load - b.load).slice(0, STRAGGLERS) : []
+  const cells = nodeCells(c, nodes, readings, progress, new Set(lowest.map((x) => x.rank)))
+  const map = fillRoom(cells.length, ROOM, Math.min(TALL[1], Math.max(TALL[0], beside.h || TALL[1])))
+  const trouble = c.status.last_error
+  const since = events.items.find((e) => e.type === 'compute.degraded' || e.type === 'compute.failed')?.at
+
+  const remove = async () => {
+    await api.deleteCompute(c.id)
+    navigate('/')
+  }
 
   return (
     <>
-      <section className="card cmp">
-        <header className="cmp-id">
-          <div className="row wrap" style={{ gap: 10 }}>
-            <h2>{name}</h2>
-            <Pill state={c.status.state} />
-            <span className="mono faint">{c.id}</span>
-            <span className="sub" style={{ marginLeft: 'auto' }}>
-              {when}
-            </span>
-          </div>
-          <div className="sub cmp-shape">
-            <ShapeLine c={c} nodes={nodes} live={live} />
-          </div>
-        </header>
-        <div className="cmp-main">{live ? <LiveBody c={c} nodes={nodes} tasks={tasks} /> : <EndedBody c={c} nodes={nodes} />}</div>
-        <footer className="cmp-foot">
-          <SpecGrid c={c} live={live} />
-        </footer>
-      </section>
-      <section className="card">
-        <TasksBlock c={c} tasks={tasks} nodes={nodes} />
-      </section>
-      <LogStream computeId={id} live={live} />
-      <section className="card">
-        <EventsBlock computeId={id} name={name} />
-      </section>
-    </>
-  )
-}
-
-/* ---------- header ---------- */
-
-function ShapeLine({ c, nodes, live }: { c: Compute; nodes: readonly Node[]; live: boolean }) {
-  const s0 = c.spec.specs[0]
-  const o = c.offer
-  const b = c.spec.nodes
-  const floor = b.min ?? b.initial
-  const size = b.max ? `${floor}–${b.max} nodes, elastic` : floor !== b.initial ? `${b.initial} nodes, floor ${floor}` : `${live ? b.initial : nodes.length || b.initial} nodes`
-  const terms = `${c.spec.allocation.replace(/_/g, ' ')}, ${c.spec.selection}`
-  if (o)
-    return (
-      <>
-        {o.accelerator ? (
+      <PageHead
+        title={name}
+        state={<Pill state={c.status.state} />}
+        id={c.name ? c.id : undefined}
+        why={trouble ? { message: trouble.message, since: since ? ago(since) : undefined } : null}
+        facts={[
           <>
             <b>
-              {o.accelerator_count}× {o.accelerator.toUpperCase()}
-            </b>{' '}
-          </>
-        ) : null}
-        {o.instance_type} on <b>{o.kind}</b> {o.region ?? 'any region'} · {size} · {terms}
-      </>
-    )
-  if (!s0) return <>{size}</>
-  return (
-    <>
-      {s0.accelerator ? (
-        <>
-          <b>
-            {s0.accelerator_count}× {s0.accelerator.toUpperCase()}
-          </b>{' '}
-          on{' '}
-        </>
-      ) : null}
-      <b>{s0.provider.kind}</b> {s0.region ?? 'any region'} · {size} · {terms}
+              {size.nodes} node{size.nodes === 1 ? '' : 's'}
+            </b>
+            {size.note ? `, ${size.note}` : ''}
+          </>,
+          <>
+            <b>{machineOf(c)}</b>
+            {bound?.instance ? ` ${bound.instance}` : ''}
+          </>,
+          bound ? (
+            <>
+              <b>{bound.kind}</b> {bound.region ?? 'any region'}
+            </>
+          ) : null,
+          c.spec.allocation.replace(/_/g, ' '),
+          `${c.spec.worker?.executor ?? 'thread'} × ${slots}`,
+          live ? `up ${dur(Date.now() - ms(c.created_at))}` : `created ${dateOf(ms(c.created_at))}`,
+          live ? null : `ended ${c.ended ? ago(endedAt(c)) : '—'}, ${c.ended ? CAUSE[c.ended.cause] : '—'}`,
+          `generation ${c.generation}`,
+          live && c.lease.owner ? `held by ${c.lease.owner}` : null,
+          kin ? `${kin} other${kin === 1 ? '' : 's'} named ${name}` : null,
+        ]}
+        primary={live ? { label: 'Run', icon: 'run', onClick: () => openRun({ computeId: c.id }) } : undefined}
+        rest={
+          live
+            ? [
+                {
+                  label: 'Shell',
+                  onClick: () => {
+                    useStore.getState().setUi({ shell: true })
+                    navigate(`/computes/${c.id}/nodes/${ready[0]?.rank ?? 0}`)
+                  },
+                },
+                { label: 'Scale', onClick: () => openScale(c.id) },
+                { label: 'Forward a port', icon: 'ports', onClick: () => openPorts(c.id) },
+                {
+                  label: 'Delete compute',
+                  icon: 'trash',
+                  danger: true,
+                  onClick: () =>
+                    openConfirm({
+                      title: `Delete ${name}?`,
+                      body: `${nodes.filter((n) => n.state !== 'deleted').length} machines are terminated at the provider.`,
+                      confirm: 'Delete',
+                      danger: true,
+                      onConfirm: () => void remove(),
+                    }),
+                },
+              ]
+            : undefined
+        }
+      />
+
+      <section className="card ov" style={{ '--map': `${map.width}px` }}>
+        <div className="map">
+          {cells.length ? (
+            <Hive
+              cells={cells}
+              computeId={c.id}
+              size={map.size}
+              label={`${cells.length} nodes of ${name}`}
+              onPick={(rank) => navigate(`/computes/${c.id}/nodes/${rank}`)}
+            />
+          ) : (
+            <span className="sub">No machine was ever attached.</span>
+          )}
+        </div>
+        <div className="groups" ref={figures}>
+          {live ? <LiveFigures c={c} nodes={nodes} tasks={tasks} /> : <EndedFigures c={c} nodes={nodes} />}
+          <div className="reading">
+            <div className="legend">
+              <Legend states={nodes.map((n) => n.state)} />
+            </div>
+            {lowest.length ? (
+              <div className="row wrap" style={{ gap: 6 }}>
+                <span className="sub" style={{ marginRight: 2 }}>
+                  Lowest {acceleratedOf(c) ? 'accelerator' : 'CPU'}
+                </span>
+                {lowest.map((x) => (
+                  <button key={x.rank} className="pill" onClick={() => navigate(`/computes/${c.id}/nodes/${x.rank}`)}>
+                    rank {x.rank} <b>{Math.round(x.load)}%</b>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {live && !ready.length ? <Booting nodes={nodes} /> : null}
+          </div>
+        </div>
+      </section>
+
+      <Metrics computeId={c.id} name={name} nodes={nodes} created={ms(c.created_at)} over={live ? undefined : [ms(c.created_at), endedAt(c)]} />
+
+      <section className="card">
+        <Tabs<Tab>
+          value={tab}
+          options={[
+            ['logs', 'Logs', null],
+            ['events', 'Events', events.items.length || null],
+            ['tasks', 'Tasks', callsOf(c) || null],
+            ['spec', 'Spec', null],
+          ]}
+          onChange={setTab}
+        >
+          <Leaving tab={tab} computeId={c.id} />
+        </Tabs>
+        <div className="tabbody">
+          {tab === 'tasks' ? <TasksTable c={c} tasks={tasks} nodes={nodes} /> : null}
+          {tab === 'logs' ? <Logs computeId={c.id} /> : null}
+          {tab === 'events' ? <Events computeId={c.id} /> : null}
+          {tab === 'spec' ? <SpecGrid c={c} live={live} /> : null}
+        </div>
+      </section>
     </>
   )
 }
 
-/* ---------- figures ---------- */
+/** The one link out of the card, named for where the tab's own list goes on in full. */
+function Leaving({ tab, computeId }: { tab: Tab; computeId: string }) {
+  const navigate = useNavigate()
+  const act = useStore((s) => s.act)
+  const task = useStore((s) => s.task)
+  const setUi = useStore((s) => s.setUi)
+  if (tab === 'spec') return null
+  if (tab === 'tasks')
+    return (
+      <button
+        className="btn sm ghost spread"
+        onClick={() => {
+          setUi({ task: { ...task, compute: computeId, state: 'all' } })
+          navigate('/tasks')
+        }}
+      >
+        Open in Tasks
+      </button>
+    )
+  return (
+    <button
+      className="btn sm ghost spread"
+      onClick={() => {
+        setUi({ act: { ...act, kind: tab === 'logs' ? 'logs' : 'events', compute: computeId, rank: 'all' } })
+        navigate('/activity')
+      }}
+    >
+      Open in Activity
+    </button>
+  )
+}
 
-function Fig({ value, unit, label, sub, spark, err }: { value: ReactNode; unit?: string; label: string; sub: string; spark?: ReactNode; err?: boolean }) {
+function Fig({ value, unit, label }: { value: ReactNode; unit?: string; label: string }) {
   return (
     <div className="fig">
-      <span className="fig-l">{label}</span>
-      <b className={err ? 'err' : undefined}>
+      <span className="num">
         {value}
         {unit ? <small>{unit}</small> : null}
-      </b>
-      {spark}
-      <span className="fig-s">{sub}</span>
+      </span>
+      <span className="l">{label}</span>
     </div>
   )
 }
 
-const Figs = ({ children }: { children: ReactNode }) => <div className="figs">{children}</div>
+const Group = ({ label, children }: { label: string; children: ReactNode }) => (
+  <div className="group">
+    <span className="lbl">{label}</span>
+    {children}
+  </div>
+)
 
-/** The cluster's median of one metric, sample by sample, over the ready nodes' histories. */
-const clusterSeries = (s: Store, computeId: string, ready: readonly Node[], metric: MetricKey): number[] => {
-  if (!ready.length) return []
-  const series = ready.map((n) => historyOf(s, computeId, n.rank, metric))
-  return Array.from({ length: SERIES }, (_, i) => median(series.map((h) => h[i] ?? h[h.length - 1] ?? 0)))
-}
-
-function LiveBody({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[] }) {
-  const navigate = useNavigate()
-  const state = useStore((s) => s)
-  const metrics = state.metrics
-  const id = c.id
+/** What it costs, what it holds and what it is doing — the three questions a running compute is opened for. */
+function LiveFigures({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[] }) {
+  const readings = useStore((s) => s.readings)
+  const functions = useStore((s) => s.functions)
+  const spent = useStore((s) => spentOf(s, c)) ?? 0
   const ready = readyOf(nodes)
-  const sl = slotsOf(c)
-  const busy = ready.reduce((s, n) => s + busyOf(tasks, nodes, n.rank), 0)
-
-  const use = (k: MetricKey, label: string) => {
-    const v = valuesFor(id, nodes, metrics, k)
-    return (
-      <Fig
-        key={k}
-        value={Math.round(median(v) || 0)}
-        unit={UNIT[k]}
-        label={label}
-        sub={v.length ? `${Math.round(Math.min(...v))}–${Math.round(Math.max(...v))}${UNIT[k]} on ${v.length} nodes` : 'no node is ready'}
-        spark={<Spark values={clusterSeries(state, id, ready, k)} h={30} fmt={(x) => Math.round(x) + UNIT[k]} />}
-      />
-    )
-  }
-
+  const slots = slotsOf(c)
+  const busy = ready.reduce((sum, n) => sum + busyOf(tasks, nodes, n.rank), 0)
+  const accelerated = acceleratedOf(c)
+  const idle = loadByRank(c, nodes, readings).filter((x) => x.load < 25)
   const running = tasks.filter((t) => t.state === 'running')
-  const inflight = running.reduce((s, t) => s + execsOf(t, nodes).filter((e) => e.state === 'started').length, 0)
+  const inflight = running.reduce((sum, t) => sum + execsOf(t, nodes).filter((e) => e.state === 'started').length, 0)
+  const named = (t: Task) => t.function.name ?? functions[t.function.sha256]?.name ?? t.function.sha256.slice(0, 8)
   const latest = (states: readonly Task['state'][]) => tasks.filter((t) => states.includes(t.state)).sort((a, b) => ms(b.finished_at) - ms(a.finished_at))[0]
-  const lastDone = latest(['succeeded'])
-  const lastErr = latest(['failed', 'timed_out'])
+  const done = latest(['succeeded'])
   const failed = failedOf(c)
-  const fnName = (fn: Task['function']) => fn.name ?? state.functions[fn.sha256]?.name ?? fn.sha256.slice(0, 8)
-  const ranksOf = (t: Task) => new Set(execsOf(t, nodes).map((e) => e.rank)).size
-  const cells = combNodes(id, nodes, metrics, state.progress)
+  const finished = finishedOf(c)
+  const paid = perUnit(c, nodes)
+
+  const cost = (
+    <Group label="Cost">
+      <Fig value={money(rateOf(nodes), 2)} unit="/h" label="burning" />
+      <Fig value={spent ? money(spent, spent < 10 ? 2 : 0) : '—'} label={finished && spent ? `spent, ${money(spent / finished, spent / finished < 10 ? 2 : 0)} per finished call` : 'spent so far'} />
+      <Fig value={paid.rate ? money(paid.rate) : '—'} unit={paid.unit} label={`paid on ${boundOf(c)?.kind ?? '—'}`} />
+    </Group>
+  )
+
+  /* Nothing is ready: what a page can say about slots, work and idleness is nine zeros, so it says what it is waiting for instead. */
+  if (!ready.length)
+    return (
+      <>
+        {cost}
+        <Group label="Nodes">
+          <Fig value={<>{ready.length}<small>of {targetOf(c)}</small></>} label="ready" />
+          <Fig value={nodes.filter((n) => n.state !== 'deleted' && n.state !== 'failed' && n.state !== 'lost').length} label="on their way" />
+          <Fig value={nodes.filter((n) => n.state === 'failed' || n.state === 'lost').length} label="lost so far" />
+        </Group>
+      </>
+    )
 
   return (
     <>
-      <div className="cmp-comb">
-        <Comb
-          layout="hive"
-          nodes={cells}
-          computeId={id}
-          name={c.name ?? c.id}
-          size={Math.min(60, hiveSize(cells.length, 500, 460))}
-          onPick={(rank) => navigate(`/computes/${id}/nodes/${rank}`)}
-        />
-        <div className="row wrap" style={{ gap: 14 }}>
-          <Legend states={cells.map((n) => n.state)} />
-          <span className="mono faint">
-            {sl > 1 ? `${busy} of ${ready.length * sl} slots busy · ${c.spec.worker?.executor ?? 'thread'} × ${sl}` : `${busy} of ${ready.length} busy`}
-          </span>
-        </div>
-      </div>
-      <div className="cmp-figs">
-        <Figs>
-          {use('gpu', 'Accelerator')}
-          {use('vram', 'Memory')}
-          {use('cpu', 'CPU')}
-        </Figs>
-        <Figs>
-          <Fig
-            value={inflight}
-            label="in flight"
-            sub={running.length ? running.map((t) => `${fnName(t.function)} on ${t.dispatch === 'one' ? 'one node' : `${ranksOf(t)} nodes`}`).join(', ') : 'nothing is running'}
-          />
-          <Fig value={c.tasks.succeeded} label="tasks done" sub={lastDone ? `${fnName(lastDone.function)}, ${ago(ms(lastDone.finished_at))}` : c.tasks.succeeded ? '—' : 'none yet'} />
-          <Fig value={failed} label="errors" sub={lastErr ? `${fnName(lastErr.function)}, ${ago(ms(lastErr.finished_at))}` : failed ? '—' : 'none'} err={failed > 0} />
-        </Figs>
-        <BillFigs c={c} nodes={nodes} live />
-      </div>
+      {cost}
+      <Group label="Nodes">
+        <Fig value={<>{ready.length}<small>of {targetOf(c)}</small></>} label={`ready${c.spec.nodes.min && c.spec.nodes.min !== c.spec.nodes.initial ? `, floor ${c.spec.nodes.min}` : ''}`} />
+        <Fig value={<>{busy}<small>of {ready.length * slots}</small></>} label={`slots busy, ${c.spec.worker?.executor ?? 'thread'} × ${slots}`} />
+        <Fig value={idle.length} label={`idle, under 25% ${accelerated ? 'accelerator' : 'CPU'}`} />
+      </Group>
+      <Group label="Work">
+        <Fig value={inflight} label={running.length ? `in flight, ${[...new Set(running.map(named))].join(', ')}` : 'in flight'} />
+        <Fig value={c.tasks.succeeded} label={done ? `done, last ${ago(ms(done.finished_at))}` : 'done'} />
+        <Fig value={failed} label="errors" />
+      </Group>
     </>
   )
 }
 
-function EndedBody({ c, nodes }: { c: Compute; nodes: readonly Node[] }) {
-  const bought = c.offer ?? c.spec.specs[0]
+/** What it cost and what it did, once there is nothing left to watch. */
+function EndedFigures({ c, nodes }: { c: Compute; nodes: readonly Node[] }) {
+  const spent = c.ended?.cost ?? 0
   const ran = ranOf(c)
   const calls = callsOf(c)
   const failed = failedOf(c)
+  const paid = perUnit(c, nodes)
   return (
     <>
-      <div className="cmp-out">
-        <span className="fig-l">{ran < 60e3 ? 'Never became ready' : `Ran ${dur(ran)}`}</span>
-        <b>Deleted</b>
-        <span>{c.ended ? CAUSE[c.ended.cause] : '—'}</span>
-      </div>
-      <div className="cmp-figs">
-        <Figs>
-          <Fig value={nodes.length || targetOf(c)} label="nodes at peak" sub={bought?.accelerator ? `${bought.accelerator_count}× ${bought.accelerator.toUpperCase()} each` : (c.offer?.instance_type ?? '—')} />
-          <Fig value={calls || '—'} label="calls" sub={calls ? `${Math.round(calls / (ran / HOUR))} an hour` : 'nothing ran here'} />
-          <Fig value={failed} label="failed" sub={failed ? `${Math.round((failed / calls) * 1000) / 10}% of calls` : 'none'} err={failed > 0} />
-        </Figs>
-        <BillFigs c={c} nodes={nodes} live={false} />
-      </div>
+      <Group label="Cost">
+        <Fig value={spent ? money(spent, spent < 10 ? 2 : 0) : '—'} label="spent in total" />
+        <Fig value={calls && spent ? money(spent / calls, spent / calls < 10 ? 2 : 0) : '—'} label="per call" />
+        <Fig value={paid.rate ? money(paid.rate) : '—'} unit={paid.unit} label={`paid on ${boundOf(c)?.kind ?? '—'}`} />
+      </Group>
+      <Group label="Work">
+        <Fig value={calls || '—'} label={calls && ran > 60e3 ? `calls, ${Math.round(calls / (ran / HOUR))} an hour` : 'calls'} />
+        <Fig value={failed} label={failed && calls ? `failed, ${Math.round((failed / calls) * 1000) / 10}% of them` : 'failed'} />
+        <Fig value={ran < 60e3 ? '—' : dur(ran)} label="ran" />
+      </Group>
     </>
   )
 }
 
-/**
- * The bill: accrued from the nodes' rates while the compute is live, the daemon's
- * closed total once it has ended. The price per card comes from the nodes, and is
- * compared with the cheapest offer of the same accelerator.
- */
-function BillFigs({ c, nodes, live }: { c: Compute; nodes: readonly Node[]; live: boolean }) {
-  const offers = useStore((s) => s.offers)
-  const s0 = c.spec.specs[0]
-  const kind = c.offer?.kind ?? s0?.provider.kind
-  const accelerator = c.offer?.accelerator ?? s0?.accelerator
-  const calls = live ? finishedOf(c) : callsOf(c)
-  const spent = useStore((s) => spentOf(s, c)) ?? 0
-  const up = live ? Date.now() - ms(c.created_at) : ranOf(c)
-  const hourly = live ? rateOf(nodes) : spent / (up / HOUR)
-  const paid = perGpu(c, nodes)
-  const cheap = offers
-    .filter((o) => s0 && o.accelerator === accelerator)
-    .map((o) => ({ o, per: offerPerGpu(o) }))
-    .filter((x) => x.per > 0)
-    .sort((a, b) => a.per - b.per)[0]
+/* ---------- the tabs ---------- */
+
+const attemptOf = (t: Task): number => t.executions.reduce((n, e) => Math.max(n, e.ordinal), 1)
+
+function TasksTable({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; nodes: readonly Node[] }) {
+  const navigate = useNavigate()
+  /* ten of them, in the order the queue reads: what is running, then what is waiting, then the latest to finish */
+  const list = tasks.slice().sort(byState).slice(0, 10)
+  if (!list.length) return <div className="sub">{callsOf(c) ? 'Its tasks are no longer kept.' : 'Nothing ran here.'}</div>
   return (
-    <Figs>
-      <Fig
-        value={live ? (spent ? money(spent, 0) : '—') : money(spent, spent < 10 ? 2 : 0)}
-        label={live ? 'spent so far' : 'spent in total'}
-        sub={calls && spent ? `${money(spent / calls, spent / calls < 10 ? 2 : 0)} ${live ? 'per finished call' : 'per call'}` : live ? 'no finished call yet' : '—'}
-      />
-      <Fig
-        value={live ? (hourly ? money(hourly, 0) : '—') : money(hourly, hourly < 10 ? 2 : 0)}
-        unit="/h"
-        label={live ? 'burning' : 'burned while up'}
-        sub={live ? `up ${dur(up)}` : up < 60e3 ? 'never became ready' : `over ${dur(up)}`}
-      />
-      <Fig
-        value={paid ? money(paid) : '—'}
-        unit="/GPU·h"
-        label={`paid on ${kind ?? '—'}`}
-        sub={cheap && paid ? (cheap.per * 1.05 < paid ? `${(paid / cheap.per).toFixed(1)}× the cheapest (${money(cheap.per)}, ${cheap.o.kind})` : 'single offer price') : 'no offer to compare'}
-      />
-    </Figs>
+    <TableScroll label="Tasks">
+      <table>
+        <thead>
+          <tr>
+            <th>Function</th>
+            <th>State</th>
+            <th>Dispatch</th>
+            <th>Submitted</th>
+            <th className="right">Took</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((t) => {
+            const attempt = attemptOf(t)
+            const ran = runOf(t)
+            const error = t.executions.find((e) => e.error)?.error?.message
+            return (
+              <tr key={t.id} data-open="" onClick={() => navigate(`/tasks/${t.id}`)}>
+                <td>
+                  <Fn sha={t.function.sha256} />
+                </td>
+                <td>
+                  <Pill state={t.state} />
+                  {error && (t.state === 'failed' || t.state === 'timed_out') ? <span className="err-line">{error}</span> : null}
+                </td>
+                <td className="sub nowrap">
+                  {dispatchLine(t, nodes)}
+                  {attempt > 1 ? `, attempt ${attempt}` : ''}
+                </td>
+                <td className="sub nowrap">{ago(ms(t.submitted_at))}</td>
+                <td className="right nowrap">{ran === null ? <span className="faint">—</span> : dur(ran)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </TableScroll>
   )
 }
 
-/* ---------- spec ---------- */
+/** What the compute printed, following the tail as it arrives. */
+function Logs({ computeId }: { computeId: string }) {
+  const feed = useLogs({ compute: computeId })
+  const pageLogs = useStore((s) => s.pageLogs)
+  return (
+    <LogBox
+      lines={feed?.lines ?? NONE}
+      older={
+        feed?.cursor ? (
+          <button className="btn sm" style={{ marginBottom: 10 }} disabled={feed.loading} onClick={() => void pageLogs()}>
+            Load older
+          </button>
+        ) : null
+      }
+    />
+  )
+}
+
+function Events({ computeId }: { computeId: string }) {
+  const events = useEvents(computeId)
+  const pageEvents = useStore((s) => s.pageEvents)
+  return (
+    <EvBox
+      events={events.items}
+      older={
+        events.cursor ? (
+          <button className="btn sm" style={{ marginBottom: 10 }} disabled={events.loading} onClick={() => void pageEvents(computeId, 'all')}>
+            Load older
+          </button>
+        ) : null
+      }
+    />
+  )
+}
 
 function SpecItem({ label, children, wide }: { label: string; children: ReactNode; wide?: 'wide' | 'wide3' }) {
   return (
@@ -305,197 +476,43 @@ const Pkgs = ({ xs }: { xs: readonly string[] }) =>
   )
 
 function SpecGrid({ c, live }: { c: Compute; live: boolean }) {
-  const openSheet = useStore((s) => s.openSheet)
   const ports = usePorts((s) => s.ports[c.id]) ?? NONE
   const im = c.spec.image
   const pip = im?.pip ?? NONE
   const apt = im?.apt ?? NONE
   const lease = Math.max(0, Math.round((ms(c.lease.expires_at) - Date.now()) / 1000))
   return (
-    <>
-      <div className="cap">Spec</div>
-      <div className="specgrid">
-        {im?.base ? (
-          <SpecItem label="container" wide={im.base.length > 28 ? 'wide3' : 'wide'}>
-            {im.base}
-          </SpecItem>
-        ) : null}
-        <SpecItem label="python">{im?.python ?? <span className="faint">the machine's</span>}</SpecItem>
-        <SpecItem label="pip" wide={pip.slice(0, 3).join(', ').length > 20 ? 'wide' : undefined}>
-          <Pkgs xs={pip} />
+    <div className="specgrid">
+      {im?.base ? (
+        <SpecItem label="container" wide={im.base.length > 28 ? 'wide3' : 'wide'}>
+          {im.base}
         </SpecItem>
-        {apt.length ? (
-          <SpecItem label="apt">
-            <Pkgs xs={apt} />
-          </SpecItem>
-        ) : null}
-        <SpecItem label="executor">
-          {c.spec.worker?.executor ?? 'thread'} × {slotsOf(c)}
+      ) : null}
+      <SpecItem label="python">{im?.python ?? <span className="faint">the machine's</span>}</SpecItem>
+      <SpecItem label="pip" wide={pip.slice(0, 3).join(', ').length > 20 ? 'wide' : undefined}>
+        <Pkgs xs={pip} />
+      </SpecItem>
+      {apt.length ? (
+        <SpecItem label="apt">
+          <Pkgs xs={apt} />
         </SpecItem>
-        <SpecItem label="plugins">{c.spec.plugins.map((p) => p.kind).join(', ') || <span className="faint">none</span>}</SpecItem>
-        {live ? (
-          <>
-            <SpecItem label="lease">{c.lease.expires_at ? `renews in ${lease}s` : '—'}</SpecItem>
-            <SpecItem label="ports" wide="wide">
-              {ports.map((p) => `${p.remote}→${p.local}`).join(', ') || 'none'}
-              <button
-                className="btn sm ghost"
-                style={{ height: 20, padding: '0 5px', fontSize: 11, marginLeft: 4 }}
-                onClick={() => openSheet({ kind: 'ports', computeId: c.id })}
-              >
-                <Icon name="ports" />
-                Forward
-              </button>
-            </SpecItem>
-          </>
-        ) : null}
-      </div>
-    </>
-  )
-}
-
-/* ---------- tasks ---------- */
-
-const attemptOf = (t: Task): number => t.executions.reduce((n, e) => Math.max(n, e.ordinal), 1)
-
-function TasksBlock({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; nodes: readonly Node[] }) {
-  const navigate = useNavigate()
-  const setUi = useStore((s) => s.setUi)
-  const ended = c.ended
-  const list = tasks.slice().sort((a, b) => ms(b.submitted_at) - ms(a.submitted_at))
-  const shown = list.slice(0, 8)
-  const calls = callsOf(c)
-  const failed = failedOf(c)
-  /* the daemon keeps every task: what this card leaves out is in the Tasks view, filtered to this compute */
-  const more = calls - shown.length
-  return (
-    <div>
-      <div className="combhead">
-        <b>Tasks</b>
-        <span className="sub">
-          {!calls
-            ? 'nothing ran here'
-            : ended
-              ? `showing the newest ${shown.length} of ${calls} calls${failed ? `, ${failed} failed` : ''}`
-              : `${c.tasks.running} running · ${c.tasks.queued} queued · ${failed} failed · ${c.tasks.succeeded} succeeded`}
-        </span>
-      </div>
-      {list.length ? (
+      ) : null}
+      <SpecItem label="executor">
+        {c.spec.worker?.executor ?? 'thread'} × {slotsOf(c)}
+      </SpecItem>
+      <SpecItem label="plugins">{c.spec.plugins.map((p) => p.kind).join(', ') || <span className="faint">none</span>}</SpecItem>
+      {live ? (
         <>
-          <TableScroll label="Tasks">
-            <table>
-              <thead>
-                <tr>
-                  <th>Function</th>
-                  <th>State</th>
-                  <th>Submitted</th>
-                  <th className="right">Took</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((t) => {
-                  const attempt = attemptOf(t)
-                  return (
-                    <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
-                      <td>
-                        <Fn sha={t.function.sha256} weight={700} />
-                        <div className="mono faint">
-                          {dispatchLine(t, nodes)}
-                          {attempt > 1 ? ` · attempt ${attempt}` : ''}
-                        </div>
-                      </td>
-                      <td>
-                        <Pill state={t.state} />
-                      </td>
-                      <td className="mono faint" style={{ whiteSpace: 'nowrap' }}>
-                        {ago(ms(t.submitted_at))}
-                      </td>
-                      <td className="right mono" style={{ whiteSpace: 'nowrap' }}>
-                        {dur((t.finished_at ? ms(t.finished_at) : Date.now()) - ms(t.submitted_at))}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </TableScroll>
-          {more > 0 ? (
-            <button
-              className="btn sm ghost"
-              style={{ marginTop: 8 }}
-              onClick={() => {
-                setUi({ task: { compute: c.id, state: 'all' } })
-                navigate('/tasks')
-              }}
-            >
-              <Icon name="tasks" />
-              {more} more in Tasks
+          <SpecItem label="lease">{c.lease.expires_at ? `renews in ${lease}s` : '—'}</SpecItem>
+          <SpecItem label="ports" wide="wide">
+            {ports.map((p) => `${p.remote}→${p.local}`).join(', ') || 'none'}
+            <button className="btn sm ghost" style={{ height: 20, padding: '0 5px', fontSize: 11, marginLeft: 4 }} onClick={() => openPorts(c.id)}>
+              <Icon name="ports" />
+              Forward
             </button>
-          ) : null}
+          </SpecItem>
         </>
       ) : null}
-    </div>
-  )
-}
-
-/* ---------- what it prints and what happened ---------- */
-
-/** The last dozen lines the compute printed, following as they arrive while it is still printing. */
-function LogStream({ computeId, live }: { computeId: string; live: boolean }) {
-  const navigate = useNavigate()
-  const feed = useLogs({ compute: computeId })
-  const act = useStore((s) => s.act)
-  const setUi = useStore((s) => s.setUi)
-  const box = useRef<HTMLDivElement>(null)
-  const tail = (feed?.lines ?? NONE).slice(-12)
-  useEffect(() => {
-    if (box.current) box.current.scrollTop = box.current.scrollHeight
-  }, [tail[tail.length - 1]?.sequence])
-  return (
-    <section className="card">
-      <div className="combhead">
-        <b>{live ? 'Log stream' : 'What it printed'}</b>
-        <button
-          className="btn sm ghost"
-          style={{ marginLeft: 'auto' }}
-          onClick={() => {
-            setUi({ act: { ...act, kind: 'logs', compute: computeId, rank: 'all' } })
-            navigate('/activity')
-          }}
-        >
-          <Icon name="logs" />
-          Open in Activity
-        </button>
-      </div>
-      <div className="logbox short flat" ref={box}>
-        {tail.length ? tail.map((l) => <LogLineRow key={`${l.sequence}.${l.part}`} line={l} />) : <div className="sub">Nothing printed yet.</div>}
-      </div>
-    </section>
-  )
-}
-
-function EventsBlock({ computeId, name }: { computeId: string; name: string }) {
-  const navigate = useNavigate()
-  const evs = useEvents(computeId).items.slice(0, 6)
-  const act = useStore((s) => s.act)
-  const setUi = useStore((s) => s.setUi)
-  return (
-    <div>
-      <div className="combhead">
-        <b>Events</b>
-        <button
-          className="btn sm ghost"
-          style={{ marginLeft: 'auto' }}
-          onClick={() => {
-            setUi({ act: { ...act, kind: 'events', compute: computeId, rank: 'all' } })
-            navigate('/activity')
-          }}
-        >
-          <Icon name="events" />
-          Open in Activity
-        </button>
-      </div>
-      <div className="evbox">{evs.length ? evs.map((e) => <EvLineRow key={e.id} event={e} computeName={name} />) : <div className="sub">Nothing happened yet.</div>}</div>
     </div>
   )
 }

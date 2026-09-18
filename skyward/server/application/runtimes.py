@@ -58,6 +58,14 @@ the user set and the store knows about; this is only the point past which a repl
 never coming.
 """
 
+MEMBERSHIP = 30.0
+"""How long a worker that is up may be missing from the client's view before it is not merely late.
+
+Joining a formed cluster is the slow side of membership — measured at over a minute on
+RunPod — but this is not that wait: by the time anything asks for a member, the node has
+answered the daemon, and a worker that answers is a worker that joined.
+"""
+
 
 def keypair() -> tuple[str, str]:
     """A key for one compute, and only for it.
@@ -113,6 +121,12 @@ class Runtime:
         self._claims: set[str] = set()
         """Machines a connect is mid-flight for, before there is a node to hold."""
 
+        self._absent: set[str] = set()
+        """Nodes this client has already been dialled again over, for as long as it lasts."""
+
+        self._door: str | None = None
+        """The machine that was given the cluster to open, while there is no cluster yet."""
+
         self._skyward: SkywardSource = skyward
         self._source: asyncio.Task[Source] | None = None
         """The one resolution of what every node installs: in flight, done, or not yet asked for."""
@@ -153,6 +167,42 @@ class Runtime:
         picked up again.
         """
         self._claims.discard(node_id)
+
+    def opens(self, node_id: str, formed: bool) -> bool:
+        """Whether this machine starts the cluster rather than knocking on it.
+
+        Somebody has to be the door, and which machine it is cannot be read off the
+        rows: an address arrives when the provider hands the machine over, not in rank
+        order, so two connects a second apart both find themselves the lowest-ranked
+        node with an address and each opens a cluster of its own. What is left is a
+        compute split in two, with this daemon inside whichever half it dialled first
+        and the workers in the other one unreachable — alive, idle and paid for.
+
+        So the door is *given* to the first machine that asks, and not worked out from
+        who else is here: a compute opens all of its machines together, and every one
+        of fifteen connects a moment apart finds fourteen others already claimed. An
+        answer derived from that is no for all fifteen, and a compute where nobody
+        opens the cluster is fifteen workers waiting out the seed timeout, dying, and
+        being started again to wait it out once more.
+
+        Nobody opens a second one: once a worker is up there is something to knock on.
+        ``formed`` is that fact as the store has it, which is the half this process
+        cannot see — a daemon that restarted onto a running compute holds nothing yet,
+        and the machine it is about to take hold of must not be told to open a cluster
+        beside the one its peers are already in.
+
+        The door is given again only while there is no cluster at all and the machine
+        holding it is gone — a connect that died on the way, and a door nobody is
+        standing in. A compute with no cluster has no door: every worker on it is
+        alone by design.
+        """
+        if not self.cluster:
+            return True
+        if formed or self.ready:
+            return False
+        if self._door not in self._claims | {held for held, node in self.nodes.items() if node.held}:
+            self._door = node_id
+        return self._door == node_id
 
     async def source(self) -> Source:
         """What every node of this compute installs, resolved once for all of them.
@@ -315,14 +365,35 @@ class Runtime:
         node.peers = peers
 
     async def member(self, node_id: str) -> casty.Member:
-        system = await self.system(node_id)
-        seed = self.nodes[node_id].seed
+        """The cluster member that is one node's worker.
 
-        async with asyncio.timeout(30):
-            while True:
-                if found := next((m for m in system.members() if m.addr == seed), None):
-                    return found
-                await asyncio.sleep(0.2)
+        A worker started a moment ago is not in the client's view the instant it is
+        asked for, so the wait is ordinary. A worker that never arrives in it is not:
+        this client joined through whichever nodes were ready when it was built, and
+        one that cannot see a worker the daemon has watched come up may be looking at
+        a cluster that worker is not in — which is not something waiting longer fixes.
+
+        So a miss is answered with another dial, and with exactly one per node: dropping
+        the client takes every call riding it down with it, which the dispatcher
+        recovers from and does not enjoy, and a worker that is simply dead would
+        otherwise cost the compute a dial on every attempt placed on it.
+        """
+        seed = self.nodes[node_id].seed
+        if found := await self._seen(node_id, seed):
+            self._absent.discard(node_id)
+            return found
+
+        if node_id in self._absent:
+            raise ComputeNotConnectedError(f"the worker at {seed} is in no cluster this daemon can dial", compute=self.compute)
+
+        logger.bind(compute_id=self.compute, node_id=node_id).warning("the worker at {} is in no cluster this client can see; dialling again", seed)
+        await self._redial(node_id)
+        self._absent.add(node_id)
+        if found := await self._seen(node_id, seed):
+            self._absent.discard(node_id)
+            return found
+
+        raise ComputeNotConnectedError(f"the worker at {seed} is in no cluster this daemon can dial", compute=self.compute)
 
     async def linked(self, node_id: str) -> None:
         """Until the SSH link to one node is up, which it may already be.
@@ -497,6 +568,32 @@ class Runtime:
             self._tls = casty.TLS(cert=str(certificate), key=str(key), ca=str(authority))
 
         return self._tls
+
+    async def _seen(self, node_id: str, seed: str) -> casty.Member | None:
+        """The member advertising that address, once it is in the view or never."""
+        system = await self.system(node_id)
+        try:
+            async with asyncio.timeout(MEMBERSHIP):
+                while True:
+                    if found := next((member for member in system.members() if member.addr == seed), None):
+                        return found
+                    await asyncio.sleep(0.2)
+        except TimeoutError:
+            return None
+
+    async def _redial(self, node_id: str) -> None:
+        """Drop the client so the next call builds one from every node that is ready now.
+
+        The calls riding it die with it, which is the price of the dial and not a loss:
+        a worker keeps its outcomes by execution id, and the dispatcher waits on them
+        again the way it does for any dropped link. The client that replaces it owes
+        nobody a dial — what was missing from the last one is a question about a
+        cluster this daemon is no longer in.
+        """
+        self._absent.clear()
+        if system := self._systems.pop(None if self.cluster else node_id, None):
+            with suppress(Exception):
+                await system.close()
 
     def _refresh(self) -> None:
         self._tunnels = {

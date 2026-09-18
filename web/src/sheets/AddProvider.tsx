@@ -33,7 +33,7 @@ export function AddProvider({ provider }: { provider?: string }) {
           <b>Add account</b>
           <CloseBtn style={{ marginLeft: 'auto' }} />
         </div>
-        <form className="sheet-body" style={{ display: 'grid', gap: 10 }} onSubmit={(e) => void submit(e)}>
+        <form id="add-provider" className="sheet-body" style={{ display: 'grid', gap: 10 }} onSubmit={(e) => void submit(e)}>
           <div className="field">
             <label htmlFor="pv-kind">Kind</label>
             <select id="pv-kind" name="kind" value={kind} onChange={(e) => setKind(e.target.value)}>
@@ -58,10 +58,12 @@ export function AddProvider({ provider }: { provider?: string }) {
           ) : (
             <div className="sub">This kind needs no credentials.</div>
           )}
-          <button className="btn primary" type="submit" style={{ justifySelf: 'start' }} disabled={busy}>
-            Save and check
-          </button>
         </form>
+        <div className="sheet-foot">
+          <button className="btn primary" form="add-provider" type="submit" disabled={busy}>
+            Add account
+          </button>
+        </div>
       </div>
     </Scrim>
   )

@@ -7,6 +7,7 @@ import { useStore } from '../state/store'
 import { money } from '../state/model'
 import { Icon } from '../ui/icons'
 import { Chip, Pick, Tick } from '../ui/primitives'
+import { Facts } from '../ui/head'
 import { Scrim, CloseBtn } from './Scrim'
 import { COLLECTIVE, PLUGINS } from './catalog'
 
@@ -116,6 +117,22 @@ const newDraft = (offer: Offer | undefined): Draft => ({
   ttl: 600,
 })
 
+/**
+ * The shape to open on: the cheapest offer of the accelerator asked for, else the cheapest of anything.
+ *
+ * What makes an opening shape good is that somebody can buy it — so it comes off the market rather than
+ * from a default written here.
+ */
+const opening = (offers: readonly Offer[], preferred: string): Partial<Draft> | null => {
+  const priced = offers
+    .filter((o) => o.accelerator && (o.available ?? 0) > 0)
+    .map((o) => ({ o, per: (o.spot_price ?? o.on_demand_price ?? o.price ?? 0) / Math.max(1, o.accelerator_count) }))
+    .filter((x) => x.per > 0)
+    .sort((a, b) => a.per - b.per)
+  const best = priced.find((x) => x.o.accelerator === preferred) ?? priced[0]
+  return best ? { accel: best.o.accelerator!, count: best.o.accelerator_count } : null
+}
+
 /** The offer the wizard opens on, handed over by the market view through `openWizard`. */
 let seed: Offer | undefined
 
@@ -153,7 +170,21 @@ export function Wizard() {
   }, [])
 
   const m = useMemo(() => (shelf.state === 'ready' ? market(shelf.offers, shelf.catalog, w) : market([], new Map(), w)), [shelf, w])
-  const tone = (providerId: string): string => `var(--c${(Math.max(0, accounts.findIndex((p) => p.id === providerId)) % 5) + 1})`
+
+  /*
+   * The wizard opens on a shape the market actually sells.
+   * Opening on a fixed 1× H100 meant opening on "No machine matches" wherever nobody sells one, with
+   * Continue disabled and nothing saying what to change. The shelf arrives a moment after the sheet, so
+   * the draft it was opened with is adopted onto the cheapest offer of the accelerator it asked for,
+   * once, and only while nothing has been typed yet.
+   */
+  const adopted = useRef(false)
+  useEffect(() => {
+    if (seed || adopted.current || shelf.state !== 'ready') return
+    adopted.current = true
+    const shape = opening(shelf.offers, w.accel)
+    if (shape) setW((prev) => (prev.step === 1 ? { ...prev, ...shape } : prev))
+  }, [shelf, w.accel])
 
   const create = async () => {
     setBusy(true)
@@ -221,9 +252,9 @@ export function Wizard() {
           <CloseBtn />
         </div>
         <div className="sheet-body">
-          {w.step === 1 ? <Need w={w} patch={patch} m={m} shelf={shelf} accounts={accounts} tone={tone} /> : null}
+          {w.step === 1 ? <Need w={w} patch={patch} m={m} shelf={shelf} accounts={accounts} /> : null}
           {w.step === 2 ? <Runs w={w} patch={patch} m={m} /> : null}
-          {w.step === 3 ? <Review w={w} m={m} shelf={shelf} tone={tone} /> : null}
+          {w.step === 3 ? <Review w={w} m={m} shelf={shelf} /> : null}
         </div>
         <div className="sheet-foot">
           {w.step > 1 ? (
@@ -342,7 +373,7 @@ const toggled = (list: readonly string[], item: string): readonly string[] => (l
 
 type StepProps = { w: Draft; patch: (p: Partial<Draft>) => void; m: Market }
 
-function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf; accounts: readonly Provider[]; tone: (providerId: string) => string }) {
+function Need({ w, patch, m, shelf, accounts }: StepProps & { shelf: Shelf; accounts: readonly Provider[] }) {
   const chosen = accounts.filter((p) => w.providers.includes(p.id)).map((p) => p.name)
   return (
     <div style={{ ...STACK, gap: 16 }}>
@@ -396,11 +427,9 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
             </Chip>
             {accounts.map((p) => (
               <Chip key={p.id} pressed={w.providers.includes(p.id)} onClick={() => patch({ providers: toggled(w.providers, p.id) })}>
-                <i className="dot" style={{ background: tone(p.id) }} />
-                {p.name}
-                <span className="mono faint" style={{ fontSize: 10 }}>
-                  {m.sold.get(p.id) ?? 0}
-                </span>
+                {p.kind}
+                {p.name && p.name !== 'default' ? ` ${p.name}` : ''}
+                <span className="faint">{m.sold.get(p.id) ?? 0}</span>
               </Chip>
             ))}
           </div>
@@ -427,7 +456,7 @@ function Need({ w, patch, m, shelf, accounts, tone }: StepProps & { shelf: Shelf
       </div>
 
       <div style={{ marginTop: 'auto' }}>
-        <Machine shelf={shelf} choice={m.choice} tone={tone} />
+        <Machine shelf={shelf} choice={m.choice} />
       </div>
     </div>
   )
@@ -492,24 +521,40 @@ function Runs({ w, patch, m }: StepProps) {
   )
 }
 
-function Review({ w, m, shelf, tone }: Omit<StepProps, 'patch'> & { shelf: Shelf; tone: (providerId: string) => string }) {
+function Review({ w, m, shelf }: Omit<StepProps, 'patch'> & { shelf: Shelf }) {
   const containers = m.buys.some((b) => CONTAINERS.has(b.offer.kind))
   const none = <span className="faint">none</span>
   const any = <span className="faint">any</span>
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <div className="row wrap" style={{ gap: 26 }}>
-        <div className="gauge-r">
-          <b>
-            {w.initial}
-            <small>{w.count ? `× ${w.count}× ${labelOf(m.accel)}` : '× no accelerator'}</small>
-          </b>
-          <span>shape</span>
-        </div>
-        <Meter value={m.choice ? money(m.choice.price) : '—'} label="per node" />
-        <Meter value={m.choice ? money(m.choice.price * w.initial) : '—'} label="per hour" />
+      <div className="row wrap" style={{ gap: 18 }}>
+        <span className="hero">
+          {m.choice ? money(m.choice.price * w.initial, 2) : '—'}
+          <small>/h</small>
+        </span>
+        <Facts
+          items={[
+            <>
+              <b>
+                {w.initial} node{w.initial === 1 ? '' : 's'}
+              </b>
+              {w.max ? `, elastic ${w.min ?? w.initial} to ${w.max}` : w.min && w.min !== w.initial ? `, floor ${w.min}` : ''}
+            </>,
+            <>
+              <b>{w.count ? `${w.count}× ${labelOf(m.accel)}` : 'no accelerator'}</b>
+              {m.choice ? ` ${m.choice.offer.instance_type}` : ''}
+            </>,
+            m.choice ? (
+              <>
+                <b>{m.choice.offer.kind}</b> {m.choice.offer.region ?? 'any region'}
+              </>
+            ) : null,
+            m.choice ? `${money(m.choice.price)}/h a node, ${m.choice.market === 'spot' ? 'spot' : 'on demand'}` : null,
+            `${w.executor} × ${w.concurrency}`,
+          ]}
+        />
       </div>
-      <Machine shelf={shelf} choice={m.choice} tone={tone} />
+      <Machine shelf={shelf} choice={m.choice} />
       <div>
         <div className="cap">Spec</div>
         <div className="specgrid" style={{ gridAutoFlow: 'dense' }}>
@@ -543,7 +588,7 @@ function Review({ w, m, shelf, tone }: Omit<StepProps, 'patch'> & { shelf: Shelf
 }
 
 /** The offer the daemon would buy for what is asked so far. */
-function Machine({ shelf, choice, tone }: { shelf: Shelf; choice: Buy | null; tone: (providerId: string) => string }) {
+function Machine({ shelf, choice }: { shelf: Shelf; choice: Buy | null }) {
   const strip = (children: ReactNode) => (
     <div className="strip" style={{ background: 'var(--sunk)', flexWrap: 'wrap', gap: 9, minHeight: 44 }}>
       {children}
@@ -560,7 +605,6 @@ function Machine({ shelf, choice, tone }: { shelf: Shelf; choice: Buy | null; to
   ]
   return strip(
     <>
-      <i className="dot" style={{ background: tone(o.provider_id) }} />
       <b style={{ fontWeight: 600 }}>{o.kind}</b>
       <span className="mono">{o.instance_type}</span>
       <span className="mono faint">{[...size, o.region].filter(Boolean).join(' · ')}</span>
@@ -570,13 +614,6 @@ function Machine({ shelf, choice, tone }: { shelf: Shelf; choice: Buy | null; to
     </>,
   )
 }
-
-const Meter = ({ value, label }: { value: string; label: string }) => (
-  <div className="gauge-r">
-    <b>{value}</b>
-    <span>{label}</span>
-  </div>
-)
 
 const Item = ({ label, wide, children }: { label: string; wide?: 'wide' | 'wide3'; children: ReactNode }) => (
   <div className={wide ? `spec-i ${wide}` : 'spec-i'}>

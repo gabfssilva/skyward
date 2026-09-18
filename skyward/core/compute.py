@@ -262,8 +262,8 @@ class Compute:
         self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
         self._active_token: Token[context.Pool | None] | None = None
-        self._functions: set[str] = set()
-        """Digests of the code this pool already uploaded: the daemon keeps a function once."""
+        self._functions: dict[str, asyncio.Task[None]] = {}
+        """The upload of each digest this pool has sent: in flight, or done. The daemon keeps a function once."""
 
     @classmethod
     def attached(
@@ -717,16 +717,7 @@ class Compute:
     async def _submit[T](self, pending: Pending[T] | Streaming[T], dispatch: Dispatch) -> TaskResource:
         code = await codec.payload.encode(pending.fn)
         function = await codec.digest(code)
-        if function not in self._functions:
-            written = defined(pending.fn)
-            await self.client.upload(
-                f"/v1/functions/{function}",
-                code,
-                headers={"X-Skyward-Function-Name": written.__name__},
-            )
-            if (text := await asyncio.to_thread(excerpt, written)) is not None:
-                await self.client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=text)))
-            self._functions.add(function)
+        await self._register(function, pending.fn, code)
 
         args = await codec.payload.encode((pending.args, pending.kwargs))
         inline, stored = await self._args(args)
@@ -764,6 +755,43 @@ class Compute:
             ),
             headers={"Idempotency-Key": uuid.uuid4().hex},
         )
+
+    async def _register(self, function: str, fn: Callable[..., object], code: bytes) -> None:
+        """Put one function's code on the daemon once, however many calls name it.
+
+        The membership test and the upload that answers it are several awaits apart,
+        which is a test that every one of six thousand submissions passes before the
+        first of them has registered anything: one upload becomes six thousand, each
+        with an excerpt of its own queued onto the thread pool behind it and a POST
+        waiting on the connection pool they all share. A driver that asks for its whole
+        campaign at once — which is how a campaign is written — spends a quarter of an
+        hour there without a single task reaching the daemon.
+
+        So the first submission starts the registration and the rest wait on the one it
+        started, shielded: a caller that gives up on its own call must not cancel the
+        upload the other five thousand are waiting behind. One that failed is forgotten
+        rather than remembered as done, and the next call does it again.
+        """
+
+        def forget(done: asyncio.Task[None]) -> None:
+            if done.cancelled() or done.exception() is not None:
+                self._functions.pop(function, None)
+
+        if function not in self._functions:
+            self._functions[function] = asyncio.create_task(self._upload(function, fn, code))
+            self._functions[function].add_done_callback(forget)
+
+        await asyncio.shield(self._functions[function])
+
+    async def _upload(self, function: str, fn: Callable[..., object], code: bytes) -> None:
+        written = defined(fn)
+        await self.client.upload(
+            f"/v1/functions/{function}",
+            code,
+            headers={"X-Skyward-Function-Name": written.__name__},
+        )
+        if (text := await asyncio.to_thread(excerpt, written)) is not None:
+            await self.client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=text)))
 
     async def _args(self, args: bytes) -> tuple[bytes | None, str | None]:
         """Small arguments ride along; big ones are uploaded and referenced."""

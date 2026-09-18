@@ -1,6 +1,11 @@
+/*
+ * One primary action per page, up to two plain ones beside it, and the rest behind a menu. An icon rides the primary
+ * action and any button that is only an icon; a plain button is its verb, because four icons in a row are four things
+ * to decode.
+ */
 .btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px;border-radius:var(--rs);
-  background:var(--sunk);font-size:13px;font-weight:600;transition:background .12s,color .12s}
-.btn svg{font-size:17px}
+  background:var(--sunk);font-size:13px;font-weight:600;white-space:nowrap;transition:background .12s,color .12s}
+.btn svg{font-size:16px}
 .btn.primary{background:var(--accent);color:var(--on-accent)}
 .btn.ghost{background:transparent;color:var(--muted)}
 .btn.danger{color:var(--bad)}
@@ -12,48 +17,65 @@
 }
 .btn.sm{height:28px;padding:0 10px;font-size:12px;border-radius:8px}
 .btn.sm svg{font-size:15px}
+.btn.icon{width:34px;padding:0;justify-content:center}
+.btn.icon.sm{width:28px}
 .btn[disabled]{opacity:.4;pointer-events:none}
+.btn[aria-expanded="true"]{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line-2)}
 .iconbtn{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;color:var(--muted);font-size:19px}
 @media (hover:hover){.iconbtn:hover{background:var(--sunk);color:var(--ink)}}
 .iconbtn[aria-pressed="true"]{background:var(--panel);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+
+/* Everything an action row cannot hold, and where a destructive action lives. */
+.menu{position:absolute;right:0;top:40px;z-index:30;display:grid;min-width:210px;padding:6px;border-radius:12px;
+  background:var(--panel);box-shadow:0 0 0 1px var(--line),var(--shadow)}
+.menu button{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;font-size:13px;font-weight:600}
+.menu button svg{font-size:15px;color:var(--muted)}
+.menu button.danger,.menu button.danger svg{color:var(--bad)}
+@media (hover:hover){.menu button:hover{background:var(--sunk)}}
+
 .tag{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:10px;background:var(--panel);color:var(--muted);font-size:12px;white-space:nowrap}
 .tag.proto{color:var(--warn);background:var(--warn-soft)}
 .kbd{font-family:var(--mono);font-size:10.5px;padding:1px 5px;border-radius:5px;background:var(--sunk);color:var(--faint)}
-.pick{display:flex;flex-wrap:wrap;gap:2px;background:var(--sunk);border-radius:10px;padding:2px;font-size:12.5px}
+.pick{display:inline-flex;flex-wrap:wrap;gap:2px;background:var(--sunk);border-radius:10px;padding:2px;font-size:12.5px}
 .pick button{color:var(--muted);font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap}
-.inspector .pick button{padding:4px 7px}
 .pick button[aria-selected="true"]{color:var(--ink);background:var(--panel)}
-.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--sunk);font-size:12px;font-weight:500;color:var(--muted)}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--sunk);font-size:12px;font-weight:600;color:var(--muted)}
 .chip[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
+/* A fact worth reading as a value: rank, duration, price. */
+.pill{display:inline-flex;align-items:baseline;gap:6px;padding:3px 9px;border-radius:8px;background:var(--sunk);font-size:12px;color:var(--muted);white-space:nowrap}
+.pill b{color:var(--ink);font-weight:600}
+@media (hover:hover){button.pill:hover{background:var(--edge)}}
 .field{display:flex;flex-direction:column;gap:4px}
-.field label{font-size:12px;color:var(--muted);font-weight:500}
+.field label{font-size:12px;color:var(--muted);font-weight:600}
 .field input,.field select{height:36px;padding:0 11px;border-radius:var(--rs);border:0;background:var(--sunk);font-size:13px}
 .field input:focus,.field select:focus{outline:2px solid var(--accent)}
 textarea.code{border:0;border-radius:var(--rs);background:var(--sunk);padding:10px 12px;resize:vertical;tab-size:4;
   font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre;overflow:auto}
 textarea.code:focus{outline:2px solid var(--accent)}
+
+/* State, and only state: green is done or ready, blue is under way, amber is waiting, red is wrong. */
 .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:0 0 auto}
-.dot.ready,.dot.running,.dot.succeeded{background:var(--ok)}
-.dot.requested,.dot.queued{background:var(--warn)}
-.dot.provisioning,.dot.connecting,.dot.bootstrapping{background:var(--boot)}
-.dot.deleting,.dot.draining{background:var(--faint)}
-.dot.failed,.dot.lost,.dot.degraded,.dot.timed_out{background:var(--bad)}
-.state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
-.state.ready,.state.running,.state.succeeded{color:var(--ok)}
-.state.failed,.state.degraded,.state.lost,.state.timed_out{color:var(--bad)}
-.state.requested,.state.queued{color:var(--warn)}
-.state.deleted{color:var(--muted)}
-.state.provisioning,.state.connecting,.state.bootstrapping{color:var(--boot)}
+.dot.ready,.dot.succeeded{background:var(--ok)}
+.dot.requested,.dot.queued,.dot.created{background:var(--warn)}
+.dot.provisioning,.dot.connecting,.dot.bootstrapping,.dot.running,.dot.started{background:var(--boot)}
+.dot.deleting,.dot.draining,.dot.cancelled,.dot.cancel_requested{background:var(--faint)}
+.dot.failed,.dot.lost,.dot.degraded,.dot.timed_out,.dot.indeterminate{background:var(--bad)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);white-space:nowrap}
+.state.ready,.state.succeeded{color:var(--ok)}
+.state.provisioning,.state.connecting,.state.bootstrapping,.state.running,.state.started{color:var(--boot)}
+.state.requested,.state.queued,.state.created{color:var(--warn)}
+.state.failed,.state.lost,.state.degraded,.state.timed_out,.state.indeterminate{color:var(--bad)}
+.state.deleted,.state.cancelled,.state.cancel_requested{color:var(--muted)}
+
 select.search{min-width:0;padding-right:8px;color:var(--ink)}
-.search{height:30px;border:0;border-radius:var(--rs);background:var(--sunk);padding:0 10px;font-size:12.5px;min-width:220px;font-family:inherit}
+.search{height:30px;border:0;border-radius:var(--rs);background:var(--sunk);padding:0 10px;font-size:12.5px;min-width:200px;font-family:inherit}
 .search:focus{outline:2px solid var(--accent-soft)}
-@media not all and (max-width:37.5em){.compact-only{display:none}}
 
 /* A finger gets a 44px target whatever the control looks like, and text fields at 16px, under which iOS zooms in on focus. */
 @media (any-pointer:coarse){
-  .btn,.iconbtn,.chip,.pick button,.bar nav button,.pkg button{position:relative}
-  .btn::after,.iconbtn::after,.chip::after,.pick button::after,.bar nav button::after,.pkg button::after{
+  .btn,.iconbtn,.chip,.pick button,.bar nav button,.pkg button,.tabs button{position:relative}
+  .btn::after,.iconbtn::after,.chip::after,.pick button::after,.bar nav button::after,.pkg button::after,.tabs button::after{
     content:"";position:absolute;left:50%;top:50%;width:max(100%,44px);height:max(100%,44px);transform:translate(-50%,-50%)}
   .field input,.field select,.search,textarea.code,.palette input{font-size:16px}
 }

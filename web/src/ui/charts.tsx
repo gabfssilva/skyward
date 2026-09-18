@@ -1,105 +1,82 @@
-import { heat, last, norm, SCALE, UNIT, clamp, type MetricKey } from '../state/model'
+import { clamp } from '../state/model'
+import type { Marks } from '../state/metrics'
 
-export type BandPoint = { min: number; med: number; max: number }
-
-export function Spark({ values, h = 44, fmt = (v: number) => v.toFixed(1) }: { values: readonly number[]; h?: number; fmt?: (v: number) => string }) {
-  const w = 280
-  if (values.length < 2) return <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: h, display: 'block' }} role="img" aria-label="trend" />
-  const max = Math.max(...values) * 1.05 || 1
-  const min = Math.min(...values) * 0.95
-  const span = max - min || 1
-  const X = (i: number) => (i / Math.max(1, values.length - 1)) * w
-  const Y = (v: number) => h - 4 - ((v - min) / span) * (h - 10)
-  const pts = values.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' L')
+/**
+ * One metric over time: a line, the spread around it, and a second line behind it.
+ *
+ * Every chart on a page is handed the same ``axis``, so a checkpoint that slowed the GPUs down is
+ * the same column in utilisation, power, CPU and whatever the image measures of its own. The scale
+ * is the gauge's, not the data's: a percentage is drawn 0 to 100 and a memory against its capacity,
+ * so the same chart at two moments is the same picture.
+ */
+export function Plot({ marks, axis, w = 240, h = 58 }: { marks: Marks; axis: readonly [number, number]; w?: number; h?: number }) {
+  const [from, to] = axis
+  const [lo, hi] = marks.scale
+  const X = (at: number) => clamp((at - from) / Math.max(1, to - from), 0, 1) * (w - 2)
+  const Y = (v: number) => h - 1.5 - (clamp((v - lo) / Math.max(1e-9, hi - lo), 0, 1) * (h - 4))
+  const path = (points: readonly (readonly [number, number])[]): string => 'M' + points.map(([at, v]) => `${X(at).toFixed(1)},${Y(v).toFixed(1)}`).join(' L')
+  const last = marks.line[marks.line.length - 1]
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: h, display: 'block' }} role="img" aria-label="trend">
-      <path d={`M0,${h} L${pts} L${w},${h} Z`} fill="var(--accent)" opacity=".12" />
-      <path d={`M${pts}`} fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeLinejoin="round" />
-      <circle cx={X(values.length - 1).toFixed(1)} cy={Y(last(values)).toFixed(1)} r="2.8" fill="var(--accent)" />
-      {values.map((v, i) => (
-        <rect
-          key={i}
-          x={(X(i) - w / values.length / 2).toFixed(1)}
-          y="0"
-          width={(w / values.length).toFixed(1)}
-          height={h}
-          fill="transparent"
-          data-tip={`${fmt(v)} · ${values.length - i}m ago`}
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto' }} aria-hidden="true">
+      <line x1="0" x2={w} y1="0.5" y2="0.5" stroke="var(--line)" />
+      <line x1="0" x2={w} y1={h - 0.5} y2={h - 0.5} stroke="var(--line-2)" />
+      {marks.band && marks.band.length > 1 ? (
+        <path
+          d={`${path(marks.band.map(([at, , high]) => [at, high]))} ${marks.band
+            .slice()
+            .reverse()
+            .map(([at, low]) => `L${X(at).toFixed(1)},${Y(low).toFixed(1)}`)
+            .join(' ')} Z`}
+          fill="var(--accent)"
+          fillOpacity=".15"
         />
-      ))}
+      ) : null}
+      {marks.dashed && marks.dashed.length > 1 ? (
+        <path d={path(marks.dashed)} fill="none" stroke="var(--muted)" strokeWidth="1.3" strokeDasharray="3 3" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      ) : null}
+      {marks.line.length > 1 ? (
+        <path d={path(marks.line)} fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      ) : null}
+      {last ? <circle cx={X(last[0]).toFixed(1)} cy={Y(last[1]).toFixed(1)} r="2.4" fill="var(--accent)" /> : null}
     </svg>
   )
 }
 
-export function Band({ hist, h = 78 }: { hist: readonly BandPoint[]; h?: number }) {
-  const w = 280
-  if (!hist.length) return <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: h, display: 'block' }} />
-  const X = (i: number) => (i / Math.max(1, hist.length - 1)) * w
-  const Y = (v: number) => h - 10 - (v / 100) * (h - 18)
-  const up = hist.map((d, i) => `${X(i).toFixed(1)},${Y(d.max).toFixed(1)}`).join(' L')
-  const dn = hist
-    .slice()
-    .reverse()
-    .map((d, i) => `${X(hist.length - 1 - i).toFixed(1)},${Y(d.min).toFixed(1)}`)
-    .join(' L')
-  const md = hist.map((d, i) => `${X(i).toFixed(1)},${Y(d.med).toFixed(1)}`).join(' L')
+/**
+ * How long a task took, rank by rank.
+ *
+ * Twelve buckets across the range, the slowest one marked: a task whose ranks finish together is
+ * one column, and one straggler is a bar of its own far to the right, which is the whole point of
+ * drawing it instead of listing twelve equal bars.
+ */
+export function Histo({ values, mark, labels, h = 84 }: { values: readonly number[]; mark?: number; labels: readonly [string, string]; h?: number }) {
+  const w = 640
+  const gap = 5
+  const top = Math.max(...values, 1)
+  const width = (w - gap * (values.length - 1)) / values.length
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: '100%', height: h, display: 'block' }} role="img" aria-label="cluster utilisation band">
-      {[0, 50, 100].map((t) => (
-        <line key={t} x1="0" x2={w} y1={Y(t).toFixed(1)} y2={Y(t).toFixed(1)} stroke="var(--line)" />
-      ))}
-      <path d={`M${up} L${dn} Z`} fill="var(--accent)" opacity=".18" />
-      <path d={`M${md}`} fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeLinejoin="round" />
-      {hist.map((d, i) => (
-        <rect
-          key={i}
-          x={(X(i) - w / hist.length / 2).toFixed(1)}
-          y="0"
-          width={(w / hist.length).toFixed(1)}
-          height={h}
-          fill="transparent"
-          data-tip={`median ${Math.round(d.med)}% · slowest ${Math.round(d.min)}% · fastest ${Math.round(d.max)}%`}
-        />
-      ))}
-    </svg>
-  )
-}
-
-export function Histo({ values, metric, h = 62 }: { values: readonly number[]; metric: MetricKey; h?: number }) {
-  const [lo, hi] = SCALE[metric]
-  const step = (hi - lo) / 10
-  const buckets = Array.from({ length: 10 }, (_, i) => values.filter((v) => v >= lo + i * step && (i === 9 ? v <= hi : v < lo + (i + 1) * step)).length)
-  const top = Math.max(...buckets, 1)
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10,1fr)', gap: 3, alignItems: 'end', height: h }}>
-      {buckets.map((v, i) => (
-        <div
-          key={i}
-          style={{ height: Math.max(3, (v / top) * h), background: heat(norm(metric, lo + (i + 0.5) * step)), borderRadius: 3 }}
-          data-tip={`${v} node${v === 1 ? '' : 's'} · ${Math.round(lo + i * step)}–${Math.round(lo + (i + 1) * step)}${UNIT[metric]}`}
-        />
-      ))}
-    </div>
-  )
-}
-
-export type BarItem = { rank: number; value: number }
-
-export function Bars({ items, metric, onPick }: { items: readonly BarItem[]; metric: MetricKey; onPick?: (rank: number) => void }) {
-  return (
-    <div className="bars">
-      {items.map((x) => (
-        <div key={x.rank} className="barrow" style={{ cursor: onPick ? 'pointer' : undefined }} onClick={() => onPick?.(x.rank)}>
-          <span className="mono faint">rank {x.rank}</span>
-          <span className="track">
-            <i style={{ width: `${norm(metric, x.value)}%` }} />
-          </span>
-          <span className="mono right">
-            {Math.round(x.value)}
-            {UNIT[metric]}
-          </span>
-        </div>
-      ))}
+    <div>
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ display: 'block', width: '100%', height: 'auto' }} role="img" aria-label="how long the ranks took">
+        {values.map((v, i) =>
+          v ? (
+            <rect
+              key={i}
+              x={(i * (width + gap)).toFixed(1)}
+              y={(h - 1 - Math.max(3, (v / top) * (h - 6))).toFixed(1)}
+              width={width.toFixed(1)}
+              height={Math.max(3, (v / top) * (h - 6)).toFixed(1)}
+              rx="3"
+              fill={i === mark ? 'var(--warn)' : 'var(--accent)'}
+              fillOpacity={i === mark ? 1 : 0.72}
+            />
+          ) : null,
+        )}
+        <line x1="0" x2={w} y1={h - 0.5} y2={h - 0.5} stroke="var(--line-2)" />
+      </svg>
+      <div className="axis">
+        <span>{labels[0]}</span>
+        <span>{labels[1]}</span>
+      </div>
     </div>
   )
 }

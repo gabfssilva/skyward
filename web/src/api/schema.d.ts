@@ -770,6 +770,8 @@ export interface paths {
          * List tasks
          * @description Every call this daemon has been asked to make, a page at a time. `correlation_id` is how the tasks of one `&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own.
          *
+         *     `function` is a name and `lineage` is a function: two functions called `train` in two different files share the name and not the lineage, and a function edited and sent again keeps the lineage under a new digest.
+         *
          *     `order` is `submitted` (newest first), `state` (running, newest submitted first; then queued, oldest submitted first; then finished, latest to finish first) or `finished` (latest to finish first, then the unfinished, newest submitted first). `total` counts what every filter matches, and `next_cursor` pages the order it came from, from where the page ended: a task submitted or moved mid-walk does not shift it.
          */
         get: operations["V1TasksList"];
@@ -4422,6 +4424,8 @@ export interface operations {
                 correlation_id?: string | null;
                 /** @description A function's name, which takes in every upload of its code. */
                 function?: string | null;
+                /** @description One function, by the `lineage` its uploads share. */
+                lineage?: string | null;
                 order?: "submitted" | "state" | "finished";
             };
             header?: never;

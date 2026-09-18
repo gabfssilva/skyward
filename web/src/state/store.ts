@@ -4,9 +4,8 @@ import type { Compute, Ending, FunctionRef, LogEntry, LogQuery, Node, Offer, Off
 import { CONSOLE_FRAMES, HEAD, STATE_FRAMES, recorded, subscribe } from '../api/events'
 import type { SkyEvent, Subscription } from '../api/events'
 import { useEffect, useMemo } from 'react'
-import { clamp, endedAt, median, ms } from './model'
-import type { MetricKey, NodeMetrics } from './model'
-import type { NodeProgress, PhaseMark } from './nodes'
+import { endedAt, groupOf, ms } from './model'
+import type { NodeProgress, PhaseMark, Readings } from './nodes'
 
 /** One printed line: ``sequence`` and ``part`` place it in the daemon's order, and ``rank`` is ``null`` until the store has the row of the node that printed it. */
 export type LogLine = { compute: string; sequence: number; part: number; node: string; rank: number | null; at: number; level: 'info' | 'warn' | 'err'; text: string }
@@ -52,8 +51,13 @@ export type Sheet =
 
 export type MarketFilters = { accel: string; market: 'all' | 'spot'; sort: OfferSort }
 
-/** What the Tasks view is filtered by — both of them the daemon's to apply, so paging walks the filter. */
-export type TaskFilters = { compute: 'all' | string; state: 'all' | Task['state'] }
+/**
+ * What the Tasks view is filtered by. Every one of them is the daemon's to apply, so paging walks the filter.
+ *
+ * ``lineage`` is a function — the same code however many times it was edited and sent again — rather than a
+ * name, which would take in two functions called ``train`` from two different files.
+ */
+export type TaskFilters = { compute: 'all' | string; state: 'all' | Task['state']; lineage: 'all' | string }
 
 /** What the Activity view is looking at. */
 export type ActivityFilters = {
@@ -74,12 +78,8 @@ export type HistoryFilters = {
   since: '24h' | '7d' | '30d' | 'all'
 }
 
-/** One sample of the cluster's GPU spread, the shape the band chart draws. */
-export type BandPoint = { min: number; med: number; max: number }
-
 export type Ui = {
-  metric: MetricKey
-  /** the node page's shell card is open */
+  /** the node page opens on its shell */
   shell: boolean
   logFollow: boolean
   act: ActivityFilters
@@ -111,16 +111,10 @@ export type Entities = {
 
 export type Store = Entities &
   Ui & {
-    /** live metrics per node, keyed `${computeId}/${rank}` */
-    metrics: Record<string, NodeMetrics>
-    /** metric history per node+metric, keyed `${computeId}/${rank}/${metric}` */
-    hm: Record<string, number[]>
-    /** the raw gauge values the daemon reports, keyed `${computeId}/${rank}` */
-    raw: Record<string, Record<string, number>>
+    /** the newest value of every metric each node reports, keyed `${computeId}/${rank}` */
+    readings: Readings
     /** boot progress per node, keyed by node id */
     progress: Record<string, NodeProgress>
-    /** cluster GPU spread per compute, 40 samples */
-    bands: Record<string, BandPoint[]>
     /** what each live compute has cost so far, as the daemon's meter last said */
     costs: Record<string, number>
     loading: boolean
@@ -153,6 +147,8 @@ export type Store = Entities &
     pageHistory: (reset?: boolean) => Promise<void>
     /** read the next page of registered functions, or the first one again after writing one */
     pageLibrary: (reset?: boolean) => Promise<void>
+    /** learn what the shas of these tasks are called, so a list of them can be grouped by function */
+    learnFunctions: (tasks: readonly Task[]) => Promise<void>
     /** ask the catalog for more of the order it is already in */
     moreOffers: () => Promise<void>
     reloadProviders: () => Promise<void>
@@ -160,17 +156,28 @@ export type Store = Entities &
     live: () => Subscription
   }
 
-const HISTORY = 32
-const BAND = 40
+/** The block that carries each node's newest reading of each metric, so a page that has just opened is not blank until the stream ticks. */
+const METRICS = 'nodes.metrics'
+
 const LOGS_MAX = 2000
 const EVENTS_MAX = 200
 const HISTORY_PAGE = 50
 const OFFERS_PAGE = 200
 const LIBRARY_PAGE = 50
 
-const EMPTY: NodeMetrics = { gpu: 0, vram: 0, cpu: 0, temp: 0, rx: 0, tx: 0 }
-
 const page = <T,>(p: { items: T[] }): T[] => p.items
+
+/** The readings a compute came back with, laid under whatever the stream has said since. */
+const seeded = (held: Readings, computeId: string, nodes: readonly Node[]): Readings => {
+  const seen = nodes.filter((n) => n.metrics && Object.keys(n.metrics).length)
+  if (!seen.length) return held
+  const readings = { ...held }
+  for (const n of seen) {
+    const key = `${computeId}/${n.rank}`
+    readings[key] = { ...Object.fromEntries(Object.entries(n.metrics!).map(([name, gauge]) => [name, gauge.value])), ...(readings[key] ?? {}) }
+  }
+  return readings
+}
 
 /** Every item of a paged listing, following ``next_cursor`` to the last page. */
 const pages = async <T,>(list: (cursor?: string) => Promise<{ items: T[]; next_cursor?: string | null }>): Promise<T[]> => {
@@ -199,20 +206,16 @@ export const useStore = create<Store>((set, get) => ({
   functions: {},
   library: null,
 
-  metric: 'gpu',
   shell: false,
   logFollow: true,
   act: { kind: 'logs', compute: 'all', rank: 'all', level: 'all', q: '', since: 'all' },
   hist: { q: '', cause: 'all', provider: 'all', accel: 'all', since: 'all' },
-  task: { compute: 'all', state: 'all' },
+  task: { compute: 'all', state: 'all', lineage: 'all' },
   market: { accel: 'all', market: 'all', sort: 'price' },
   sheet: null,
 
-  metrics: {},
-  hm: {},
-  raw: {},
+  readings: {},
   progress: {},
-  bands: {},
   costs: {},
   loading: false,
   error: null,
@@ -231,7 +234,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ loading: true, error: null })
     try {
       const [computes, ended, providers, providerKinds] = await Promise.all([
-        pages((cursor) => api.computes({ live: true, cursor })).then(alive),
+        pages((cursor) => api.computes({ live: true, cursor, include: METRICS })).then(alive),
         api.computes({ state: 'deleted', limit: HISTORY_PAGE, cause: causeOf(get().hist) }),
         api.providers().then(page),
         api.providerKinds(),
@@ -248,6 +251,7 @@ export const useStore = create<Store>((set, get) => ({
         computes,
         history: retired(ended.items),
         histPages: { key: get().hist.cause, cursor: ended.next_cursor ?? null, loading: false, total: ended.total ?? null },
+        readings: computes.reduce((held, c) => seeded(held, c.id, c.nodes), s.readings),
         nodes: { ...s.nodes, ...nodes },
         tasks: { ...s.tasks, ...Object.fromEntries(Object.entries(tasks).map(([id, ts]) => [id, merged(s.tasks[id] ?? [], ts)])) },
         feed: Object.entries(nodes).reduce((feed, [id, ns]) => ranked(feed, id, ns), s.feed),
@@ -263,12 +267,13 @@ export const useStore = create<Store>((set, get) => ({
 
   reloadCompute: async (computeId) => {
     try {
-      const compute = await api.compute(computeId)
+      const compute = await api.compute(computeId, METRICS)
       if (compute.status.state === 'deleted') return set((s) => retire(s, compute))
       const ts = await current(computeId, get().tasks[computeId] ?? [])
       set((s) => ({
         computes: s.computes.some((c) => c.id === computeId) ? s.computes.map((c) => (c.id === computeId ? compute : c)) : [...s.computes, compute],
         nodes: { ...s.nodes, [computeId]: compute.nodes },
+        readings: seeded(s.readings, computeId, compute.nodes),
         tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts) },
         feed: ranked(s.feed, computeId, compute.nodes),
       }))
@@ -280,9 +285,10 @@ export const useStore = create<Store>((set, get) => ({
 
   reloadHistory: async (computeId) => {
     try {
-      const [compute, ts] = await Promise.all([api.compute(computeId, 'nodes.replaced'), api.tasks({ compute: computeId }).then(page)])
+      const [compute, ts] = await Promise.all([api.compute(computeId, `nodes.replaced,${METRICS}`), api.tasks({ compute: computeId }).then(page)])
       set((s) => ({
         nodes: { ...s.nodes, [computeId]: compute.nodes },
+        readings: seeded(s.readings, computeId, compute.nodes),
         tasks: { ...s.tasks, [computeId]: merged(s.tasks[computeId] ?? [], ts, Infinity) },
         feed: ranked(s.feed, computeId, compute.nodes),
       }))
@@ -353,8 +359,10 @@ export const useStore = create<Store>((set, get) => ({
       const filters = get().task
       const read = await api.tasks({
         limit: TASKS_PAGE,
+        order: 'state',
         compute: filters.compute === 'all' ? undefined : filters.compute,
-        state: filters.state === 'all' ? undefined : filters.state,
+        state: askedState(filters.state),
+        lineage: filters.lineage === 'all' ? undefined : filters.lineage,
         cursor: fresh ? undefined : (at?.cursor ?? undefined),
       })
       set((s) => ({
@@ -411,6 +419,8 @@ export const useStore = create<Store>((set, get) => ({
       set({ library: at })
     }
   },
+
+  learnFunctions: (tasks) => named(tasks),
 
   moreOffers: async () => {
     const at = get().offerPages
@@ -549,7 +559,7 @@ function flushGauges(): void {
   const patch: Patch = {}
   for (const event of batch) {
     if (event.data.type !== 'node.metrics') continue
-    const folded = gauge(draft, event.data.compute, event.data.node, event.data.name, event.data.value, event.at)
+    const folded = gauge(draft, event.data.compute, event.data.node, event.data.name, event.data.value)
     if (!folded) continue
     Object.assign(draft, folded)
     Object.assign(patch, folded)
@@ -719,9 +729,6 @@ async function current(computeId: string, known: readonly Task[]): Promise<Task[
 
 const FINISHED = 2
 
-/** Where a task falls in the ``state`` order. */
-const groupOf = (t: Task): number => (t.state === 'running' ? 0 : t.state === 'queued' ? 1 : FINISHED)
-
 /** A page of tasks from every compute, each laid over what its own compute already has. */
 function filed(known: Record<string, Task[]>, listed: readonly Task[]): Record<string, Task[]> {
   const tasks = { ...known }
@@ -768,11 +775,15 @@ const NO_EVENTS: SkyEvent[] = []
 
 const scopeKey = (scope: LogScope): string => `${scope.compute ?? ''}|${scope.node ?? ''}|${(scope.contains ?? []).join('\u0000')}`
 
-const taskKey = (f: TaskFilters): string => `${f.compute}|${f.state}`
+const taskKey = (f: TaskFilters): string => `${f.compute}|${f.state}|${f.lineage}`
 
 const catalogKey = (f: MarketFilters): string => `${f.accel}|${f.market}|${f.sort}`
 
 const causeOf = (f: HistoryFilters): Ending['cause'] | undefined => (f.cause === 'all' ? undefined : f.cause)
+
+/** What a filtered state asks the daemon for: a task that ran out of its clock failed as far as anybody reading a list is concerned. */
+const askedState = (state: TaskFilters['state']): readonly Task['state'][] | undefined =>
+  state === 'all' ? undefined : state === 'failed' ? ['failed', 'timed_out'] : [state]
 
 /** What a scope asks the log for. Every filter is the daemon's: a page filtered here is a page of somebody else's lines. */
 const asked = (scope: LogScope): LogQuery => ({
@@ -932,68 +943,18 @@ export function useOffers(): Catalog | null {
 /* ---------- metric folding ---------- */
 
 /**
- * Fold one raw gauge into the six the console draws.
+ * Keep the newest value of one metric a node reported.
  *
- * The daemon passes on what the node reads: the collector's own readings
- * (``gpu_util``, ``gpu_mem_mb``, ``gpu_temp_c``, ``cpu``, ``net_rx_kbps``/``net_tx_kbps``)
- * or what a ``skyward/worker/metrics.py`` builder names (``gpu_temp``,
- * ``net_rx_<iface>``/``net_tx_<iface>``). The UI wants percentages and MB/s, so
- * VRAM is a ratio of two gauges, a kbit/s reading is divided by 8000, and a
- * builder's byte counter is the delta between two samples.
+ * The daemon passes on whatever the node's image asked it to measure, under the name the collector
+ * or a ``skyward/worker/metrics.py`` builder gives it — including metrics of the caller's own. What a
+ * page makes of each name is the page's business (``state/model.ts``); the store keeps them all, by
+ * rank, because a rank is how everything else here names a machine.
  */
-function gauge(s: Store, computeId: string, nodeId: string, name: string, value: number, at: number): Patch | null {
+function gauge(s: Store, computeId: string, nodeId: string, name: string, value: number): Patch | null {
   const rank = rankOf(s, computeId, nodeId)
   if (rank === null) return null
   const key = `${computeId}/${rank}`
-  const previous = s.raw[key] ?? {}
-  const raw = { ...previous, [name]: value, [`${name}@`]: at }
-  const sampled: Patch = { raw: { ...s.raw, [key]: raw } }
-
-  const patch = derive(name, value, raw, previous, at)
-  if (!patch) return sampled
-
-  const next = { ...(s.metrics[key] ?? EMPTY), ...patch }
-  const hm = { ...s.hm }
-  for (const metric of Object.keys(patch) as MetricKey[]) {
-    const series = `${key}/${metric}`
-    hm[series] = [...(hm[series] ?? []), next[metric]].slice(-HISTORY)
-  }
-  const metrics = { ...s.metrics, [key]: next }
-  const folded: Patch = { ...sampled, metrics, hm }
-  return patch.gpu === undefined ? folded : { ...folded, bands: band({ ...s, metrics }, computeId) }
-}
-
-function derive(name: string, value: number, raw: Record<string, number>, previous: Record<string, number>, at: number): Partial<NodeMetrics> | null {
-  if (name === 'cpu') return { cpu: clamp(value, 0, 100) }
-  if (name === 'gpu_util') return { gpu: clamp(value, 0, 100) }
-  if (name === 'gpu_temp_c' || name === 'gpu_temp') return { temp: value }
-  if (name === 'gpu_mem_mb' || name === 'gpu_mem_total_mb') {
-    const total = raw['gpu_mem_total_mb'] ?? 0
-    return total > 0 ? { vram: clamp(((raw['gpu_mem_mb'] ?? 0) / total) * 100, 0, 100) } : null
-  }
-  const rx = name.startsWith('net_rx_')
-  if (!rx && !name.startsWith('net_tx_')) return null
-  const mbps = name === 'net_rx_kbps' || name === 'net_tx_kbps' ? value / 8000 : counted(name, value, previous, at)
-  if (mbps === null) return null
-  const rate = clamp(mbps, 0, 1e4)
-  return rx ? { rx: rate } : { tx: rate }
-}
-
-/** MB/s off a builder's cumulative byte counter: the delta since its previous sample, or null on the first. */
-function counted(name: string, value: number, previous: Record<string, number>, at: number): number | null {
-  const before = previous[name]
-  const then = previous[`${name}@`]
-  if (before === undefined || then === undefined) return null
-  return Math.max(0, value - before) / Math.max(0.001, (at - then) / 1000) / 1e6
-}
-
-function band(s: Store, computeId: string): Record<string, BandPoint[]> {
-  const values = (s.nodes[computeId] ?? [])
-    .filter((n) => n.state === 'ready')
-    .map((n) => s.metrics[`${computeId}/${n.rank}`]?.gpu ?? 0)
-  if (!values.length) return s.bands
-  const point: BandPoint = { min: Math.min(...values), med: median(values), max: Math.max(...values) }
-  return { ...s.bands, [computeId]: [...(s.bands[computeId] ?? seedBand(point)), point].slice(-BAND) }
+  return { readings: { ...s.readings, [key]: { ...(s.readings[key] ?? {}), [name]: value } } }
 }
 
 /* ---------- what the store keeps ---------- */
@@ -1012,14 +973,6 @@ const retire = (s: Store, compute: Compute): Patch => ({
 
 /* ---------- selectors ---------- */
 
-/** The metric history of one node, padded with its current value. */
-export const historyOf = (state: Store, computeId: string, rank: number, metric: MetricKey): number[] => {
-  const series = state.hm[`${computeId}/${rank}/${metric}`]
-  if (series && series.length > 1) return series
-  const value = state.metrics[`${computeId}/${rank}`]?.[metric] ?? 0
-  return Array.from({ length: HISTORY }, () => value)
-}
-
 export const nodesOf = (state: Store, computeId: string): Node[] => state.nodes[computeId] ?? []
 
 export const tasksOf = (state: Store, computeId: string): Task[] => state.tasks[computeId] ?? []
@@ -1028,15 +981,6 @@ export const tasksOf = (state: Store, computeId: string): Task[] => state.tasks[
 export const freshest = (state: Store, task: Task): Task => (state.tasks[task.compute.id] ?? []).find((t) => t.id === task.id) ?? task
 
 export const progressOf = (state: Store, nodeId: string): NodeProgress | undefined => state.progress[nodeId]
-
-/** A band opens on a full window, drifting around the first reading, as the prototype's does. */
-const seedBand = (p: BandPoint): BandPoint[] =>
-  Array.from({ length: BAND }, (_, i) => {
-    const drift = Math.sin(i / 6) * 5
-    return { min: clamp(p.min + drift - 2, 0, 100), med: clamp(p.med + drift, 0, 100), max: clamp(p.max + drift, 0, 100) }
-  })
-
-export const bandOf = (state: Store, computeId: string): BandPoint[] => state.bands[computeId] ?? []
 
 export const computeById = (state: Store, computeId: string): Compute | undefined =>
   state.computes.find((c) => c.id === computeId) ?? state.history.find((c) => c.id === computeId)

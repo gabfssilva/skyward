@@ -98,7 +98,7 @@ class Connector:
                 image=plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins)),
                 rank=node.rank,
                 peers=_peers(nodes),
-                seeds=_seeds(nodes, node, cluster),
+                seeds=_seeds(nodes, node, runtime.opens(node_id, formed=_formed(nodes, node))),
                 concurrency=compute.spec.worker.concurrency or 1,
                 buffer=compute.spec.worker.buffer,
                 executor=compute.spec.worker.executor,
@@ -148,25 +148,41 @@ def _peers(nodes: tuple[Node, ...]) -> tuple[str, ...]:
     return tuple(node.address or "" for node in sorted(nodes, key=lambda node: node.rank) if node.address and node.state in LIVE)
 
 
-def _seeds(nodes: tuple[Node, ...], node: Node, cluster: bool = True) -> tuple[str, ...]:
+def _formed(nodes: tuple[Node, ...], node: Node) -> bool:
+    """Whether there is already a cluster to knock on, as the rows have it.
+
+    A node that reached ``ready`` has a worker that answered, and a worker that
+    answered is one that joined. The rows are what carries that across a daemon
+    restart, where this process holds no node yet and every machine it takes hold of
+    would otherwise look like the first one.
+    """
+    return any(candidate.state == "ready" and candidate.id != node.id for candidate in nodes)
+
+
+def _seeds(nodes: tuple[Node, ...], node: Node, opens: bool) -> tuple[str, ...]:
     """Whom this worker knocks on to find the cluster.
 
-    The lowest-ranked live node with an address, and the lowest-ranked node itself has
-    none: somebody has to be the door, and a cluster where everybody waits to be let
-    in is a cluster of one, N times over.
+    Every live machine with an address but its own, because casty joins through the
+    first seed that answers and gives up only when none of them does. One contact
+    would do if it were certain to be up, and none of them is: the list is every
+    machine that *has* an address, which includes the ones still installing their
+    dependencies, and a worker pointed at a single one of those waits out the slowest
+    bootstrap in the compute before it joins anything.
 
     Live for the same reason as the peer list: a dead node keeps its address until it
-    is terminated, and pointing every worker at a machine that is not answering — the
-    lowest-ranked one, so *everybody* is pointed at it, including the node that should
-    have been the door itself — is a cluster that never forms.
+    is terminated, and a seed list of machines that are not answering is a cluster
+    that never forms.
 
-    It is a bootstrap contact and not a head. After the knock every member is equal,
-    and the door may leave.
+    An empty list means open the cluster instead of joining it — said by
+    :meth:`Runtime.opens` for the first machine, and true by arithmetic for one that
+    has nobody left to knock on. It is a bootstrap contact and not a head: after the
+    knock every member is equal, and the door may leave.
     """
-    if not cluster:
-        return ()
-    ordered = [candidate for candidate in sorted(nodes, key=lambda node: node.rank) if candidate.address and candidate.state in LIVE]
-    if not ordered or ordered[0].id == node.id:
+    if opens:
         return ()
 
-    return (f"{ordered[0].address}:{worker.PORT}",)
+    return tuple(
+        f"{candidate.address}:{worker.PORT}"
+        for candidate in sorted(nodes, key=lambda candidate: candidate.rank)
+        if candidate.address and candidate.state in LIVE and candidate.id != node.id
+    )

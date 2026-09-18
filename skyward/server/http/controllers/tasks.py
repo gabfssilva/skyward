@@ -60,6 +60,8 @@ class TaskController(Controller):
         description=(
             "Every call this daemon has been asked to make, a page at a time. `correlation_id` is how the tasks of one "
             "`&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own.\n\n"
+            "`function` is a name and `lineage` is a function: two functions called `train` in two different files share "
+            "the name and not the lineage, and a function edited and sent again keeps the lineage under a new digest.\n\n"
             "`order` is `submitted` (newest first), `state` (running, newest submitted first; then queued, oldest "
             "submitted first; then finished, latest to finish first) or `finished` (latest to finish first, then the "
             "unfinished, newest submitted first). `total` counts what every filter matches, and `next_cursor` pages "
@@ -75,9 +77,10 @@ class TaskController(Controller):
         task_states: list[v1.TaskState] | None = Parameter(query="state", default=None, description="Any of these; repeat it for more than one."),
         correlation_id: str | None = Parameter(default=None, description="Groups the tasks of an `&`/`gather`/`map`. A field, not a resource."),
         function: str | None = Parameter(default=None, description="A function's name, which takes in every upload of its code."),
+        lineage: str | None = Parameter(default=None, description="One function, by the `lineage` its uploads share."),
         order: v1.TaskOrder = "submitted",
     ) -> v1.Page[v1.TaskResource]:
-        page = await reader.tasks(cursor, limit, compute_id, tuple(task_states or ()), correlation_id, function, order)
+        page = await reader.tasks(cursor, limit, compute_id, tuple(task_states or ()), correlation_id, function, lineage, order)
         return v1.Page(items=tuple(representation.task(each) for each in page.items), next_cursor=page.next_cursor, total=page.total)
 
     @post(

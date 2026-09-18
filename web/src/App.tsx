@@ -5,9 +5,7 @@ import * as compute from './views/compute'
 import * as node from './views/node'
 import * as activity from './views/activity'
 import * as tasks from './views/tasks'
-import * as functions from './views/functions'
 import * as market from './views/market'
-import * as providers from './views/providers'
 import { Sheets, openPalette } from './sheets'
 import { Icon, type IconName } from './ui/icons'
 import { Tip } from './ui/primitives'
@@ -19,13 +17,17 @@ import { MOCK } from './api/mock'
 import { applyStoredTheme, setTheme, type Theme } from './theme'
 import './styles/index.css'
 
+/**
+ * Four places to be: what is running, what it is being asked to do, what it has said, and what can be bought.
+ *
+ * Functions live inside Tasks — a function is what a task ran, and a library nobody has dispatched from is not a
+ * place of its own — and provider accounts are a tab of the market, where their offers are.
+ */
 const VIEWS: readonly (readonly [string, string, IconName])[] = [
   ['/', 'Computes', 'fleet'],
   ['/tasks', 'Tasks', 'tasks'],
-  ['/functions', 'Functions', 'functions'],
   ['/activity', 'Activity', 'activity'],
   ['/market', 'Market', 'market'],
-  ['/providers', 'Providers', 'providers'],
 ]
 
 const THEMES: readonly (readonly [Theme, IconName])[] = [
@@ -34,30 +36,32 @@ const THEMES: readonly (readonly [Theme, IconName])[] = [
   ['dark', 'moon'],
 ]
 
-/** The view a path belongs to, so `/computes/:id` still lights `Computes`. */
+/** The view a path belongs to, so `/computes/:id` still lights `Computes` and an old `/providers` link still lights `Market`. */
 const viewOf = (pathname: string): string => {
   const head = pathname.split('/').filter(Boolean)[0]
-  return head && head !== 'computes' ? `/${head}` : '/'
+  switch (head) {
+    case undefined:
+    case 'computes':
+      return '/'
+    case 'functions':
+      return '/tasks'
+    case 'providers':
+      return '/market'
+    default:
+      return `/${head}`
+  }
 }
 
-/** What the whole account is running, in the bar, on every page but the home. */
+/** What the whole account is burning, in the bar, on every page but the home. */
 function FleetTag() {
   const navigate = useNavigate()
   const computes = useStore((s) => s.computes)
   const nodesByCompute = useStore((s) => s.nodes)
   const rate = computes.reduce((sum, c) => sum + rateOf(nodesByCompute[c.id] ?? []), 0)
-  const ready = computes.flatMap((c) => (nodesByCompute[c.id] ?? []).filter((n) => n.state === 'ready'))
-  const gpus = computes.reduce((sum, c) => sum + (nodesByCompute[c.id] ?? []).filter((n) => n.state === 'ready').length * (c.spec.specs[0]?.accelerator_count ?? 1), 0)
   return (
     <button className="tag fleet" title="Computes" onClick={() => navigate('/')}>
       {money(rate, 0)}
       <small>/h</small>
-      <span className="fleet-more">
-        <i />
-        {ready.length} nodes
-        <i />
-        {gpus} GPUs
-      </span>
     </button>
   )
 }
@@ -126,19 +130,6 @@ function Bar() {
   )
 }
 
-/** The rail: big meters on the home, a compact crumb on a compute, node or task, nothing anywhere else. */
-function RailRoutes() {
-  return (
-    <Routes>
-      <Route path="/" element={<fleet.Rail />} />
-      <Route path="/computes/:id" element={<compute.Rail />} />
-      <Route path="/computes/:id/nodes/:rank" element={<node.Rail />} />
-      <Route path="/tasks/:id" element={<tasks.TaskRail />} />
-      <Route path="*" element={null} />
-    </Routes>
-  )
-}
-
 function StageRoutes() {
   return (
     <Routes>
@@ -149,25 +140,10 @@ function StageRoutes() {
       <Route path="/activity" element={<activity.Stage />} />
       <Route path="/tasks" element={<tasks.Stage />} />
       <Route path="/tasks/:id" element={<tasks.TaskStage />} />
-      <Route path="/functions" element={<functions.Stage />} />
+      <Route path="/functions" element={<Navigate to="/tasks" replace />} />
       <Route path="/market" element={<market.Stage />} />
-      <Route path="/providers" element={<providers.Stage />} />
-    </Routes>
-  )
-}
-
-function InspectorRoutes() {
-  return (
-    <Routes>
-      <Route path="/" element={<fleet.Inspector />} />
-      <Route path="/computes/:id" element={<compute.Inspector />} />
-      <Route path="/computes/:id/nodes/:rank" element={<node.Inspector />} />
-      <Route path="/tasks" element={<tasks.Inspector />} />
-      <Route path="/tasks/:id" element={<tasks.TaskInspector />} />
-      <Route path="/functions" element={<functions.Inspector />} />
-      <Route path="/market" element={<market.Inspector />} />
-      <Route path="/providers" element={<providers.Inspector />} />
-      <Route path="*" element={null} />
+      <Route path="/market/accounts" element={<market.Stage accounts />} />
+      <Route path="/providers" element={<Navigate to="/market/accounts" replace />} />
     </Routes>
   )
 }
@@ -198,20 +174,13 @@ function useHeartbeat(): void {
 
 export default function App() {
   useHeartbeat()
-  const { pathname } = useLocation()
   return (
     <>
       <Bar />
-      <div className={pathname === '/' ? 'rail' : 'rail compact'} id="rail">
-        <RailRoutes />
-      </div>
-      <div className={pathname === '/activity' ? 'app wide' : 'app'}>
+      <div className="app">
         <div className="stage" id="stage">
           <StageRoutes />
         </div>
-        <aside className="inspector" id="inspector">
-          <InspectorRoutes />
-        </aside>
       </div>
       <Sheets />
       <Tip />

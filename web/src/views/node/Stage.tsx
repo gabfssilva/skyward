@@ -1,20 +1,23 @@
-import { useEffect, useRef, type CSSProperties } from 'react'
+import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { Compute, Node, Task } from '../../api/client'
-import { useStore, historyOf, computeById, isLive, useLogs } from '../../state/store'
-import type { Store } from '../../state/store'
-import { METRICS, UNIT, busyOf, dur, execsOf, hexPts, hive, holderOf, money, ms, slotsOf } from '../../state/model'
+import { useStore, computeById, isLive, useLogs } from '../../state/store'
+import { busyOf, dur, execsOf, holderOf, holdersOf, hiveSize, machineOf, money, ms, nodeHeld, slotsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
-import type { PhaseMark } from '../../state/nodes'
 import { Fn, Pill, TableScroll } from '../../ui/primitives'
-import { Spark } from '../../ui/charts'
-import { Icon } from '../../ui/icons'
-import { LogLineRow } from '../../ui/lines'
-import { ShellCard } from './Shell'
+import { Hive, Slots } from '../../ui/comb'
+import { PageHead, Tabs } from '../../ui/head'
+import { LogBox } from '../../ui/lines'
+import { Metrics } from '../compute/Metrics'
+import { PhaseProgress } from '../compute/Progress'
+import { Shell } from './Shell'
+import { VRAM } from './Shell'
 import { Stage as ComputeStage } from '../compute/Stage'
 
 const NONE: never[] = []
+
+type Tab = 'logs' | 'tasks' | 'shell'
 
 /** The node the route names, or nothing when the compute has no such rank. */
 export function useNode(): { c: Compute; n: Node; live: boolean; nodes: readonly Node[]; tasks: readonly Task[] } | null {
@@ -27,218 +30,188 @@ export function useNode(): { c: Compute; n: Node; live: boolean; nodes: readonly
   return c && n ? { c, n, live, nodes, tasks } : null
 }
 
-const CHIP: Record<PhaseMark['state'], CSSProperties> = {
-  completed: { color: 'var(--ok)', background: 'var(--ok-soft)' },
-  started: { color: 'var(--boot)', background: 'var(--boot-soft)' },
-  failed: { color: 'var(--bad)', background: 'var(--bad-soft)' },
-}
-
-/** What the phase and the progress of a node coming up read as: a fraction while the provider reports one, then the phases the machine has reached. */
-export function PhaseProgress({ nodeId, maxWidth }: { nodeId: string; maxWidth?: number }) {
-  const p = useStore((s) => s.progress[nodeId])
-  return (
-    <>
-      <div className="cap">{p?.phase ?? 'waiting'}</div>
-      {p?.completion != null ? (
-        <div className="track" style={{ marginTop: 6, maxWidth }}>
-          <i style={{ width: `${p.completion * 100}%`, background: 'var(--boot)' }} />
-        </div>
-      ) : null}
-      {p?.phases.length ? (
-        <div className="chips" style={{ marginTop: 9 }}>
-          {p.phases.map((ph) => (
-            <span key={ph.name} className="chip" style={{ height: 20, fontSize: 10, ...CHIP[ph.state] }}>
-              {ph.state === 'completed' ? '✓ ' : ''}
-              {ph.name}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </>
-  )
-}
-
 /** Replacing a node is draining it: the reconciler buys the one that fills the gap. */
-export const replace = async (c: Compute, n: Node): Promise<void> => {
+const replace = async (c: Compute, n: Node): Promise<void> => {
   await api.drainNode(c.id, n.id)
   await useStore.getState().reloadCompute(c.id)
 }
 
+/**
+ * One machine: where it sits, what it is measuring, and a terminal on it.
+ *
+ * Every fact appears once. The node's own metrics carry the compute's median dashed behind them, which is
+ * what the compute page's list of stragglers was for, and where the node sits in its compute is one small
+ * hive instead of a card describing it.
+ */
 export function Stage() {
+  const navigate = useNavigate()
   const found = useNode()
-  const shell = useStore((s) => s.shell)
+  const wanted = useStore((s) => s.shell)
   const setUi = useStore((s) => s.setUi)
+  const [tab, setTab] = useState<Tab | null>(null)
   if (!found) return <ComputeStage />
   const { c, n, live, nodes, tasks } = found
   const ready = n.state === 'ready'
-  const ran = tasks.map((t) => ({ t, x: execsOf(t, nodes).find((e) => e.rank === n.rank) })).filter((o): o is { t: Task; x: ExecRow } => o.x != null).slice(0, 8)
-  const sl = slotsOf(c)
-  const meta = [
-    n.address ?? 'no address',
-    `${c.spec.specs[0]?.accelerator_count ?? 1}× ${(n.accelerator ?? c.spec.specs[0]?.accelerator ?? '?').toUpperCase()}`,
-    `${money(n.price_per_hour ?? 0)}/h ${n.market === 'spot' ? 'spot' : 'on demand'}`,
-    ready ? `up ${dur(Date.now() - (ms(n.launched_at) || ms(n.created_at)))}` : (n.last_error?.message ?? n.state),
-  ].join(' · ')
+  const held = nodeHeld(n)
+  const slots = slotsOf(c)
+  const accel = n.accelerator ?? c.spec.specs[0]?.accelerator ?? null
+  const vram = accel ? VRAM[accel] : undefined
+  const at = tab ?? (wanted && held && live ? 'shell' : 'logs')
+
+  const ran = tasks
+    .map((t) => ({ t, x: execsOf(t, nodes).find((e) => e.rank === n.rank) }))
+    .filter((o): o is { t: Task; x: ExecRow } => o.x != null)
+    .slice(0, 10)
+    .reverse()
+
+  const drain = async () => {
+    await api.drainNode(c.id, n.id)
+    await useStore.getState().reloadCompute(c.id)
+    navigate(`/computes/${c.id}`)
+  }
 
   return (
     <>
+      <PageHead
+        crumb={{ label: c.name ?? c.id, onClick: () => navigate(`/computes/${c.id}`) }}
+        title={`rank ${n.rank}`}
+        state={<Pill state={n.state} />}
+        id={n.id}
+        why={n.last_error ? { message: n.last_error.message } : null}
+        facts={[
+          n.address ? <b>{n.address}</b> : null,
+          <>
+            <b>{machineOf(c)}</b>
+            {vram ? `, ${vram} GB each` : ''}
+          </>,
+          <>
+            <b>{money(n.price_per_hour ?? 0)}/h</b> {n.market === 'spot' ? 'spot' : 'on demand'}
+          </>,
+          ready ? `up ${dur(Date.now() - (ms(n.launched_at) || ms(n.created_at)))}` : null,
+          `generation ${n.generation}`,
+          n.machine ? <span className="mono">{n.machine}</span> : null,
+        ]}
+        primary={live && held ? { label: 'Shell', icon: 'shell', onClick: () => setTab('shell') } : undefined}
+        rest={
+          live
+            ? [
+                { label: 'Replace', icon: 'refresh', onClick: () => void replace(c, n) },
+                { label: 'Drain', icon: 'drain', danger: true, onClick: () => void drain() },
+              ]
+            : undefined
+        }
+      />
+
       <section className="card">
-        <div className="combhead" style={{ marginBottom: 16 }}>
-          <span className="mono" style={{ background: 'var(--sunk)', padding: '3px 10px', borderRadius: 6, fontSize: 14 }}>
-            rank {n.rank}
-          </span>
-          <b style={{ fontSize: 18 }}>{n.id}</b>
-          <Pill state={n.state} />
-          <span className="mono faint" style={{ marginLeft: 'auto' }}>
-            {meta}
-          </span>
-        </div>
-        {ready && sl > 1 ? (
-          <div className="row" style={{ gap: 18, alignItems: 'flex-start', marginBottom: 16 }}>
-            <SlotHive c={c} nodes={nodes} tasks={tasks} rank={n.rank} />
-            <div className="sub" style={{ paddingTop: 6 }}>
-              {busyOf(tasks, nodes, n.rank)} of {sl} slots busy · {c.spec.worker?.executor ?? 'thread'} × {sl}
+        {ready ? (
+          <div className="spot">
+            <div className="row" style={{ gap: 16 }}>
+              <span className="h" style={{ width: 44 }}>
+                Slots
+              </span>
+              <Slots slots={slots} busy={busyOf(tasks, nodes, n.rank)} />
+              <span className="sub">
+                {busyOf(tasks, nodes, n.rank)} of {slots} busy, {c.spec.worker?.executor ?? 'thread'} × {slots}
+              </span>
+            </div>
+            <div className="row" style={{ gap: 16, justifyContent: 'flex-end' }}>
+              <span className="sub">
+                rank {n.rank} of {holdersOf(nodes).length} in <b style={{ color: 'var(--ink)', fontWeight: 600 }}>{c.name ?? c.id}</b>
+              </span>
+              <Hive
+                cells={holdersOf(nodes).map((other) => ({
+                  rank: other.rank,
+                  fill: other.rank === n.rank ? 'var(--accent)' : 'var(--sunk)',
+                  tip: `rank ${other.rank} · ${other.state}`,
+                }))}
+                computeId={`${c.id}/locate`}
+                size={Math.min(14, hiveSize(holdersOf(nodes).length, 190, 120))}
+                label={`rank ${n.rank} of ${holdersOf(nodes).length}`}
+                onPick={(rank) => navigate(`/computes/${c.id}/nodes/${rank}`)}
+              />
             </div>
           </div>
-        ) : null}
-        {ready ? (
-          <MetricGrid computeId={c.id} rank={n.rank} />
-        ) : n.last_error ? (
-          <>
-            <div style={{ color: 'var(--bad)' }}>{n.last_error.message}</div>
-            {live ? (
-              <button className="btn sm" style={{ marginTop: 10 }} onClick={() => void replace(c, n)}>
-                Replace it
-              </button>
-            ) : null}
-          </>
         ) : (
-          <PhaseProgress nodeId={n.id} maxWidth={420} />
+          <PhaseProgress nodeId={n.id} />
         )}
       </section>
-      {ran.length ? <RanHere rows={ran} /> : null}
-      <RankLogs c={c} n={n} />
-      {shell ? <ShellCard computeId={c.id} rank={n.rank} onClose={() => setUi({ shell: false })} /> : null}
-    </>
-  )
-}
 
-/** One hex per worker slot, lit while an execution occupies it. */
-function SlotHive({ c, nodes, tasks, rank }: { c: Compute; nodes: readonly Node[]; tasks: readonly Task[]; rank: number }) {
-  const k = slotsOf(c)
-  const busy = busyOf(tasks, nodes, rank)
-  const s = 30
-  const lay = hive(k, s, 0.1)
-  const P = hexPts(s)
-  const running = tasks.filter((t) => t.state === 'running' && execsOf(t, nodes).some((e) => e.rank === rank && e.state === 'started'))
-  return (
-    <svg className="slothive" viewBox={`-1 -1 ${(lay.w + 2).toFixed(1)} ${(lay.h + 2).toFixed(1)}`} style={{ width: Math.ceil(lay.w), flex: 'none' }}>
-      {lay.cells.map(([x, y], i) => {
-        const t = i < busy ? running[i % Math.max(1, running.length)] : undefined
-        return (
-          <g key={i} transform={`translate(${x.toFixed(1)},${y.toFixed(1)})`} data-tip={t ? (t.function.name ?? t.function.sha256.slice(0, 8)) : 'idle'}>
-            <polygon className={`slot${t ? ' on' : ''}`} points={P} />
-            <text y="4">{i}</text>
-          </g>
-        )
-      })}
-    </svg>
-  )
-}
+      {ready ? <Metrics computeId={c.id} name={c.name ?? c.id} nodes={nodes} created={ms(c.created_at)} node={n} /> : null}
 
-const metricsOf = (s: Store, computeId: string, rank: number) => s.metrics[`${computeId}/${rank}`]
-
-function MetricGrid({ computeId, rank }: { computeId: string; rank: number }) {
-  const state = useStore((s) => s)
-  const m = metricsOf(state, computeId, rank)
-  return (
-    <div className="mgrid">
-      {METRICS.map(([k, l]) => (
-        <div className="mcard" key={k}>
-          <span className="cap">{l}</span>
-          <b>
-            {Math.round(m?.[k] ?? 0)}
-            <small>{UNIT[k]}</small>
-          </b>
-          <Spark values={historyOf(state, computeId, rank, k)} h={38} fmt={(v) => Math.round(v) + UNIT[k]} />
+      <section className="card">
+        <Tabs<Tab>
+          value={at}
+          options={[
+            ['logs', 'Logs', null],
+            ['tasks', 'Tasks', ran.length || null],
+            ['shell', 'Shell', null],
+          ]}
+          onChange={(next) => {
+            setTab(next)
+            if (next !== 'shell' && wanted) setUi({ shell: false })
+          }}
+        >
+          <span className="sub spread">{at === 'shell' ? `pty over the daemon${n.address ? ` · ${n.address}` : ''}` : null}</span>
+        </Tabs>
+        <div className="tabbody">
+          {at === 'shell' ? <Shell computeId={c.id} rank={n.rank} /> : null}
+          {at === 'tasks' ? <RanHere rows={ran} /> : null}
+          {at === 'logs' ? <RankLogs c={c} n={n} /> : null}
         </div>
-      ))}
-    </div>
+      </section>
+    </>
   )
 }
 
 function RanHere({ rows }: { rows: readonly { t: Task; x: ExecRow }[] }) {
   const navigate = useNavigate()
+  if (!rows.length) return <div className="sub">Nothing has run on this node.</div>
   return (
-    <section className="card">
-      <div className="cap" style={{ marginBottom: 8 }}>
-        Ran on this node
-      </div>
-      <TableScroll label="Ran on this node">
-        <table>
-          <thead>
-            <tr>
-              <th>Function</th>
-              <th>State</th>
-              <th>Attempt</th>
-              <th className="right">Took</th>
+    <TableScroll label="Ran on this node">
+      <table>
+        <thead>
+          <tr>
+            <th>Function</th>
+            <th>State</th>
+            <th>Attempt</th>
+            <th className="right">Took</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ t, x }) => (
+            <tr key={`${t.id}/${x.ordinal}`} data-open="" onClick={() => navigate(`/tasks/${t.id}`)}>
+              <td>
+                <Fn sha={t.function.sha256} />
+              </td>
+              <td>
+                <Pill state={x.state} />
+                {x.error ? <span className="err-line">{x.error}</span> : null}
+              </td>
+              <td>{x.ordinal}</td>
+              <td className="right nowrap">{dur(x.ms)}</td>
             </tr>
-          </thead>
-          <tbody>
-            {rows.map(({ t, x }) => (
-              <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/tasks/${t.id}`)}>
-                <td>
-                  <Fn sha={t.function.sha256} weight={600} />
-                </td>
-                <td>
-                  <Pill state={x.state} />
-                </td>
-                <td className="mono">#{x.ordinal}</td>
-                <td className="right mono">{dur(x.ms)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </TableScroll>
-    </section>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
   )
 }
 
 /** What this node printed, scoped to it on the daemon: a quiet node keeps its own lines instead of being crowded out of the compute's window by a noisier peer. */
 function RankLogs({ c, n }: { c: Compute; n: Node }) {
   const feed = useLogs({ compute: c.id, node: n.id })
-  const navigate = useNavigate()
-  const act = useStore((s) => s.act)
-  const setUi = useStore((s) => s.setUi)
   const pageLogs = useStore((s) => s.pageLogs)
-  const box = useRef<HTMLDivElement>(null)
-  const lines = feed?.lines ?? NONE
-  useEffect(() => {
-    if (box.current) box.current.scrollTop = box.current.scrollHeight
-  }, [lines[lines.length - 1]?.sequence])
   return (
-    <section className="card">
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-        <span className="cap">Logs of rank {n.rank}</span>
-        <button
-          className="btn sm"
-          onClick={() => {
-            setUi({ act: { ...act, kind: 'logs', compute: c.id, rank: n.rank } })
-            navigate('/activity')
-          }}
-        >
-          <Icon name="logs" />
-          Open in Activity
-        </button>
-      </div>
-      <div className="logbox" ref={box}>
-        {lines.length ? lines.map((l) => <LogLineRow key={`${l.sequence}.${l.part}`} line={l} computeName={c.name ?? undefined} />) : <div className="sub">Nothing printed by this rank yet.</div>}
-      </div>
-      {feed?.cursor ? (
-        <button className="btn sm" style={{ marginTop: 10 }} disabled={feed.loading} onClick={() => void pageLogs()}>
-          Load older
-        </button>
-      ) : null}
-    </section>
+    <LogBox
+      lines={feed?.lines ?? NONE}
+      ranks={false}
+      older={
+        feed?.cursor ? (
+          <button className="btn sm" style={{ marginBottom: 10 }} disabled={feed.loading} onClick={() => void pageLogs()}>
+            Load older
+          </button>
+        ) : null
+      }
+    />
   )
 }

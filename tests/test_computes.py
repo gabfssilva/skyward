@@ -407,6 +407,16 @@ def describe_listing_a_computes_tasks() -> None:
 
         assert {task.id for task in page.items} == {first.id, second.id} and page.total == 2
 
+    async def a_function_is_asked_for_by_lineage_whatever_else_carries_its_name(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        for sha256, lineage in (("a" * 64, "train.py:fill"), ("b" * 64, "train.py:fill"), ("c" * 64, "other.py:fill")):
+            await FunctionRow(sha256=sha256, size_bytes=1, codec="cloudpickle", name="fill", lineage=lineage, created_at=now()).save().run()
+        first, second, _ = [await _submit(tasks, compute, function) for function in ("a" * 64, "b" * 64, "c" * 64)]
+
+        page = await tasks.list(None, 10, compute, lineage="train.py:fill")
+
+        assert {task.id for task in page.items} == {first.id, second.id} and page.total == 2
+
     async def by_state_it_runs_running_then_queued_next_to_run_first_then_the_latest_to_finish(tmp_path: Path) -> None:
         tasks, compute = await _tasks(tmp_path)
         board = await _board(tasks, compute)

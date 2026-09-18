@@ -9,7 +9,11 @@ html:has(dialog.scrim[open]){overflow:hidden}
 .sheet-head{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
 .sheet-head b{font-size:16px;font-weight:700}
 .sheet-body{padding:20px;container:sheet/inline-size}
+/* The primary action of a sheet is the last thing in its foot, named for what it will do. */
 .sheet-foot{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--line);background:var(--sunk)}
+.sheet-foot .btn.primary{margin-left:auto}
+.strip{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:var(--r);background:var(--sunk)}
+.strip.bad{background:var(--bad-soft);color:var(--bad)}
 .steps{display:flex;gap:5px;margin-inline:auto}
 .steps i{width:26px;height:4px;border-radius:2px;background:var(--edge)}
 .steps i.on{background:var(--accent)}
@@ -41,8 +45,13 @@ html:has(dialog.scrim[open]){overflow:hidden}
 .palette input{flex:1;height:52px;border:0;background:none;font-size:15px}
 .palette input:focus{outline:none}
 .palette ul{list-style:none;margin:0;padding:6px;max-height:42svh;overflow:auto}
-.palette li{padding:9px 12px;border-radius:10px;display:flex;gap:10px;font-size:13px;cursor:pointer}
-.palette li[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
+.palette li{padding:9px 12px;border-radius:10px;display:flex;gap:10px;align-items:center;font-size:13px;cursor:pointer}
+.palette li[aria-selected="true"]{background:var(--accent-soft)}
+.palette li[aria-selected="true"]>.row{color:var(--accent)}
+/* One heading per kind of result, so a long list reads as four short ones. */
+.palette li.group{display:block;padding:0;cursor:default}
+.palette li.group>.cap{display:block;padding:8px 12px 2px}
+.palette li.group>ul{max-height:none;overflow:visible;padding:0}
 .pop{position:absolute;z-index:50;right:0;top:40px;background:var(--panel);box-shadow:0 0 0 1px var(--line);border-radius:14px;padding:14px;width:260px;font-size:12.5px}
 .tip{position:fixed;inset:auto;margin:0;border:0;overflow:visible;pointer-events:none;background:var(--ink);color:var(--ground);border-radius:8px;
   padding:6px 9px;font-size:11.5px;font-family:var(--mono);max-width:280px}

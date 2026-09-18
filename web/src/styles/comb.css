@@ -1,36 +1,27 @@
+/*
+ * One shape for the whole product: a node is a hexagon, a compute is a hive of them. The colour is the node's state,
+ * and a ready node deepens with its load — its accelerators where it has them, its CPUs where it has none — so a fleet,
+ * a compute and a node all read the same way. Only a task's page
+ * paints by execution instead.
+ */
 .comb{display:block;width:100%}
 .comb svg{display:block;height:auto;max-width:100%;overflow:visible}
 .hx{cursor:pointer;transform-box:fill-box;transform-origin:center;transform:translate(var(--x),var(--y));transition:transform .4s cubic-bezier(.2,.7,.2,1),opacity .3s}
-.hx polygon.cell{transition:fill .5s ease}
+.hx polygon.cell{transition:fill .5s ease;stroke:inherit;stroke-width:2px;stroke-linejoin:round;paint-order:stroke;vector-effect:non-scaling-stroke}
 .hx .edge{stroke:none;stroke-width:1.5;vector-effect:non-scaling-stroke;fill:none}
 @media (hover:hover){.hx:hover .edge{stroke:var(--ink)}}
-.hx polygon.cell{stroke:inherit;stroke-width:2px;stroke-linejoin:round;paint-order:stroke;vector-effect:non-scaling-stroke}
 .hx.boot polygon.cell{animation:breathe 1.6s ease-in-out infinite}
 .hx.beat .edge{animation:beat .8s ease-out}
+/* The cells worth naming — the least busy ones — are the outlined ones. */
+.hx.marked .edge{stroke:var(--ink);stroke-width:1.75}
 @keyframes breathe{50%{opacity:.55}}
 @keyframes beat{0%{stroke-width:3.5}100%{stroke-width:1.25}}
-.legend{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+
+.legend{display:flex;align-items:center;gap:6px 16px;font-size:12px;color:var(--muted);flex-wrap:wrap}
 .legend span{display:inline-flex;align-items:center;gap:6px}
-.legend i{width:12px;height:12px;border-radius:4px;display:block}
-.legend b{font-weight:700;color:var(--ink)}
-.combhead{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
-.combhead b{font-size:15px;font-weight:700;letter-spacing:-.01em}
-.combhead .row svg{font-size:18px;color:var(--faint)}
-.region .outline{fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linecap:round;vector-effect:non-scaling-stroke}
-.hivenames{display:grid;margin:0 auto}
-.hivename{display:grid;gap:3px;min-width:0;padding:0 12px;text-align:center;font-family:var(--mono)}
-.hivename .tick{font-size:12.5px;font-weight:500;color:var(--ink)}
-.hivename .hmeta{font-size:11px;color:var(--muted)}
-@media (hover:hover){.hivename:hover .tick{text-decoration:underline}}
-.hlabel{cursor:pointer}
-.hlabel rect{fill:var(--ink);opacity:.92}
-.hlabel text{font-family:var(--mono);font-size:11.5px;font-weight:500;fill:var(--ground);text-anchor:middle}
-@media (hover:hover){.hlabel:hover rect{opacity:1}}
-.hivecaps{display:flex;flex-wrap:wrap;gap:6px 22px;justify-content:center;margin-top:14px}
-.hivecap{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 8px;border-radius:var(--rs)}
-@media (hover:hover){.hivecap:hover{background:var(--sunk)}}
-.hivecap b{font-weight:700}
-.slothive .slot{fill:var(--sunk);stroke:var(--ink);stroke-width:1.25}
-.slothive .slot.on{fill:var(--ok)}
+.legend i{width:10px;height:10px;border-radius:3px;display:block}
+.legend b{font-weight:600;color:var(--ink)}
+.slothive .slot{fill:var(--sunk);stroke:var(--line-2);stroke-width:1}
+.slothive .slot.on{fill:var(--accent);stroke:var(--accent)}
 .slothive text{font-family:var(--mono);font-size:11px;text-anchor:middle;fill:var(--muted)}
 .slothive .on+text{fill:var(--on-accent)}

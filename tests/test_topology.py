@@ -36,6 +36,17 @@ def my_pairs(features: list[int], labels: list[str]) -> list[tuple[int, str]]:
 
 
 @sky.function
+def gathered() -> int:
+    """Nobody comes back until every node has counted itself, which takes one cluster."""
+    info = sky.instance_info()
+
+    sky.counter("gathered").add()
+    sky.barrier("gathered", info.nodes).wait(120)
+
+    return sky.counter("gathered").get()
+
+
+@sky.function
 def worker_slot() -> tuple[int, int]:
     sky.barrier("slots", parties=2).wait()
     info = sky.instance_info()
@@ -45,6 +56,19 @@ def worker_slot() -> tuple[int, int]:
 def describe_a_node_among_the_others() -> None:
     def it_knows_its_rank_its_peers_and_whether_it_leads(pool: sky.Compute) -> None:
         assert sorted(placement() @ pool) == [(0, 2, True, 2), (1, 2, False, 2)]
+
+
+def describe_machines_that_come_up_together() -> None:
+    def they_form_one_cluster_and_not_one_each(compute: Build) -> None:
+        """Four machines connected at once, with nothing up yet to knock on.
+
+        Exactly one of them opens the cluster. None, and every worker waits out the
+        seed timeout and is started again to wait it out once more; two, and the
+        compute is two clusters that cannot see each other — which is what the
+        barrier finds out, since it only clears when all four are in the same one.
+        """
+        with compute(nodes=4) as pool:
+            assert gathered() @ pool == [4, 4, 4, 4]
 
 
 def describe_sharding_data_by_rank() -> None:

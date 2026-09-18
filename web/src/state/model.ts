@@ -1,43 +1,111 @@
 export type Kind = 'ready' | 'boot' | 'req' | 'gone' | 'off'
 
-export type MetricKey = 'gpu' | 'vram' | 'cpu' | 'temp' | 'rx' | 'tx'
-
-export type NodeMetrics = Record<MetricKey, number>
-
-export const METRICS: readonly (readonly [MetricKey, string])[] = [
-  ['gpu', 'GPU'],
-  ['vram', 'VRAM'],
-  ['temp', 'Temp'],
-  ['cpu', 'CPU'],
-  ['rx', 'Net ↓'],
-  ['tx', 'Net ↑'],
-]
-
-export const UNIT: Record<MetricKey, string> = { gpu: '%', vram: '%', cpu: '%', temp: '°C', rx: ' MB/s', tx: ' MB/s' }
-export const SCALE: Record<MetricKey, readonly [number, number]> = {
-  gpu: [0, 100],
-  vram: [0, 100],
-  cpu: [0, 100],
-  temp: [30, 92],
-  rx: [0, 120],
-  tx: [0, 120],
-}
-
 export const clamp = (v: number, a: number, b: number): number => Math.max(a, Math.min(b, v))
-export const last = (a: readonly number[]): number => (a.length ? a[a.length - 1]! : 0)
 export const mean = (a: readonly number[]): number => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0)
 export const median = (a: readonly number[]): number => {
   const s = a.slice().sort((x, y) => x - y)
   return s.length ? s[Math.floor(s.length / 2)]! : 0
 }
 
-export const norm = (metric: MetricKey, v: number): number => {
-  const [lo, hi] = SCALE[metric]
-  return clamp(((v - lo) / (hi - lo)) * 100, 0, 100)
+/* ---------- what a node measures ---------- */
+
+/**
+ * One line of a chart: the readings it can be drawn from, best first, and what its numbers mean.
+ *
+ * A node reports whatever its image asked for — the collector's own names, or the ones a
+ * ``skyward/worker/metrics.py`` builder gives — so a line names every reading that carries
+ * the same quantity and draws the first one the node actually reports.
+ */
+export type Line = { names: readonly string[]; factor: number; label?: string }
+
+/** One chart: a quantity, the scale it is drawn on, and the one or two lines on it. */
+export type Gauge = {
+  key: string
+  group: 'Accelerator' | 'Host'
+  label: string
+  unit: string
+  places: number
+  /** the floor and the ceiling of the scale; a null ceiling is ``total``, or the highest value drawn */
+  scale: readonly [number, number | null]
+  /** the readings that say what the value is out of */
+  total?: Line
+  lines: readonly Line[]
 }
 
-export const HEATS: readonly string[] = ['--h1', '--h2', '--h3', '--h4', '--h5', '--h6']
-export const heat = (p: number): string => `var(${HEATS[p < 8 ? 0 : p < 28 ? 1 : p < 50 ? 2 : p < 70 ? 3 : p < 88 ? 4 : 5]})`
+const whole = (names: readonly string[]): Line => ({ names, factor: 1 })
+
+/**
+ * Every reading the node's collector takes, in the order the pages draw them.
+ *
+ * A percentage is drawn 0 to 100 and a memory against its own total, so the same chart at
+ * two moments, or on two nodes, is the same picture. What a node reports that no gauge here
+ * claims is a metric of its own — what ``sky.metrics.Custom`` declared — and is drawn under
+ * its name, on a scale read off its values.
+ */
+export const GAUGES: readonly Gauge[] = [
+  { key: 'accel', group: 'Accelerator', label: 'Utilization', unit: '%', places: 0, scale: [0, 100], lines: [whole(['gpu_util'])] },
+  {
+    key: 'vram',
+    group: 'Accelerator',
+    label: 'Memory',
+    unit: 'GB',
+    places: 0,
+    scale: [0, null],
+    total: { names: ['gpu_mem_total_mb'], factor: 1 / 1024 },
+    lines: [{ names: ['gpu_mem_mb'], factor: 1 / 1024 }],
+  },
+  { key: 'temp', group: 'Accelerator', label: 'Temperature', unit: '°C', places: 0, scale: [30, 90], lines: [whole(['gpu_temp_c', 'gpu_temp'])] },
+  { key: 'power', group: 'Accelerator', label: 'Power', unit: 'kW', places: 1, scale: [0, null], lines: [{ names: ['gpu_power_w'], factor: 1 / 1000 }] },
+  { key: 'cpu', group: 'Host', label: 'CPU', unit: '%', places: 0, scale: [0, 100], lines: [whole(['cpu'])] },
+  {
+    key: 'ram',
+    group: 'Host',
+    label: 'Memory',
+    unit: 'GB',
+    places: 0,
+    scale: [0, null],
+    total: { names: ['mem_total_mb'], factor: 1 / 1024 },
+    lines: [{ names: ['mem_used_mb'], factor: 1 / 1024 }],
+  },
+  { key: 'disk', group: 'Host', label: 'Disk', unit: '%', places: 0, scale: [0, 100], lines: [whole(['disk_used_pct'])] },
+  {
+    key: 'net',
+    group: 'Host',
+    label: 'Network',
+    unit: 'MB/s',
+    places: 0,
+    scale: [0, null],
+    lines: [
+      { names: ['net_rx_kbps'], factor: 1 / 8000, label: 'in' },
+      { names: ['net_tx_kbps'], factor: 1 / 8000, label: 'out' },
+    ],
+  },
+]
+
+/** The gauge a key names. */
+export const gaugeOf = (key: string): Gauge | undefined => GAUGES.find((g) => g.key === key)
+
+/** Every reading a gauge here claims, which is what makes everything else a custom metric. */
+export const CLAIMED: ReadonlySet<string> = new Set(GAUGES.flatMap((g) => [...g.lines.flatMap((l) => l.names), ...(g.total?.names ?? [])]))
+
+/** The value of one line off a set of readings: the first name it finds, in the unit it is drawn in. */
+export const lineValue = (line: Line, readings: Readonly<Record<string, number>> | undefined): number | null => {
+  const name = readings && line.names.find((n) => readings[n] !== undefined)
+  return name === undefined ? null : readings![name]! * line.factor
+}
+
+/** What a gauge reads right now on one node, and what it is out of. */
+export const gaugeValue = (g: Gauge, readings: Readonly<Record<string, number>> | undefined): number | null => lineValue(g.lines[0]!, readings)
+
+/** A value in a gauge's unit, without the unit. */
+export const figure = (g: Gauge, v: number): string => (g.places ? v.toFixed(g.places) : Math.round(v).toLocaleString('en-US'))
+
+/** The gauge that says whether a machine is working: its accelerators where it has them, and its CPUs where it has none. */
+export const loadGauge = (accelerated: boolean): Gauge => gaugeOf(accelerated ? 'accel' : 'cpu')!
+
+/** How hard one node is working on that gauge, which is what tints its hexagon. */
+export const loadOf = (readings: Readonly<Record<string, number>> | undefined, accelerated: boolean): number | null =>
+  lineValue(loadGauge(accelerated).lines[0]!, readings)
 
 export const KIND = (s: string): Kind =>
   s === 'ready'
@@ -57,9 +125,6 @@ export const KIND_FILL: Record<Kind, string> = {
   gone: 'var(--bad)',
   off: 'var(--edge)',
 }
-
-export const hexCols = (n: number): number => clamp(Math.round(Math.sqrt(n * 2.6)), 2, 30)
-export const hexSize = (n: number, cols?: number, room = 980): number => clamp(Math.floor(room / (cols || hexCols(n))) - 4, 15, 58)
 
 export const tally = (states: readonly string[]): Partial<Record<Kind, number>> =>
   states.reduce<Partial<Record<Kind, number>>>((t, s) => {
@@ -158,14 +223,34 @@ export const finishedOf = (c: Compute): number => callsOf(c) - c.tasks.queued - 
 
 export const CAUSE: Record<Ending['cause'], string> = { requested: 'someone asked for it', abandoned: 'nobody renewed its lease' }
 
-/** The shape of a compute: how many nodes it is, of what, where. Unloaded nodes fall back to the target. */
-export const specLine = (c: Compute, nodes: readonly Node[]): string => {
+/** What was bought, or asked for: the offer a compute is bound to, else the first spec it named. */
+export type Bound = { accelerator: string | null; accelerator_count: number; kind: string; region: string | null; instance: string | null }
+
+export const boundOf = (c: Compute): Bound | null => {
   const s = c.spec.specs[0]
-  const size = nodes.length || targetOf(c)
-  if (!s) return `${size} nodes`
-  const count = s.accelerator_count > 1 ? `${s.accelerator_count}× ` : ''
-  const more = c.spec.specs.length > 1 ? ` +${c.spec.specs.length - 1}` : ''
-  return `${size}× ${count}${(s.accelerator ?? '?').toUpperCase()} · ${s.provider.kind}${more} · ${c.spec.allocation.replace(/_/g, ' ')} · ${s.region ?? 'any'}`
+  if (c.offer) return { accelerator: c.offer.accelerator, accelerator_count: c.offer.accelerator_count, kind: c.offer.kind, region: c.offer.region, instance: c.offer.instance_type }
+  return s ? { accelerator: s.accelerator ?? null, accelerator_count: s.accelerator_count ?? 1, kind: s.provider.kind, region: s.region ?? null, instance: null } : null
+}
+
+/** Whether the machines have cards at all, which is what a page measures and prices them by. */
+export const acceleratedOf = (c: Compute): boolean => !!boundOf(c)?.accelerator
+
+/** ``8× H100``, or the instance type of a machine with no accelerator. */
+export const machineOf = (c: Compute): string => {
+  const b = boundOf(c)
+  if (!b) return '—'
+  if (!b.accelerator) return b.instance ?? 'CPU'
+  return `${b.accelerator_count > 1 ? `${b.accelerator_count}× ` : ''}${b.accelerator.toUpperCase()}`
+}
+
+/** How many nodes a compute is, and the floor or the range it is held to. */
+export const sizeOf = (c: Compute, nodes: readonly Node[], live: boolean): { nodes: number; note: string } => {
+  const b = c.spec.nodes
+  const floor = b.min ?? b.initial
+  return {
+    nodes: live ? b.initial : nodes.length || targetOf(c),
+    note: b.max ? `elastic ${floor} to ${b.max}` : floor !== b.initial ? `floor ${floor}` : '',
+  }
 }
 
 export const hash01 = (s: string): number => {
@@ -181,6 +266,33 @@ export const taskOf = (tasks: Record<string, Task[]>, id: string): { t: Task; co
   }
   return null
 }
+
+/**
+ * How long a task has been running rather than waiting: from when it started to the finish, or to now.
+ *
+ * Each rank counts from its latest attempt to start, so the queue a retry went back into is not run
+ * time; the ranks of a broadcast run together, so the span is from the first of them to the finish. A
+ * task that has started nowhere has no run time yet — what it has is a wait, which is how long ago it
+ * was submitted.
+ */
+export const runOf = (t: Task): number | null => {
+  const starts = new Map<number, number>()
+  for (const e of t.executions) if (ms(e.started_at) > (starts.get(e.rank) ?? 0)) starts.set(e.rank, ms(e.started_at))
+  return starts.size ? Math.max(0, (t.finished_at ? ms(t.finished_at) : Date.now()) - Math.min(...starts.values())) : null
+}
+
+/** Where a task falls in the order a queue reads in: what is running, then what is waiting, then what is done. */
+export const groupOf = (t: Task): number => (t.state === 'running' ? 0 : t.state === 'queued' ? 1 : 2)
+
+/**
+ * The order a list of tasks reads in, which is the daemon's ``order=state``.
+ *
+ * Running first and newest first, because the newest is the one still saying something; then
+ * queued with the next to run at the top; then finished with the latest to finish first.
+ */
+export const byState = (a: Task, b: Task): number =>
+  groupOf(a) - groupOf(b) ||
+  (groupOf(a) === 1 ? ms(a.submitted_at) - ms(b.submitted_at) : groupOf(a) === 2 ? ms(b.finished_at) - ms(a.finished_at) : ms(b.submitted_at) - ms(a.submitted_at))
 
 export type ExecRow = { rank: number; ordinal: number; state: Execution['state']; ms: number; error: string | null }
 
@@ -219,7 +331,7 @@ export const execsOf = (t: Task, nodes: readonly Node[]): ExecRow[] => {
     return [{ rank: first?.rank ?? 0, ordinal: 1, state: t.state === 'succeeded' ? 'succeeded' : 'started', ms: 0, error: null }]
   }
   const seen = new Set(real.map((e) => e.rank))
-  const span = (t.finished_at ? ms(t.finished_at) : Date.now()) - ms(t.submitted_at)
+  const span = runOf(t) ?? (t.finished_at ? ms(t.finished_at) : Date.now()) - ms(t.submitted_at)
   const filled = readyOf(nodes)
     .filter((n) => !seen.has(n.rank))
     .map<ExecRow>((n) => ({
@@ -333,8 +445,9 @@ export const busyOf = (tasks: readonly Task[], nodes: readonly Node[], rank: num
 /** What one accelerator-hour costs on an offer: the spot price when there is one, else on demand. */
 export const offerPerGpu = (o: Offer): number => (o.spot_price ?? o.on_demand_price ?? o.price ?? 0) / Math.max(1, o.accelerator_count)
 
-/** What one accelerator-hour costs on this compute: the first priced node, split by its cards. */
-export const perGpu = (c: Compute, nodes: readonly Node[]): number => {
+/** What an hour of what this compute is bought by costs, and what one of those is: an accelerator, or a whole machine where there are none. */
+export const perUnit = (c: Compute, nodes: readonly Node[]): { rate: number; unit: string } => {
   const priced = nodes.find((n) => (n.price_per_hour ?? 0) > 0)
-  return priced ? (priced.price_per_hour ?? 0) / Math.max(1, c.offer?.accelerator_count ?? c.spec.specs[0]?.accelerator_count ?? 1) : 0
+  const accelerators = acceleratedOf(c) ? Math.max(1, boundOf(c)?.accelerator_count ?? 1) : 1
+  return { rate: (priced?.price_per_hour ?? 0) / accelerators, unit: acceleratedOf(c) ? '/accelerator·h' : '/node·h' }
 }

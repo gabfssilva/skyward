@@ -1,9 +1,10 @@
 /*
- * The frame turns at 67.5em (1080px), under which the inspector drops below the stage, and at 37.5em (600px), under
- * which the nav moves to the bottom of a phone. The bar's own widths are what its contents measure: the nav's labels
- * fit from 73em, and the fleet's nodes and GPUs beside the icons from 45em; the daemon and the theme never fit beside
+ * The frame is a bar, a page head and one column. It turns at 73em, under which the nav keeps its icons and drops its
+ * labels, and at 37.5em, under which the nav moves to the bottom of a phone. The daemon and the theme never fit beside
  * the labels within --content, so they live in a menu. The gutters take the larger of their own width and the notch a
  * landscape phone reports.
+ *
+ * There is no side column: every page runs the width, because a column that repeats the page is furniture.
  */
 :root{
   --content:1280px;
@@ -14,7 +15,7 @@
 /* ---------- bar ---------- */
 .bar{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:12px;height:60px;
   padding:0 var(--gutter-r) 0 var(--gutter-l);background:var(--ground)}
-.brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:-.02em;font-size:16px;margin-right:4px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.02em;font-size:15.5px;margin-right:4px}
 .bar nav{display:flex;gap:4px}
 .bar nav button{display:flex;align-items:center;gap:8px;height:38px;padding:0 11px;border-radius:12px;font-size:13.5px;font-weight:600;color:var(--muted)}
 .brand span,.bar nav button span{display:none}
@@ -24,63 +25,74 @@
 .bar-end{display:flex;align-items:center;gap:6px;margin-left:auto;min-width:0}
 .bar-status{display:none}
 .bar-status:popover-open{display:grid;justify-items:start;gap:10px;position:fixed;inset:60px var(--gutter-r) auto auto;margin:0;border:0;
-  padding:12px;border-radius:14px;color:inherit;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 12px 32px rgba(10,14,16,.18)}
+  padding:12px;border-radius:14px;color:inherit;background:var(--panel);box-shadow:0 0 0 1px var(--line),var(--shadow)}
 .bar-status:popover-open .tag{background:var(--sunk)}
 #daemon-tag{min-width:0}
 #daemon-tag .tag-t{overflow:hidden;text-overflow:ellipsis}
-.tag.fleet{color:var(--ink);font-weight:600;gap:8px}
-.tag.fleet small{font-weight:500;color:var(--muted)}
-.tag.fleet i{width:3px;height:3px;border-radius:50%;background:var(--faint)}
-.fleet-more{display:contents}
+.tag.fleet{color:var(--ink);font-weight:600;gap:2px}
+.tag.fleet small{font-weight:600;color:var(--muted)}
 @media (hover:hover){.tag.fleet:hover{background:var(--sunk)}}
-.tag.fleet:empty,.rail:empty{display:none}
-.rail:empty+.app{padding-top:12px}
+.tag.fleet:empty{display:none}
 .theme{display:flex;gap:2px}
 
-/* ---------- rail ---------- */
-.rail{display:flex;align-items:flex-end;gap:36px;flex-wrap:wrap;padding:10px var(--gutter-r) 18px var(--gutter-l)}
-.gauge-r{display:flex;flex-direction:column;gap:2px}
-.gauge-r b{font-weight:800;font-size:34px;line-height:1;letter-spacing:-.03em}
-.gauge-r b small{font-size:14px;font-weight:500;color:var(--muted);letter-spacing:0;margin-left:2px}
-.gauge-r span{font-size:12.5px;color:var(--muted);font-weight:500}
-.rail .spacer{margin-left:auto;flex-wrap:wrap}
-.rail.compact{align-items:center;gap:22px;padding:8px var(--gutter-r) 12px var(--gutter-l)}
-.rail.compact .stat{display:flex;align-items:baseline;gap:6px}
-.rail.compact .stat b{font-weight:800;font-size:18px;letter-spacing:-.02em}
-.rail.compact .stat b small{font-size:11px;font-weight:500;color:var(--muted);margin-left:1px}
-.rail.compact .stat span{font-size:11.5px;color:var(--muted)}
-.crumb{display:flex;align-items:center;gap:8px;font-size:15px;margin-right:8px}
-.crumb b{font-weight:700}
-.crumb .sep{color:var(--faint)}
-.crumb button{display:inline-flex;align-items:center;gap:6px;color:inherit}
-.crumb button svg{font-size:18px;color:var(--muted)}
-
-/* ---------- app frame ---------- */
-.app{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;
-  padding:0 var(--gutter-r) 0 var(--gutter-l);align-items:start}
-.app.wide{grid-template-columns:minmax(0,1fr)}
-.app.wide .inspector{display:none}
+/* ---------- the page ---------- */
+.app{padding:0 var(--gutter-r) 0 var(--gutter-l)}
 .stage{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:16px;container:stage/inline-size}
-.inspector{position:sticky;top:70px;display:grid;gap:14px;min-width:0}
-.card{background:var(--panel);border-radius:var(--r);padding:18px 20px}
+.card{background:var(--panel);border-radius:var(--r);padding:20px 22px}
 .card.tight{padding:15px 17px}
-.strip{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:var(--r);background:var(--panel)}
-.strip.bad{background:var(--bad-soft)}
-.divider{height:1px;background:var(--line);margin:12px -17px}
+.card.flush{padding:0;overflow:hidden}
+/* a card whose one subject has nothing to say yet — a machine that has not reported a phase — is no card */
+.card:empty{display:none}
+.chead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.sec{display:flex;align-items:baseline;gap:8px;padding:6px 2px 0}
+.divider{height:1px;background:var(--line);margin:12px 0}
 .empty{display:grid;justify-items:center;gap:8px;padding:46px 20px;text-align:center;color:var(--muted)}
 .empty svg{font-size:44px;color:var(--faint);stroke-width:1.25}
 .empty b{color:var(--ink);font-size:15px}
+
+/* ---------- the page head: the same five things on every route ---------- */
+.head{display:grid;gap:7px;padding:10px 0 4px}
+.head>.row{gap:10px;flex-wrap:wrap}
+.crumb{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:600}
+.crumb button{color:inherit}
+@media (hover:hover){.crumb button:hover{color:var(--ink);text-decoration:underline}}
+.title{font-size:22px;font-weight:700;letter-spacing:-.022em;line-height:1.2;margin:0}
+.title .v{font-weight:600;color:var(--faint);font-size:.78em;margin-left:4px;letter-spacing:0}
+.acts{margin-left:auto;display:flex;align-items:center;gap:6px;position:relative}
+
+/* What the page is of, one fact per group: the value in the ink, the context beside it in grey. */
+.facts{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 20px;font-size:12px;color:var(--muted)}
+.facts b{color:var(--ink);font-weight:600}
+.facts button{color:var(--ink);font-weight:600;text-decoration:underline;text-decoration-color:var(--line-2);text-underline-offset:3px}
+.facts .mono{font-size:11.5px}
+
+/* Why something is wrong, under the title it is wrong on. */
+.why{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10px;font-size:12.5px;color:var(--bad);font-weight:600}
+.why span{color:var(--muted);font-weight:500}
+
+/* The summary a list page opens with: one number at 34, the rest at text size. */
+.sum{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 24px;font-size:15px;color:var(--muted);min-width:0}
+.sum b{color:var(--ink);font-weight:700}
+.head .sum{flex:1}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;align-items:center;gap:22px;box-shadow:inset 0 -1px 0 var(--line);flex-wrap:wrap}
+.tabs button{display:inline-flex;align-items:center;gap:6px;padding:0 0 11px;color:var(--muted);font-weight:600;font-size:13.5px}
+@media (hover:hover){.tabs button:hover{color:var(--ink)}}
+.tabs button[aria-selected="true"]{color:var(--ink);box-shadow:inset 0 -2px 0 var(--ink)}
+.tabs em{font-style:normal;font-weight:600;color:var(--faint)}
+/* the views of a tabbed card are not the same length: the shortest still holds the card open, so opening one never pulls the page up under the reader */
+.tabbody{margin-top:14px;min-height:340px}
+.tabrow{display:flex;align-items:flex-end;gap:12px;min-height:44px;box-shadow:inset 0 -1px 0 var(--line)}
+.tabrow .tabs{box-shadow:none;flex:1}
+.head .tabrow{flex:1}
+.tabrow .acts{padding-bottom:7px}
 
 @media (min-width:73em){
   .brand{margin-right:14px}
   .brand span,.bar nav button span{display:inline}
   .bar nav button{padding:0 14px}
 }
-@media (max-width:67.5em){
-  .app{grid-template-columns:minmax(0,1fr)}
-  .inspector{position:static}
-}
-@media (max-width:45em){.fleet-more{display:none}}
 @media (max-width:37.5em){
   .bar{gap:8px}
   .bar nav{position:fixed;inset:auto 0 0;z-index:40;justify-content:space-around;gap:0;background:var(--panel);box-shadow:0 -1px 0 var(--line);
@@ -88,10 +100,11 @@
   .bar nav button{flex:1 1 0;min-width:0;flex-direction:column;justify-content:center;gap:3px;height:52px;padding:0;font-size:10.5px}
   .bar nav button span{display:block}
   .bar nav button[aria-selected="true"]{color:var(--accent);background:none;box-shadow:none}
-  .bar nav button[data-view="/providers"]{display:none}
   :root:has(input:not([type="checkbox"]):focus,textarea:focus) .bar nav{display:none}
   body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
-  .rail{gap:20px}
-  .rail .spacer{margin-left:0}
-  .gauge-r b{font-size:26px}
+  .card{padding:15px 16px}
+  .head{gap:6px;padding:6px 0 2px}
+  .hero{font-size:30px}
+  .sum{font-size:13.5px;gap:3px 16px}
+  .tabs{gap:16px}
 }

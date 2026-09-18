@@ -1,5 +1,3 @@
 export { Stage } from './Stage'
-export { Inspector } from './Inspector'
-export { Rail } from './Rail'
 export { History } from './History'
-export { combNode, combNodes, valuesFor } from '../../state/nodes'
+export { Attention } from './Attention'

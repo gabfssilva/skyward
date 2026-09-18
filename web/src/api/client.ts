@@ -35,6 +35,8 @@ export type Call = Schemas['Call']
 export type Generation = Schemas['GenerationResource']
 export type Liveness = Schemas['LivenessResource']
 export type LogEntry = Schemas['LogEntryResource']
+export type MetricHistory = Schemas['MetricHistoryResource']
+export type MetricSample = Schemas['MetricSampleResource']
 export type WireError = Schemas['Error']
 export type ErrorCode = WireError['code']
 
@@ -52,6 +54,9 @@ export type OfferSort = NonNullable<NonNullable<paths['/v1/offers']['get']['para
 
 /** How the daemon orders a page of tasks. */
 export type TaskOrder = NonNullable<NonNullable<paths['/v1/tasks']['get']['parameters']['query']>['order']>
+
+/** How the samples of one metric step become its value. */
+export type Aggregate = NonNullable<NonNullable<paths['/v1/computes/{compute}/metrics']['get']['parameters']['query']>['agg']>
 
 export class ApiError extends Error {
   constructor(
@@ -140,8 +145,20 @@ export type ComputeQuery = { cursor?: string; limit?: number; state?: string; ow
 export type NodeQuery = { include?: string }
 /** ``latest`` is one row per function, its newest upload; ``lineage`` is every upload of one function. */
 export type FunctionQuery = { cursor?: string; limit?: number; latest?: boolean; lineage?: string }
-export type TaskQuery = { cursor?: string; limit?: number; compute?: string; state?: string; correlation_id?: string; order?: TaskOrder }
+/** ``state`` is repeatable, and ``lineage`` is every upload of one function — the same code, edited and sent again. */
+export type TaskQuery = {
+  cursor?: string
+  limit?: number
+  compute?: string
+  state?: string | readonly string[]
+  correlation_id?: string
+  function?: string
+  lineage?: string
+  order?: TaskOrder
+}
 export type LogQuery = { cursor?: string; limit?: number; compute?: string; task?: string; node?: string; types?: readonly string[]; contains?: readonly string[] }
+/** A range of a compute's metrics — ``since`` with an optional ``step`` — or what one ``after`` a cursor has recorded. */
+export type MetricQuery = { since?: number; until?: number; after?: string; step?: number; agg?: Aggregate; node?: readonly string[]; name?: readonly string[] }
 export type OfferQuery = {
   provider?: string
   kind?: string
@@ -169,6 +186,10 @@ export const api = {
   nodes: (computeId: string, query?: NodeQuery): Promise<Page<Node>> => request<Page<Node>>(`/computes/${computeId}/nodes${qs(query)}`),
   node: (computeId: string, nodeId: string): Promise<Node> => request<Node>(`/computes/${computeId}/nodes/${nodeId}`),
   drainNode: (computeId: string, nodeId: string): Promise<void> => request<void>(`/computes/${computeId}/nodes/${nodeId}`, { method: 'DELETE', headers: once() }),
+
+  metrics: (computeId: string, query: MetricQuery): Promise<MetricHistory> => request<MetricHistory>(`/computes/${computeId}/metrics${qs(query)}`),
+  metricsSince: (computeId: string, cursor: string): Promise<MetricHistory> => request<MetricHistory>(`/computes/${computeId}/metrics${qs({ after: cursor })}`),
+  latestMetrics: (computeId: string): Promise<Page<MetricSample>> => request<Page<MetricSample>>(`/computes/${computeId}/metrics/latest`),
 
   exec: (computeId: string, command: string, node?: number): Promise<Record<string, Result>> =>
     request<Record<string, Result>>(`/computes/${computeId}/exec${qs({ command, node })}`, { method: 'POST' }),

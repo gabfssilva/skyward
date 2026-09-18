@@ -1,3 +1,8 @@
+/*
+ * Colour has three jobs here and no fourth: the accent marks what can be acted on, the four state colours say how
+ * something is doing — blue means under way — and the surfaces separate ground from card from field. Identity has no
+ * colour: a compute is told apart by its name, never by a hue that would read as a state.
+ */
 :root{
   --ground:#EEF0F2; --panel:#FAFBFB; --sunk:#E1E5E8; --edge:#D0D6DB;
   --ink:#161C1E; --muted:#616B70; --faint:#8A949A;
@@ -5,9 +10,8 @@
   --accent:#2F7A4F; --accent-soft:rgba(47,122,79,.12); --on-accent:#FFFFFF;
   --ok:#2F7A4F; --boot:#2C68B8; --warn:#C0841C; --bad:#C4423F;
   --ok-soft:rgba(47,122,79,.12); --boot-soft:rgba(44,104,184,.12); --warn-soft:rgba(192,132,28,.14); --bad-soft:rgba(196,66,63,.12);
-  --c1:#2F7A4F; --c2:#2C68B8; --c3:#C0841C; --c4:#7A5AB8; --c5:#C4423F;
-  --h1:#D9E8DE; --h2:#B7D5C2; --h3:#8FBFA1; --h4:#62A37C; --h5:#3E8A5C; --h6:#246742;
   --term-bg:#12181A; --term-ink:#E3EAE6; --term-dim:#7E8C86; --term-p:#8FD6AC;
+  --shadow:0 12px 32px rgba(10,14,16,.18);
   --sans:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,sans-serif;
   --mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   --r:16px; --rs:10px;
@@ -20,9 +24,8 @@
     --accent:#5FBE85; --accent-soft:rgba(95,190,133,.14); --on-accent:#071A0F;
     --ok:#5FBE85; --boot:#6AA3EE; --warn:#E2A63C; --bad:#F26A63;
     --ok-soft:rgba(95,190,133,.14); --boot-soft:rgba(106,163,238,.14); --warn-soft:rgba(226,166,60,.14); --bad-soft:rgba(242,106,99,.14);
-    --c1:#5FBE85; --c2:#6AA3EE; --c3:#E2A63C; --c4:#A48CE8; --c5:#F26A63;
-    --h1:#1F2E27; --h2:#25452F; --h3:#2F5F3F; --h4:#3E8557; --h5:#5FBE85; --h6:#9BE0B5;
     --term-bg:#0C1012; --term-ink:#E3EAE6; --term-dim:#66737A; --term-p:#8FD6AC;
+    --shadow:0 12px 32px rgba(0,0,0,.5);
   }
 }
 :root[data-theme="dark"]{
@@ -32,7 +35,6 @@
   --accent:#5FBE85; --accent-soft:rgba(95,190,133,.14); --on-accent:#071A0F;
   --ok:#5FBE85; --boot:#6AA3EE; --warn:#E2A63C; --bad:#F26A63;
   --ok-soft:rgba(95,190,133,.14); --boot-soft:rgba(106,163,238,.14); --warn-soft:rgba(226,166,60,.14); --bad-soft:rgba(242,106,99,.14);
-  --c1:#5FBE85; --c2:#6AA3EE; --c3:#E2A63C; --c4:#A48CE8; --c5:#F26A63;
-  --h1:#1F2E27; --h2:#25452F; --h3:#2F5F3F; --h4:#3E8557; --h5:#5FBE85; --h6:#9BE0B5;
   --term-bg:#0C1012; --term-ink:#E3EAE6; --term-dim:#66737A; --term-p:#8FD6AC;
+  --shadow:0 12px 32px rgba(0,0,0,.5);
 }

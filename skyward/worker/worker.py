@@ -17,7 +17,7 @@ import contextvars
 import os
 import sys
 import traceback
-from collections.abc import AsyncIterator, Callable, Generator, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
 from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
@@ -39,6 +39,13 @@ from skyward.worker.plugins import Plugin
 
 PORT = 25520
 SEED_TIMEOUT = 180.0
+PROBE = 5.0
+"""How long one seed has to accept a connection before the next one is tried.
+
+A machine that is filtered rather than down never refuses, it just says nothing, and
+a scan that waited out a TCP connect on each of those would spend the whole join
+window on the first few.
+"""
 MAX_MESSAGE_BYTES = 1024 * 1024 * 1024
 """The largest call or reply the compute's cluster carries; a task's arguments and its result each travel inside one."""
 TRANSPORT = casty.TransportConfig(max_message_bytes=MAX_MESSAGE_BYTES, compression=casty.CompressionConfig(codecs=[]))
@@ -621,22 +628,38 @@ def _run_in_process(
         task.reset(token)
 
 
-async def reachable(seed: str) -> None:
-    """Wait for the seed to answer on its port before trying to join it.
+async def reachable(seeds: Sequence[str]) -> tuple[str, ...]:
+    """The seeds, ordered by one that is answering right now.
 
-    ``casty.start`` binds its own port before dialling the seed, and does not give
-    it back when the join fails — so a worker that merely races the seed does not
+    ``casty.start`` binds its own port before dialling the seeds, and does not give
+    it back when the join fails — so a worker that merely races the cluster does not
     retry, it dies holding the port. A TCP connect is the cheap way to not race.
+
+    One of them is enough: casty joins through the first seed that answers and only
+    fails when none does. Waiting for all of them would mean waiting for machines
+    that are still installing their dependencies — the list is every node that has an
+    address, not every node that is up. An empty list is the node that opens the
+    cluster, and it waits for nobody.
     """
-    host, port = seed.rsplit(":", 1)
+    async def answering(seed: str) -> bool:
+        host, port = seed.rsplit(":", 1)
+        try:
+            async with asyncio.timeout(PROBE):
+                _, writer = await asyncio.open_connection(host, int(port))
+        except (OSError, TimeoutError):
+            return False
+        writer.close()
+        return True
+
+    if not seeds:
+        return ()
+
     async with asyncio.timeout(SEED_TIMEOUT):
         while True:
-            try:
-                _, writer = await asyncio.open_connection(host, int(port))
-                writer.close()
-                return
-            except OSError:
-                await asyncio.sleep(2.0)
+            for seed in seeds:
+                if await answering(seed):
+                    return (seed, *(other for other in seeds if other != seed))
+            await asyncio.sleep(2.0)
 
 
 async def main() -> None:
@@ -654,9 +677,7 @@ async def main() -> None:
     """
     global installed, thread_pool, subprocesses
 
-    seeds = [seed for seed in os.environ.get("SKYWARD_SEEDS", "").split(",") if seed]
-    for seed in seeds:
-        await reachable(seed)
+    seeds = await reachable([seed for seed in os.environ.get("SKYWARD_SEEDS", "").split(",") if seed])
 
     refs = msgspec.json.decode(os.environ.get("SKYWARD_PLUGINS", "[]"), type=tuple[PluginRef, ...])
     installed = plugins.resolve(refs)

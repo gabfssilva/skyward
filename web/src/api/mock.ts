@@ -244,8 +244,13 @@ type FleetOptions = {
   market: 'spot' | 'on_demand'
 }
 
-/** The live gauge behind one node, exactly the prototype's `n.m`. */
-type Live = { gpu: number; vram: number; cpu: number; temp: number; rx: number; tx: number }
+/**
+ * The live gauge behind one node: every reading the daemon's collector takes, as a percentage or a rate.
+ *
+ * ``loss`` and ``toks`` stand for what ``sky.metrics.Custom`` declares — only the training compute
+ * reports them, so the console has something under Custom that no gauge of its own claims.
+ */
+type Live = { gpu: number; vram: number; cpu: number; temp: number; rx: number; tx: number; ram: number; disk: number; loss: number; toks: number }
 
 const live = new Map<string, Live>()
 
@@ -285,6 +290,10 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
       temp: 58 + rnd() * 22,
       rx: rnd() * 90,
       tx: rnd() * 90,
+      ram: jitter(48, 12),
+      disk: 22 + rnd() * 10,
+      loss: 1.32 + rnd() * 0.04,
+      toks: 1.38e6 + rnd() * 8e4,
     })
   }
   return node
@@ -307,6 +316,7 @@ const mkCompute = (
   _nodesReady: number,
   leaseIn: number,
   ended: Ending | null = null,
+  error: string | null = null,
 ): Omit<Compute, 'tasks'> => ({
   cost: ended ? ended.cost : (rateOf(id) * createdAgo) / 3.6e6,
   created_at: iso(now() - createdAgo),
@@ -322,7 +332,7 @@ const mkCompute = (
   rate: rateOf(id),
   revision: generation,
   spec: s,
-  status: { last_error: null, observed_generation: generation, state },
+  status: { last_error: error ? err(error) : null, observed_generation: generation, state },
   utilization: undefined,
 })
 
@@ -516,12 +526,47 @@ const gone = (computeId: string, count: number, o: FleetOptions, failed: Record<
     last_error: failed[n.rank] ? err(failed[n.rank]!) : null,
   }))
 
-nodes[C5] = gone(C5, 16, { base: 0, net: '10.0.9', mach: 'i-0cc41f7a2', accelerator: 'a100', count: 8, price: 12.24, market: 'spot' }, {
+nodes[C5] = gone(C5, 16, { base: 78, net: '10.0.9', mach: 'i-0cc41f7a2', accelerator: 'a100', count: 8, price: 12.24, market: 'spot' }, {
   3: 'interrupted by the provider 12m into the run',
 })
-nodes[C6] = gone(C6, 2, { base: 0, net: '38.104.9', mach: 'rp-91b', accelerator: 'a10g', count: 1, price: 0.79, market: 'on_demand' })
+nodes[C6] = gone(C6, 2, { base: 44, net: '38.104.9', mach: 'rp-91b', accelerator: 'a10g', count: 1, price: 0.79, market: 'on_demand' })
 
 const ready = (id: string): number => nodes[id]!.filter((n) => n.state === 'ready').length
+
+/** The metrics only the training compute declares, the way an image names them. */
+const CUSTOM: Record<string, boolean> = { [C1]: true }
+
+const shapes = new Map<string, { cards: number; vram: number; memory: number }>()
+
+/** What one node's machine is: how many cards, of what, and how much host memory — the totals its readings are out of. */
+const shapeOf = (computeId: string): { cards: number; vram: number; memory: number } => {
+  const held = shapes.get(computeId)
+  if (held) return held
+  const s = [...computes, ...retired].find((c) => c.id === computeId)?.spec.specs[0]
+  const accel = s?.accelerator ?? 'a10g'
+  const shape = { cards: s?.accelerator_count ?? 1, vram: (VRAM[accel] ?? 24) * 1024, memory: (s?.memory_gb ?? 32) * 1024 }
+  shapes.set(computeId, shape)
+  return shape
+}
+
+/** Every reading one node reports, under the names the daemon's collector gives them. */
+const readingsOf = (computeId: string, m: Live): Record<string, number> => {
+  const { cards, vram, memory } = shapeOf(computeId)
+  return {
+    cpu: Math.round(m.cpu * 10) / 10,
+    mem_used_mb: Math.round((m.ram / 100) * memory),
+    mem_total_mb: memory,
+    gpu_util: Math.round(m.gpu * 10) / 10,
+    gpu_mem_mb: Math.round((m.vram / 100) * vram * cards),
+    gpu_mem_total_mb: vram * cards,
+    gpu_temp_c: Math.round(m.temp),
+    gpu_power_w: Math.round(cards * (120 + (m.gpu / 100) * 480)),
+    net_rx_kbps: Math.round(m.rx * 8000),
+    net_tx_kbps: Math.round(m.tx * 8000),
+    disk_used_pct: Math.round(m.disk),
+    ...(CUSTOM[computeId] ? { loss: Math.round(m.loss * 1e4) / 1e4, tokens_per_s: Math.round(m.toks) } : {}),
+  }
+}
 
 const computes: Omit<Compute, 'tasks'>[] = [
   mkCompute(
@@ -584,6 +629,8 @@ const computes: Omit<Compute, 'tasks'>[] = [
     8,
     ready(C3),
     31,
+    null,
+    '6 of 8 nodes ready, floor is 4',
   ),
   mkCompute(
     C4,
@@ -835,6 +882,79 @@ function submit(init: RequestInit | undefined): Response {
   return json(submitted)
 }
 
+/* ---------- the metric history the charts read ---------- */
+
+/** How many of a compute's nodes the example daemon answers series for; a real one answers for every node. */
+const SERIES_NODES = 64
+
+const PERCENT = new Set(['gpu_util', 'cpu', 'disk_used_pct'])
+const FIXED = new Set(['gpu_mem_total_mb', 'mem_total_mb'])
+
+const hash01 = (text: string): number => {
+  let h = 2166136261
+  for (const ch of text) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
+  return ((h >>> 0) % 1000) / 1000
+}
+
+/**
+ * What one node read of one metric at one moment.
+ *
+ * The example data keeps no past, so a moment is answered rather than stored: the node's current
+ * value, drifted by two slow waves whose phase is the node's own, and dropped where a checkpoint
+ * was being written. It is deterministic, so the same range is answered the same way twice and a
+ * chart does not jump when the page asks again.
+ */
+const sampled = (computeId: string, rank: number, name: string, value: number, at: number): number => {
+  if (FIXED.has(name)) return value
+  const phase = hash01(`${computeId}/${rank}/${name}`) * 6.283
+  const minutes = at / 60000
+  const wave = Math.sin(minutes / 3 + phase) * 0.6 + Math.sin(minutes / 11 + phase * 2) * 0.4
+  const drifted = value * (1 + wave * 0.12)
+  const idling = name === 'gpu_util' || name === 'gpu_power_w' || name === 'tokens_per_s'
+  const level = saving(at) ? (idling ? drifted * 0.18 : name === 'cpu' ? drifted * 2.4 : drifted) : name === 'loss' ? value + (now() - at) / 6e8 : drifted
+  return Math.round((PERCENT.has(name) ? clamp(level, 0, 100) : Math.max(0, level)) * 1e4) / 1e4
+}
+
+/** A compute's metrics over a range, or what has been recorded since a cursor. */
+function metricHistory(computeId: string, search: string): Response {
+  const query = new URLSearchParams(search)
+  const holding = (nodes[computeId] ?? []).filter((n) => live.has(`${computeId}/${n.rank}`)).slice(0, SERIES_NODES)
+  const only = query.getAll('node')
+  const wanted = query.getAll('name')
+  const chosen = holding.filter((n) => !only.length || only.includes(n.id))
+  const at = now()
+
+  const series = (moments: number[]) =>
+    chosen.flatMap((n) => {
+      const m = live.get(`${computeId}/${n.rank}`)
+      if (!m) return []
+      return Object.entries(readingsOf(computeId, m))
+        .filter(([name]) => !wanted.length || wanted.includes(name))
+        .map(([name, value]) => ({ node: n.id, name, at: moments, values: moments.map((when) => sampled(computeId, n.rank, name, value, when)) }))
+    })
+
+  if (query.get('after') !== null) return json({ series: series([at]), cursor: String(at), reset: false })
+
+  const since = Number(query.get('since') ?? at - 3.6e6)
+  const until = query.get('until') ? Number(query.get('until')) : at
+  const step = Number(query.get('step') ?? 0) || Math.max(5000, Math.round((until - since) / 60))
+  const moments: number[] = []
+  for (let when = Math.ceil(since / step) * step; when <= until; when += step) moments.push(when)
+  return json({ series: series(moments), cursor: String(at), reset: false })
+}
+
+/** The newest reading of each metric on each node, as ``include=nodes.metrics`` carries them. */
+const carrying = (c: Compute, include: string | null): Compute =>
+  include?.includes('nodes.metrics')
+    ? {
+        ...c,
+        nodes: c.nodes.map((n) => {
+          const m = live.get(`${c.id}/${n.rank}`)
+          return m ? { ...n, metrics: Object.fromEntries(Object.entries(readingsOf(c.id, m)).map(([name, value]) => [name, { at: now(), value }])) } : n
+        }),
+      }
+    : c
+
 function route(path: string, init: RequestInit | undefined): Response {
   const method = (init?.method ?? 'GET').toUpperCase()
   const [raw] = path.split('?')
@@ -876,20 +996,23 @@ function route(path: string, init: RequestInit | undefined): Response {
       const state = query.get('state')
       const live = query.get('live')
       const cause = query.get('cause')
-      const matched = everything().filter(
-        (c) =>
-          (!state || c.status.state === state) &&
-          (live === null || LIVE.has(c.status.state) === (live === 'true')) &&
-          (!cause || c.ended?.cause === cause),
-      )
+      const matched = everything()
+        .filter(
+          (c) =>
+            (!state || c.status.state === state) &&
+            (live === null || LIVE.has(c.status.state) === (live === 'true')) &&
+            (!cause || c.ended?.cause === cause),
+        )
+        .map((c) => carrying(c, query.get('include')))
       return json(paged(matched, (c) => Date.parse(c.created_at), query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
     const c = everything().find((x) => x.id === parts[1])
     if (!c) return notFound()
     if (!parts[2]) {
       if (method === 'DELETE') return new Response(null, { status: 204 })
-      return json(c)
+      return json(carrying(c, new URLSearchParams(path.split('?')[1] ?? '').get('include')))
     }
+    if (parts[2] === 'metrics' && !parts[3]) return metricHistory(c.id, path.split('?')[1] ?? '')
     if (parts[2] === 'nodes') {
       if (parts[3]) {
         if (method === 'DELETE') return new Response(null, { status: 204 })
@@ -908,8 +1031,15 @@ function route(path: string, init: RequestInit | undefined): Response {
       if (method === 'POST') return submit(init)
       const query = new URLSearchParams(path.split('?')[1] ?? '')
       const compute = query.get('compute')
-      const state = query.get('state')
-      const matched = (compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()).filter((t) => !state || t.state === state)
+      const states = query.getAll('state')
+      const lineage = query.get('lineage')
+      const named = query.get('function')
+      const matched = (compute ? (tasks[compute] ?? []) : Object.values(tasks).flat()).filter(
+        (t) =>
+          (!states.length || states.includes(t.state)) &&
+          (!lineage || functions[t.function.sha256]?.lineage === lineage) &&
+          (!named || functions[t.function.sha256]?.name === named),
+      )
       const moment = query.get('order') === 'state' ? byState : query.get('order') === 'finished' ? byFinish : (t: Task) => Date.parse(t.submitted_at)
       return json(paged(matched, moment, query.get('cursor'), Number(query.get('limit') ?? 50)))
     }
@@ -1027,20 +1157,19 @@ function logPage(search: string): Response {
 const nodeId = (computeId: string, rank: number): string => `nd_${computeId.slice(4)}_${rank}`
 
 const gauges = (computeId: string, rank: number, m: Live): void => {
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_util', value: Math.round(m.gpu) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_temp_c', value: Math.round(m.temp) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'net_rx_kbps', value: Math.round(m.rx * 8000) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'net_tx_kbps', value: Math.round(m.tx * 8000) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'cpu', value: Math.round(m.cpu) })
-  emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name: 'gpu_mem_total_mb', value: 81920 })
-  emit('node.metrics', {
-    type: 'node.metrics',
-    compute: computeId,
-    node: nodeId(computeId, rank),
-    name: 'gpu_mem_mb',
-    value: Math.round((m.vram / 100) * 81920),
-  })
+  for (const [name, value] of Object.entries(readingsOf(computeId, m)))
+    emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name, value })
 }
+
+/**
+ * Every quarter of an hour the example fleet writes a checkpoint.
+ *
+ * The GPUs idle while it is written and the CPUs pick it up, so every chart on a page shows the
+ * same minute in the same column — which is the whole reason they share one time axis.
+ */
+const CHECKPOINT = 9e5
+const SAVING = 30e3
+const saving = (at: number): boolean => at % CHECKPOINT < SAVING
 
 const cursors: Record<string, number> = {}
 let beat = 0
@@ -1053,12 +1182,17 @@ function tick(): void {
       const key = `${c.id}/${n.rank}`
       const m = live.get(key)
       if (!m) continue
-      m.gpu = clamp(m.gpu + (rnd() - 0.5) * 10, 2, 100)
+      const writing = saving(now())
+      m.gpu = writing ? clamp(m.gpu - 12, 4, 40) : clamp(m.gpu + (rnd() - 0.5) * 10, 2, 100)
       m.vram = clamp(m.vram + (rnd() - 0.5) * 3, 2, 100)
-      m.cpu = clamp(m.cpu + (rnd() - 0.5) * 7, 1, 100)
+      m.cpu = writing ? clamp(m.cpu + 9, 1, 98) : clamp(m.cpu + (rnd() - 0.5) * 7, 1, 100)
       m.temp = clamp(m.temp + (rnd() - 0.5) * 2.5, 34, 92)
       m.rx = clamp(m.rx + (rnd() - 0.5) * 14, 0, 120)
       m.tx = clamp(m.tx + (rnd() - 0.5) * 14, 0, 120)
+      m.ram = clamp(m.ram + (rnd() - 0.5) * 2, 10, 96)
+      m.disk = clamp(m.disk + rnd() * 0.05, 5, 99)
+      m.loss = clamp(m.loss - rnd() * 0.0004, 0.6, 3)
+      m.toks = writing ? m.toks * 0.12 : clamp(1.4e6 + (rnd() - 0.5) * 6e4, 1e5, 2e6)
     }
     const start = cursors[c.id] ?? 0
     const slice = list.slice(start, start + SLICE)

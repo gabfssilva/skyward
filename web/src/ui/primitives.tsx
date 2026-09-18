@@ -2,48 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { useLocation } from 'react-router-dom'
 import { Icon, type IconName } from './icons'
 import { clamp, legendOf, tally } from '../state/model'
+import type { Kind } from '../state/model'
 import { useFunctionLabel } from '../state/store'
-
-export function Btn({
-  children,
-  icon,
-  variant,
-  size,
-  disabled,
-  onClick,
-}: {
-  children?: ReactNode
-  icon?: IconName
-  variant?: 'primary' | 'ghost' | 'danger'
-  size?: 'sm'
-  disabled?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <button className={['btn', variant, size].filter(Boolean).join(' ')} disabled={disabled} onClick={onClick}>
-      {icon ? <Icon name={icon} /> : null}
-      {children}
-    </button>
-  )
-}
-
-export function IconBtn({
-  icon,
-  title,
-  pressed,
-  onClick,
-}: {
-  icon: IconName
-  title?: string
-  pressed?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <button className="iconbtn" title={title} aria-label={title} aria-pressed={pressed} onClick={onClick}>
-      <Icon name={icon} />
-    </button>
-  )
-}
 
 export function Pill({ state }: { state: string }) {
   return (
@@ -82,42 +42,51 @@ export function Pick<T extends string>({
   )
 }
 
-export function Card({ children, tight }: { children: ReactNode; tight?: boolean }) {
-  return <div className={tight ? 'card tight' : 'card'}>{children}</div>
-}
-
-export function Kv({ k, v }: { k: ReactNode; v: ReactNode }) {
-  return (
-    <div className="kv">
-      <span className="sub">{k}</span>
-      <span>{v}</span>
-    </div>
-  )
-}
-
 /** A task's function: its name and the version the task ran, or the head of the sha the task actually carries. */
-export function Fn({ sha, size, weight }: { sha: string; size?: number; weight?: number }) {
+export function Fn({ sha }: { sha: string }) {
   const fn = useFunctionLabel(sha)
   return (
-    <b className={fn.mono ? 'mono' : undefined} style={{ fontSize: size, fontWeight: weight ?? 600 }}>
+    <b className={fn.mono ? 'mono' : undefined} style={{ fontWeight: 600 }}>
       {fn.text}
-      {fn.version ? <span className="faint mono" style={{ fontWeight: 400, fontSize: '0.85em' }}> v{fn.version}</span> : null}
+      {fn.version ? <span className="v">v{fn.version}</span> : null}
     </b>
   )
 }
 
-export function Legend({ states }: { states: readonly string[] }) {
+/**
+ * The box an element ended up with, watched rather than measured once.
+ *
+ * Hives that are meant to be compared share one cell size, and that size comes from the box the
+ * layout gave them — which the CSS decides, at a width the component cannot know. The element is
+ * held in state rather than in a ref: what is being measured usually arrives with the data, a
+ * render or two after the page did.
+ */
+export function useMeasure<T extends HTMLElement>(): [(node: T | null) => void, { w: number; h: number }] {
+  const [at, setAt] = useState<T | null>(null)
+  const [box, setBox] = useState({ w: 0, h: 0 })
+  useLayoutEffect(() => {
+    if (!at) return
+    const fit = () => setBox({ w: at.clientWidth, h: at.clientHeight })
+    fit()
+    const watch = new ResizeObserver(fit)
+    watch.observe(at)
+    return () => watch.disconnect()
+  }, [at])
+  return [setAt, box]
+}
+
+export function Legend({ states, omit = [] }: { states: readonly string[]; omit?: readonly Kind[] }) {
   const t = tally(states)
   const legend = legendOf(states)
   return (
-    <div className="legend">
-      {legend.filter(([k]) => t[k]).map(([k, label, token]) => (
+    <>
+      {legend.filter(([k]) => t[k] && !omit.includes(k)).map(([k, label, token]) => (
         <span key={k}>
           <i style={{ background: `var(${token})` }} />
           <b>{t[k]}</b> {label}
         </span>
       ))}
-    </div>
+    </>
   )
 }
 

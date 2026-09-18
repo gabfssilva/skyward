@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 const COMPUTE = '/computes/cmp_7f31ab'
 
-const ROUTES = ['/', '/tasks', '/tasks/tk_9d21c4', '/functions', '/activity', '/market', '/providers', COMPUTE, `${COMPUTE}/nodes/0`] as const
+const ROUTES = ['/', '/tasks', '/tasks/tk_9d21c4', '/activity', '/market', '/market/accounts', COMPUTE, `${COMPUTE}/nodes/0`] as const
 
 /** A phone, an iPad standing and lying down, desktops, and a pixel either side of every width the layout turns at. */
 const SCREENS = [
@@ -25,11 +25,29 @@ const IPAD = { viewport: { width: 820, height: 1180 }, hasTouch: true }
 const IPAD_LANDSCAPE = { viewport: { width: 1180, height: 820 }, hasTouch: true }
 const DESKTOP = { viewport: { width: 1440, height: 900 }, hasTouch: false }
 
+/** Every sheet, and what opens it now that a destructive action lives in the page's menu. */
 const SHEETS: readonly (readonly [string, string, (page: Page) => Promise<void>])[] = [
   ['wizard', '/', (page) => page.getByRole('button', { name: 'New compute' }).first().click()],
   ['run', COMPUTE, (page) => page.getByRole('button', { name: 'Run', exact: true }).first().click()],
-  ['confirm', COMPUTE, (page) => page.getByRole('button', { name: 'Delete', exact: true }).first().click()],
-  ['write', '/functions', (page) => page.getByRole('button', { name: 'New function' }).first().click()],
+  [
+    'confirm',
+    COMPUTE,
+    async (page) => {
+      await page.getByRole('button', { name: 'More actions' }).first().click()
+      await page.getByRole('menuitem', { name: 'Delete compute' }).click()
+    },
+  ],
+  [
+    'write',
+    '/tasks',
+    async (page) => {
+      /* the function list is a phone's page head instead of a column, so New function is in its menu there */
+      const listed = page.getByRole('button', { name: 'New function' }).first()
+      if (await listed.isVisible()) return listed.click()
+      await page.getByRole('button', { name: 'More actions' }).first().click()
+      await page.getByRole('menuitem', { name: 'New function' }).click()
+    },
+  ],
   ['palette', '/', (page) => page.getByRole('button', { name: 'Search', exact: true }).click()],
 ]
 
@@ -66,18 +84,86 @@ for (const screen of SCREENS) {
   })
 }
 
+test.describe('every width', () => {
+  test.use(DESKTOP)
+
+  test('a page opens on its head: where it is, what it is called, and what can be done to it', async ({ page }) => {
+    await open(page, COMPUTE)
+    await expect(page.locator('#stage .head .title')).toHaveText(/llama-3-sft/)
+    await expect(page.locator('#stage .head .facts')).toContainText('64 nodes')
+    await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeVisible()
+
+    await open(page, `${COMPUTE}/nodes/0`)
+    await expect(page.locator('#stage .head .crumb')).toHaveText(/llama-3-sft/)
+    await expect(page.locator('#stage .head .title')).toHaveText('rank 0')
+  })
+
+  test('the pages under a bar item carry no title of their own', async ({ page }) => {
+    for (const path of ['/', '/tasks', '/activity', '/market']) {
+      await open(page, path)
+      await expect(page.locator('#stage .head .title'), path).toHaveCount(0)
+    }
+  })
+
+  test("a compute's logs and events read in the order they happened", async ({ page }) => {
+    await open(page, COMPUTE)
+    const card = page.locator('#stage section.card').last()
+    /* the example fleet prints a line or so a second, and the order is only a question once there are a few */
+    await expect(card.locator('.logline').nth(2)).toBeVisible({ timeout: 15_000 })
+    /* read rather than rendered: a window this long skips what is off screen, and skipped text comes back empty */
+    const stamps = await card.locator('.logline > span:first-child').evaluateAll((all) => all.map((at) => at.textContent ?? ''))
+    expect(stamps.length).toBeGreaterThan(1)
+    expect([...stamps].sort()).toEqual(stamps)
+
+    await page.getByRole('tab', { name: /^Events/ }).click()
+    const said = await card.locator('.evline > span:first-child').evaluateAll((all) => all.map((at) => at.textContent ?? ''))
+    expect(said.length).toBeGreaterThan(1)
+    expect([...said].sort()).toEqual(said)
+  })
+
+  test('tasks and functions are one page: every task until a function is picked', async ({ page }) => {
+    await open(page, '/tasks')
+    await expect(page.locator('.fnlist .fn[aria-selected="true"]')).toHaveText(/All functions/)
+    await expect(page.locator('table.tasklist thead th').first()).toHaveText('Function')
+
+    await page.locator('.fnlist .fn', { hasText: 'evaluate' }).click()
+    await expect(page.locator('table.tasklist thead th').first()).toHaveText('State')
+    await expect(page.locator('.feed .facts')).toContainText('tasks')
+  })
+
+  test('the market holds the provider accounts, and an old link to them still lands', async ({ page }) => {
+    await open(page, '/market')
+    await page.getByRole('tab', { name: /^Accounts/ }).click()
+    await expect(page).toHaveURL(/\/market\/accounts$/)
+    await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible()
+
+    await page.goto('/providers')
+    await expect(page).toHaveURL(/\/market\/accounts$/)
+    await page.goto('/functions')
+    await expect(page).toHaveURL(/\/tasks$/)
+  })
+
+  test('every metric the nodes measure is drawn against a scale the page owns', async ({ page }) => {
+    await open(page, COMPUTE)
+    const metrics = page.locator('#stage section.card', { has: page.getByText('Metrics') })
+    await expect(metrics.locator('.mrow')).toHaveCount(3)
+    await expect(metrics.locator('.chart')).toHaveCount(10)
+    await expect(metrics.locator('.chart', { hasText: 'Memory' }).first()).toContainText('of 640 GB')
+    await metrics.getByRole('button', { name: '15m' }).click()
+    await expect(metrics.locator('.plot svg').first()).toBeVisible()
+  })
+})
+
 test.describe('phone', () => {
   test.use(PHONE)
 
-  test('the nav is a bar at the bottom, without Providers, which the market links to', async ({ page }) => {
+  test('the nav is a bar at the bottom with four items', async ({ page }) => {
     await open(page, '/market')
     const nav = await page.locator('#nav').boundingBox()
     expect(nav).not.toBeNull()
     expect(Math.round((nav?.y ?? 0) + (nav?.height ?? 0))).toBe(844)
-    await expect(page.getByRole('tab', { name: 'Tasks' })).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Providers' })).toBeHidden()
-    await page.getByRole('button', { name: 'Provider accounts' }).click()
-    await expect(page).toHaveURL(/\/providers$/)
+    await expect(page.locator('#nav').getByRole('tab')).toHaveCount(4)
+    await expect(page.locator('#nav').getByRole('tab', { name: 'Market' })).toHaveAttribute('aria-selected', 'true')
   })
 
   test('the nav steps aside while a field is being typed in', async ({ page }) => {
@@ -88,15 +174,25 @@ test.describe('phone', () => {
     await expect(page.locator('#nav')).toBeVisible()
   })
 
-  test('tasks and functions are cards, and the market scrolls inside its card', async ({ page }) => {
+  test('the task list is a card per row, the function list a select, and the market scrolls in its card', async ({ page }) => {
     await open(page, '/tasks')
     await expect(page.locator('table.tasklist thead')).toBeHidden()
     expect(await page.locator('table.tasklist tbody tr').first().evaluate((tr) => getComputedStyle(tr).display)).toBe('grid')
+    await expect(page.locator('.fnlist')).toHaveCount(0)
+    await expect(page.locator('.picker select')).toBeVisible()
 
     await open(page, '/market')
     const offers = page.getByRole('region', { name: 'Offers' })
     expect(await offers.evaluate((box) => box.scrollWidth > box.clientWidth)).toBe(true)
     expect(await offers.locator('td').first().evaluate((td) => getComputedStyle(td).position)).toBe('sticky')
+  })
+
+  test('a page keeps one primary action, with the rest in a menu', async ({ page }) => {
+    await open(page, COMPUTE)
+    await expect(page.locator('.head .acts .btn')).toHaveCount(2)
+    await page.getByRole('button', { name: 'More actions' }).click()
+    await expect(page.getByRole('menuitem', { name: 'Scale' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Delete compute' })).toBeVisible()
   })
 
   test('a form sheet takes the screen, and closes on Escape', async ({ page }) => {
@@ -111,7 +207,7 @@ test.describe('phone', () => {
 
   test('a finger gets 44px targets and 16px fields', async ({ page }) => {
     await open(page, COMPUTE)
-    const target = await page.locator('.btn.sm').first().evaluate((btn) => getComputedStyle(btn, '::after').height)
+    const target = await page.locator('.btn').first().evaluate((btn) => getComputedStyle(btn, '::after').height)
     expect(parseFloat(target)).toBeGreaterThanOrEqual(44)
     await open(page, '/activity')
     expect(await page.getByPlaceholder('filter lines').evaluate((input) => getComputedStyle(input).fontSize)).toBe('16px')
@@ -119,10 +215,9 @@ test.describe('phone', () => {
 
   test('a tap shows a tooltip, and a tap elsewhere takes it away', async ({ page }) => {
     await open(page, `${COMPUTE}/nodes/0`)
-    await page.locator('.mcard [data-tip]').last().tap()
+    await page.locator('.slothive [data-tip]').first().tap()
     await expect(page.locator('#tip')).toBeVisible()
-    await expect(page.locator('#tip')).toHaveText(/ago/)
-    await page.locator('.mcard').first().getByText('GPU').tap()
+    await page.locator('.bar .brand').tap()
     await expect(page.locator('#tip')).toBeHidden()
   })
 })
@@ -130,13 +225,12 @@ test.describe('phone', () => {
 test.describe('ipad', () => {
   test.use(IPAD)
 
-  test('the nav keeps its icons, named for a screen reader, and the inspector drops below', async ({ page }) => {
+  test('the nav keeps its icons, named for a screen reader, and the page runs the width', async ({ page }) => {
     await open(page, '/tasks')
-    await expect(page.getByRole('tab', { name: 'Providers' })).toBeVisible()
     await expect(page.locator('#nav span').first()).toBeHidden()
+    await expect(page.getByRole('tab', { name: 'Activity' })).toBeVisible()
     const stage = await page.locator('#stage').boundingBox()
-    const inspector = await page.locator('#inspector').boundingBox()
-    expect((inspector?.y ?? 0) >= (stage?.y ?? 0) + (stage?.height ?? 0)).toBe(true)
+    expect(Math.round(stage?.width ?? 0)).toBe(820 - 32)
   })
 
   test('a form sheet stays open on a click outside it, and the palette does not', async ({ page }) => {
@@ -179,23 +273,17 @@ test.describe('ipad lying down', () => {
 test.describe('desktop', () => {
   test.use(DESKTOP)
 
-  test('the nav carries its labels, and the inspector sits beside the stage', async ({ page }) => {
+  test('the nav carries its labels', async ({ page }) => {
     await open(page, '/tasks')
     await expect(page.locator('#nav span').first()).toBeVisible()
-    const stage = await page.locator('#stage').boundingBox()
-    const inspector = await page.locator('#inspector').boundingBox()
-    expect((inspector?.x ?? 0) >= (stage?.x ?? 0) + (stage?.width ?? 0)).toBe(true)
   })
 
   test('on a wide screen the content keeps to its measure, centred', async ({ page }) => {
     await page.setViewportSize({ width: 1920, height: 1080 })
     await open(page, '/tasks')
     const stage = await page.locator('#stage').boundingBox()
-    const inspector = await page.locator('#inspector').boundingBox()
-    const left = stage?.x ?? 0
-    const right = (inspector?.x ?? 0) + (inspector?.width ?? 0)
-    expect(Math.round(right - left)).toBe(1280)
-    expect(Math.round(left)).toBe(Math.round(1920 - right))
+    expect(Math.round(stage?.width ?? 0)).toBe(1280)
+    expect(Math.round(stage?.x ?? 0)).toBe(Math.round(1920 - (stage?.x ?? 0) - (stage?.width ?? 0)))
   })
 
   test('a pointer resting on a hex shows its tooltip', async ({ page }) => {
@@ -203,5 +291,13 @@ test.describe('desktop', () => {
     await page.locator('.hx[data-tip]').first().hover()
     await expect(page.locator('#tip')).toBeVisible()
     await expect(page.locator('#tip')).toHaveText(/rank/)
+  })
+
+  test('every compute on the home is drawn at the same cell size, so 284 nodes take more room than 64', async ({ page }) => {
+    await open(page, '/')
+    const boxes = await page.locator('.tile .comb svg').evaluateAll((all) => all.map((svg) => svg.getBoundingClientRect().width))
+    expect(boxes.length).toBe(4)
+    expect(boxes[0]).toBeLessThan(boxes[1])
+    expect(boxes[3]).toBeLessThan(boxes[2])
   })
 })
