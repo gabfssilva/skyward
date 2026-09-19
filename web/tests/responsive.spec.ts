@@ -300,4 +300,14 @@ test.describe('desktop', () => {
     expect(boxes[0]).toBeLessThan(boxes[1])
     expect(boxes[3]).toBeLessThan(boxes[2])
   })
+
+  test('a compute that holds no machine is a row beside the tiles, not a tile kept empty', async ({ page }) => {
+    await open(page, '/')
+    await expect(page.locator('.tile')).toHaveCount(4)
+    const row = page.locator('.nomach tbody tr')
+    await expect(row).toHaveCount(1)
+    await expect(row).toContainText('nightly-eval')
+    await row.click()
+    await expect(page).toHaveURL(/\/computes\/cmp_c40a9e/)
+  })
 })

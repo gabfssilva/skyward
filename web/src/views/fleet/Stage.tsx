@@ -9,6 +9,7 @@ import { Empty, Pill, useMeasure } from '../../ui/primitives'
 import { openWizard } from '../../sheets'
 import { Attention } from './Attention'
 import { History } from './History'
+import { NoMachines } from './NoMachines'
 
 /** Where the offers say the machines come from: one kind, or all of the kinds the specs allow. */
 const providersOf = (c: Compute): string => [...new Set(c.spec.specs.map((s) => s.provider.kind))].join(', ') || '—'
@@ -16,9 +17,10 @@ const providersOf = (c: Compute): string => [...new Set(c.spec.specs.map((s) => 
 /**
  * The home, in the order the questions come: what is it costing me, what is wrong, what is running, what has ended.
  *
- * Every compute is one tile, and every tile draws its hive at the same cell size — so 284 nodes take up more of
- * the page than 64, and a compute of one node is one small hexagon. A drawing that scaled each compute to fit
- * its own box made the smallest compute the largest thing on the screen.
+ * Every compute that holds a machine is one tile, and every tile draws its hive at the same cell size — so 284
+ * nodes take up more of the page than 64, and a compute of one node is one small hexagon. A drawing that scaled
+ * each compute to fit its own box made the smallest compute the largest thing on the screen. A compute that holds
+ * none has nothing to draw, and is a row of ``NoMachines`` in what the tiles left of the line.
  */
 export function Stage() {
   const navigate = useNavigate()
@@ -44,8 +46,10 @@ export function Stage() {
 
   const tiles = computes
     .map((c) => ({ c, nodes: nodesByCompute[c.id] ?? [], rate: rateOf(nodesByCompute[c.id] ?? []) }))
+    .filter((t) => t.nodes.length)
     .sort((a, b) => b.rate - a.rate)
-  const size = w > 0 ? scaleFor(tiles.map((t) => Math.max(1, t.nodes.length)), w, h) : 0
+  const bare = computes.filter((c) => !(nodesByCompute[c.id] ?? []).length)
+  const size = w > 0 ? scaleFor(tiles.map((t) => t.nodes.length), w, h) : 0
 
   return (
     <>
@@ -93,7 +97,7 @@ export function Stage() {
             {tiles.map(({ c, nodes, rate: hourly }, i) => (
               <button key={c.id} className="card tile" onClick={() => navigate(`/computes/${c.id}`)}>
                 <span className="hv" ref={i === 0 ? box : undefined}>
-                  {size > 0 && nodes.length ? (
+                  {size > 0 ? (
                     <Hive cells={nodeCells(c, nodes, readings, progress)} computeId={c.id} size={size} label={`${nodes.length} nodes of ${c.name ?? c.id}`} />
                   ) : null}
                 </span>
@@ -104,7 +108,7 @@ export function Stage() {
                   </span>
                 </span>
                 <span className="shape">
-                  {nodes.length || c.spec.nodes.initial} × {machineOf(c)} on {providersOf(c)}
+                  {nodes.length} × {machineOf(c)} on {providersOf(c)}
                 </span>
                 <span className="tf">
                   <span>
@@ -115,6 +119,7 @@ export function Stage() {
                 </span>
               </button>
             ))}
+            {bare.length ? <NoMachines computes={bare} /> : null}
           </div>
         </>
       ) : (

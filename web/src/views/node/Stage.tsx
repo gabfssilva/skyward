@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { Compute, Node, Task } from '../../api/client'
 import { useStore, computeById, isLive, useLogs } from '../../state/store'
-import { busyOf, dur, execsOf, holderOf, holdersOf, hiveSize, machineOf, money, ms, nodeHeld, slotsOf } from '../../state/model'
+import { dur, execsOf, holderOf, holdersOf, hiveSize, machineOf, money, ms, nodeHeld, slotsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
 import { Fn, Pill, TableScroll } from '../../ui/primitives'
 import { Hive, Slots } from '../../ui/comb'
@@ -109,9 +109,9 @@ export function Stage() {
               <span className="h" style={{ width: 44 }}>
                 Slots
               </span>
-              <Slots slots={slots} busy={busyOf(tasks, nodes, n.rank)} />
+              <Slots slots={slots} busy={n.busy} />
               <span className="sub">
-                {busyOf(tasks, nodes, n.rank)} of {slots} busy, {c.spec.worker?.executor ?? 'thread'} × {slots}
+                {n.busy} of {slots} busy, {c.spec.worker?.executor ?? 'thread'} × {slots}
               </span>
             </div>
             <div className="row" style={{ gap: 16, justifyContent: 'flex-end' }}>

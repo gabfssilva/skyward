@@ -453,10 +453,6 @@ export const dateOf = (ms: number): string => new Date(ms).toLocaleDateString('e
 /** Worker slots per node: the executor's concurrency, one when unset. */
 export const slotsOf = (c: Compute): number => Math.max(1, c.spec.worker?.concurrency ?? 1)
 
-/** How many executions are running on one rank right now. */
-export const busyOf = (tasks: readonly Task[], nodes: readonly Node[], rank: number): number =>
-  tasks.filter((t) => t.state === 'running').reduce((s, t) => s + execsOf(t, nodes).filter((e) => e.rank === rank && e.state === 'started').length, 0)
-
 /** What one accelerator-hour costs on an offer: the spot price when there is one, else on demand. */
 export const offerPerGpu = (o: Offer): number => (o.spot_price ?? o.on_demand_price ?? o.price ?? 0) / Math.max(1, o.accelerator_count)
 

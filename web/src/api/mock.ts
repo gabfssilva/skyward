@@ -497,6 +497,7 @@ const C3 = 'cmp_2b90de'
 const C4 = 'cmp_51c7aa'
 const C5 = 'cmp_18de44'
 const C6 = 'cmp_e3b71f'
+const C7 = 'cmp_c40a9e'
 
 const nodes: Record<string, Node[]> = {
   [C1]: fleet(C1, 64, { base: 91, net: '10.0.4', mach: 'i-0a91f3c2b', accelerator: 'h100', count: 8, price: 31.46, market: 'spot' }, {
@@ -651,6 +652,25 @@ const computes: Omit<Compute, 'tasks'>[] = [
     1,
     ready(C4),
     19,
+  ),
+  mkCompute(
+    C7,
+    'nightly-eval',
+    'ready',
+    3,
+    2.6e7,
+    computeSpec({
+      allocation: 'spot_if_available',
+      delete_on_exit: false,
+      nodes: { initial: 0, min: 0, max: 8 },
+      specs: [spec('runpod', 'l40s', 1, 16, 64, 'us-or-1')],
+      image: image(null, ['lm-eval']),
+      worker: worker('thread', 2),
+      plugins: [],
+    }),
+    0,
+    0,
+    33,
   ),
 ]
 

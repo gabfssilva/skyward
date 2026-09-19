@@ -22,7 +22,7 @@ const accelOf = (c: Compute): string => boundOf(c)?.accelerator ?? '—'
  * sells it as, else what it was asked to have. A provider whose instance type *is* the accelerator —
  * runpod sells an A10G as ``A10G`` — would only say it twice.
  */
-const hardwareOf = (c: Compute): { text: string; code: boolean } => {
+export const hardwareOf = (c: Compute): { text: string; code: boolean } => {
   const s = c.spec.specs[0]
   const instance = boundOf(c)?.instance
   if (instance && instance.replace(/[\s-]/g, '').toLowerCase() !== machineOf(c).replace(/[\s-]/g, '').toLowerCase()) return { text: instance, code: true }
@@ -32,14 +32,14 @@ const hardwareOf = (c: Compute): { text: string; code: boolean } => {
 }
 
 /** The floor and the ceiling a compute was held to, where they were not simply the size it opened at. */
-const boundsOf = (c: Compute): string => {
+export const boundsOf = (c: Compute): string => {
   const b = c.spec.nodes
   const floor = b.min ?? b.initial
   return b.max ? `elastic ${floor} to ${b.max}` : floor !== b.initial ? `floor ${floor}` : ''
 }
 
 /** What went wrong with the calls, worst first — nothing where nothing did. */
-const outcomeOf = (c: Compute): string =>
+export const outcomeOf = (c: Compute): string =>
   [failedOf(c) ? `${failedOf(c)} failed` : null, c.tasks.cancelled ? `${c.tasks.cancelled} cancelled` : null, c.tasks.indeterminate ? `${c.tasks.indeterminate} unknown` : null]
     .filter(Boolean)
     .join(', ')

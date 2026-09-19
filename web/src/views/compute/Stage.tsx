@@ -8,13 +8,11 @@ import {
   acceleratedOf,
   ago,
   boundOf,
-  busyOf,
   byState,
   callsOf,
   dateOf,
   dur,
   endedAt,
-  execsOf,
   failedOf,
   finishedOf,
   machineOf,
@@ -298,11 +296,10 @@ function LiveFigures({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; 
   const spent = useStore((s) => spentOf(s, c)) ?? 0
   const ready = readyOf(nodes)
   const slots = slotsOf(c)
-  const busy = ready.reduce((sum, n) => sum + busyOf(tasks, nodes, n.rank), 0)
+  const busy = ready.reduce((sum, n) => sum + n.busy, 0)
   const accelerated = acceleratedOf(c)
   const idle = loadByRank(c, nodes, readings).filter((x) => x.load < 25)
   const running = tasks.filter((t) => t.state === 'running')
-  const inflight = running.reduce((sum, t) => sum + execsOf(t, nodes).filter((e) => e.state === 'started').length, 0)
   const named = (t: Task) => t.function.name ?? functions[t.function.sha256]?.name ?? t.function.sha256.slice(0, 8)
   const latest = (states: readonly Task['state'][]) => tasks.filter((t) => states.includes(t.state)).sort((a, b) => ms(b.finished_at) - ms(a.finished_at))[0]
   const done = latest(['succeeded'])
@@ -340,7 +337,7 @@ function LiveFigures({ c, nodes, tasks }: { c: Compute; nodes: readonly Node[]; 
         <Fig value={idle.length} label={`idle, under 25% ${accelerated ? 'accelerator' : 'CPU'}`} />
       </Group>
       <Group label="Work">
-        <Fig value={inflight} label={running.length ? `in flight, ${[...new Set(running.map(named))].join(', ')}` : 'in flight'} />
+        <Fig value={c.tasks.running} label={running.length ? `in flight, ${[...new Set(running.map(named))].join(', ')}` : 'in flight'} />
         <Fig value={c.tasks.succeeded} label={done ? `done, last ${ago(ms(done.finished_at))}` : 'done'} />
         <Fig value={failed} label="errors" />
       </Group>
