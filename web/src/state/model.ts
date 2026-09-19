@@ -7,6 +7,35 @@ export const median = (a: readonly number[]): number => {
   return s.length ? s[Math.floor(s.length / 2)]! : 0
 }
 
+/** The statistic a chart collapses a group of readings with. */
+export type Agg = 'mean' | 'median' | 'p90' | 'min' | 'max'
+
+export const AGGS: readonly (readonly [Agg, string])[] = [
+  ['mean', 'mean'],
+  ['median', 'median'],
+  ['p90', 'p90'],
+  ['min', 'min'],
+  ['max', 'max'],
+]
+
+/** The q-quantile, interpolated between the two ranks that bracket it. */
+export const quantile = (a: readonly number[], q: number): number => {
+  if (!a.length) return 0
+  const s = a.slice().sort((x, y) => x - y)
+  const pos = (s.length - 1) * q
+  const lo = Math.floor(pos)
+  return s[lo]! + (s[Math.ceil(pos)]! - s[lo]!) * (pos - lo)
+}
+
+/** A group of readings collapsed to one by the given statistic. */
+export const reduce = (a: readonly number[], agg: Agg): number => {
+  if (!a.length) return 0
+  if (agg === 'mean') return mean(a)
+  if (agg === 'median') return median(a)
+  if (agg === 'p90') return quantile(a, 0.9)
+  return agg === 'min' ? Math.min(...a) : Math.max(...a)
+}
+
 /* ---------- what a node measures ---------- */
 
 /**

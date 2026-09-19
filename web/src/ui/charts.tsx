@@ -1,4 +1,5 @@
 import { clamp } from '../state/model'
+import { valueAt } from '../state/metrics'
 import type { Marks } from '../state/metrics'
 
 /**
@@ -8,16 +9,31 @@ import type { Marks } from '../state/metrics'
  * the same column in utilisation, power, CPU and whatever the image measures of its own. The scale
  * is the gauge's, not the data's: a percentage is drawn 0 to 100 and a memory against its capacity,
  * so the same chart at two moments is the same picture.
+ *
+ * A moment the page is holding — ``at``, reported by the pointer — stands as a crosshair snapped to
+ * the nearest point of the line, and the move of that pointer is what the page scrubs with.
  */
-export function Plot({ marks, axis, w = 240, h = 58 }: { marks: Marks; axis: readonly [number, number]; w?: number; h?: number }) {
+export function Plot({ marks, axis, w = 240, h = 58, at, onScrub }: { marks: Marks; axis: readonly [number, number]; w?: number; h?: number; at?: number | null; onScrub?: (at: number | null) => void }) {
   const [from, to] = axis
   const [lo, hi] = marks.scale
-  const X = (at: number) => clamp((at - from) / Math.max(1, to - from), 0, 1) * (w - 2)
+  const X = (t: number) => clamp((t - from) / Math.max(1, to - from), 0, 1) * (w - 2)
   const Y = (v: number) => h - 1.5 - (clamp((v - lo) / Math.max(1e-9, hi - lo), 0, 1) * (h - 4))
   const path = (points: readonly (readonly [number, number])[]): string => 'M' + points.map(([at, v]) => `${X(at).toFixed(1)},${Y(v).toFixed(1)}`).join(' L')
   const last = marks.line[marks.line.length - 1]
+  const snap = at !== null && at !== undefined ? valueAt(marks, at) : null
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto' }} aria-hidden="true">
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ width: '100%', height: 'auto', cursor: onScrub ? 'crosshair' : undefined }}
+      aria-hidden="true"
+      onPointerMove={(e) => {
+        if (!onScrub) return
+        const rect = e.currentTarget.getBoundingClientRect()
+        const x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * w
+        onScrub(from + Math.max(0, Math.min(1, x / (w - 2))) * (to - from))
+      }}
+      onPointerLeave={() => onScrub?.(null)}
+    >
       <line x1="0" x2={w} y1="0.5" y2="0.5" stroke="var(--line)" />
       <line x1="0" x2={w} y1={h - 0.5} y2={h - 0.5} stroke="var(--line-2)" />
       {marks.band && marks.band.length > 1 ? (
@@ -37,7 +53,9 @@ export function Plot({ marks, axis, w = 240, h = 58 }: { marks: Marks; axis: rea
       {marks.line.length > 1 ? (
         <path d={path(marks.line)} fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       ) : null}
+      {snap ? <line x1={X(snap[0]).toFixed(1)} x2={X(snap[0]).toFixed(1)} y1={0} y2={h} stroke="var(--ink)" strokeOpacity=".55" vectorEffect="non-scaling-stroke" /> : null}
       {last ? <circle cx={X(last[0]).toFixed(1)} cy={Y(last[1]).toFixed(1)} r="2.4" fill="var(--accent)" /> : null}
+      {snap ? <circle cx={X(snap[0]).toFixed(1)} cy={Y(snap[1]).toFixed(1)} r="2.6" fill="var(--accent)" stroke="var(--panel)" strokeWidth="1.2" /> : null}
     </svg>
   )
 }

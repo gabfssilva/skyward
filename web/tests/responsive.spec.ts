@@ -311,3 +311,36 @@ test.describe('desktop', () => {
     await expect(page).toHaveURL(/\/computes\/cmp_c40a9e/)
   })
 })
+
+test.describe('metrics', () => {
+  test.use(DESKTOP)
+
+  test('a window can be typed, and the chips let go of it', async ({ page }) => {
+    await open(page, COMPUTE)
+    const metrics = page.locator('#stage section.card', { has: page.getByText('Metrics') })
+    await expect(metrics.getByRole('button', { name: '1h', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await metrics.getByPlaceholder('30m').fill('30m')
+    await expect(metrics.getByPlaceholder('30m')).toHaveValue('30m')
+    await expect(metrics.getByRole('button', { name: '1h', exact: true })).toHaveAttribute('aria-selected', 'false')
+  })
+
+  test('a statistic is picked on the card, and it reads the charts', async ({ page }) => {
+    await open(page, COMPUTE)
+    const metrics = page.locator('#stage section.card', { has: page.getByText('Metrics') })
+    await metrics.getByRole('button', { name: 'p90', exact: true }).click()
+    await expect(metrics.getByRole('button', { name: 'p90', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(metrics.locator('.sub').first()).toContainText('p90 across')
+  })
+
+  test('a moment is read by moving across a plot, and it goes back', async ({ page }) => {
+    await open(page, COMPUTE)
+    const metrics = page.locator('#stage section.card', { has: page.getByText('Metrics') })
+    const memory = metrics.locator('.chart', { hasText: 'Memory' }).first()
+    const note = memory.locator('.val .r')
+    await expect(note).toHaveText('of 640 GB')
+    await memory.locator('.plot svg').hover()
+    await expect(note).toContainText(/\d{2}:\d{2}:\d{2}/)
+    await memory.locator('.l').hover()
+    await expect(note).toHaveText('of 640 GB')
+  })
+})

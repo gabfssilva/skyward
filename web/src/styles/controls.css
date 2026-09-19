@@ -39,6 +39,9 @@
 .pick{display:inline-flex;flex-wrap:wrap;gap:2px;background:var(--sunk);border-radius:10px;padding:2px;font-size:12.5px}
 .pick button{color:var(--muted);font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap}
 .pick button[aria-selected="true"]{color:var(--ink);background:var(--panel)}
+.pick input{width:7ch;margin:0 4px;padding:4px 8px;background:none;border:0;border-radius:8px;color:var(--ink);font-weight:600;font-size:12.5px}
+.pick input::placeholder{color:var(--faint)}
+.pick input:focus{outline:1px solid var(--accent);outline-offset:-1px}
 .chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--sunk);font-size:12px;font-weight:600;color:var(--muted)}
 .chip[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
