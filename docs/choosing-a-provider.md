@@ -92,7 +92,7 @@ sky.Compute(
 )
 ```
 
-Skyward ranks all offers from both providers by price into a single list. Verda's H100 at $0.80/hr will rank higher than AWS's. If Verda has availability, you get the cheap price. If it doesn't, provisioning fails for that offer, Skyward moves to the next one in the ranked list, and you land on AWS transparently. You don't need to handle the fallback yourself — the daemon tries each offer in the chain until one succeeds.
+Skyward ranks all offers from both providers by price into a single list. Verda's H100 at $0.80/hr will rank higher than AWS's. If Verda has availability, you get the cheap price. If it doesn't, the refused launch moves to the next offer in the ranked list, so you land on AWS without handling the fallback yourself. That freedom lasts while the compute has no machine alive. Once it has one, the rest are bought in the same place and as the same instance, and an offer with no capacity is retried. On AWS, `sky.AWS(multi_subnet=True)` lets later machines be bought elsewhere, and `sky.AWS(heterogeneous_instances=True)` lets them be another instance; the price of the first is a compute whose nodes may end up in different zones or regions, which bills the traffic between them.
 
 ### TensorDock
 

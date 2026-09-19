@@ -20,7 +20,7 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.provider import Binding, Machine
-from skyward.shared.schemas import ComputeCreate, ComputeSpec, Image, Market, NodeBounds, Offer, Page, ProviderRef, Spec, Worker
+from skyward.shared.schemas import Compute, ComputeCreate, ComputeSpec, Image, Market, NodeBounds, Offer, Page, ProviderRef, Spec, Worker
 
 pytestmark = pytest.mark.local
 
@@ -150,14 +150,14 @@ def describe_a_compute_that_asks_for_many_machines() -> None:
 
 
 class Scarce:
-    """One region that never sells, and one that sells exactly once."""
+    """One offer that never sells, and two that sell exactly once: the same type elsewhere, and a bigger type in the same place."""
 
     kind: ClassVar[str] = "scarce"
     credential_fields: ClassVar[tuple[str, ...]] = ()
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=5)
 
     def __init__(self) -> None:
-        self.stock = {"east": 0, "west": 1}
+        self.stock = {EAST.id: 0, BIGGER.id: 1, WEST.id: 1}
         self.selling = asyncio.Event()
 
     @classmethod
@@ -166,23 +166,24 @@ class Scarce:
 
     async def offers(self) -> AsyncIterator[Offer]:
         yield EAST
+        yield BIGGER
         yield WEST
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
-        return {"region": offer.region}
+        return {"region": offer.region, "offer": offer.id}
 
     async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
-        region = str(binding["region"])
-        if self.stock[region] == 0:
+        region, offer = str(binding["region"]), str(binding["offer"])
+        if self.stock[offer] == 0:
             await asyncio.sleep(0)
             raise RuntimeError(f"{region} has no capacity")
-        self.stock[region] -= 1
+        self.stock[offer] -= 1
         self.selling.set()
         await asyncio.sleep(0.05)
-        return Machine(id=f"m-{region}", state="pending", user="root", node=node)
+        return Machine(id=f"m-{offer.removeprefix('scarce-')}", state="pending", user="root", node=node)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         return {}
@@ -212,34 +213,100 @@ EAST = Offer(
     expires_at=datetime.now(UTC) + timedelta(hours=1),
     specific={},
 )
+BIGGER = msgspec.structs.replace(EAST, id="scarce-east-bigger", instance_type="scarce.a100x", spot_price=1.2, on_demand_price=2.2)
 WEST = msgspec.structs.replace(EAST, id="scarce-west", region="west", spot_price=1.5, on_demand_price=2.5)
 
 
-class TwoOffers:
+class ScarceOffers:
     async def list(self, **_: object) -> Page[Offer]:
-        return Page(items=(EAST, WEST))
+        return Page(items=(EAST, BIGGER, WEST))
+
+
+async def bound_east(tmp_path: Path, provider: Scarce, **allowed: bool) -> tuple[Machines, ComputeStore, Compute, Infrastructure]:
+    await connect(tmp_path / "skyward.sqlite")
+    events = EventStore()
+    nodes, blobs = NodeStore(), BlobStore()
+    computes = ComputeStore(events, nodes)
+    machines = Machines(computes, nodes, Providers(provider), ScarceOffers(), blobs, events)  # type: ignore[arg-type]
+
+    spec = ComputeSpec(
+        specs=(Spec(provider=ProviderRef(kind="scarce"), accelerator="a100", accelerator_count=1),),
+        nodes=NodeBounds(initial=2),
+        image=Image(python="3.13"),
+        worker=Worker(concurrency=1, executor="thread"),
+    )
+    compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="given")
+    east = Infrastructure(
+        provider_id="prv_scarce", offer_id=EAST.id, offer=EAST, binding={"region": "east", "offer": EAST.id, **allowed}, private_key=KEY, markets=("spot",)
+    )
+    await computes.bind(compute.id, east)
+    return machines, computes, await computes.get(compute.id), east
+
+
+async def peer(machines: Machines, compute: Compute) -> None:
+    """A machine of the compute already alive where it was bound."""
+    node = await machines._nodes.request(compute.id, compute.generation)
+    await machines._nodes.launched(node.id, Machine(id="m-peer", state="running", user="root", node=node.id), EAST, "spot")
+
+
+def describe_a_node_refused_where_the_compute_was_bound() -> None:
+    def with_a_peer_alive() -> None:
+        async def it_is_refused_rather_than_bought_somewhere_else(tmp_path: Path) -> None:
+            provider = Scarce()
+            machines, computes, compute, east = await bound_east(tmp_path, provider)
+            await peer(machines, compute)
+
+            with pytest.raises(ExceptionGroup) as refused:
+                await machines._place(provider, compute, east, "n1")
+
+            assert [str(failure) for failure in refused.value.exceptions] == ["east has no capacity"]
+            assert provider.stock == {EAST.id: 0, BIGGER.id: 1, WEST.id: 1}
+            assert (await computes.infrastructure(compute.id)).offer_id == EAST.id
+
+        async def it_is_bought_in_another_place_under_a_multi_subnet_binding_and_is_the_same_instance(tmp_path: Path) -> None:
+            provider = Scarce()
+            machines, computes, compute, east = await bound_east(tmp_path, provider, multi_subnet=True)
+            await peer(machines, compute)
+
+            _, machine, _ = await machines._place(provider, compute, east, "n1")
+
+            assert machine.id == "m-west"
+            assert provider.stock[BIGGER.id] == 1, "the cheaper offer is another instance, which this binding did not allow"
+            assert (await computes.infrastructure(compute.id)).offer_id == WEST.id
+
+        async def it_is_bought_as_another_instance_under_a_heterogeneous_binding_and_stays_where_it_is(tmp_path: Path) -> None:
+            provider = Scarce()
+            machines, computes, compute, east = await bound_east(tmp_path, provider, heterogeneous_instances=True)
+            await peer(machines, compute)
+            provider.stock[BIGGER.id] = 0
+
+            with pytest.raises(ExceptionGroup):
+                await machines._place(provider, compute, east, "n1")
+            assert provider.stock[WEST.id] == 1, "the west sells, and it is another place, which this binding did not allow"
+
+            provider.stock[BIGGER.id] = 1
+            _, machine, _ = await machines._place(provider, compute, east, "n1")
+
+            assert machine.id == "m-east-bigger"
+            assert (await computes.infrastructure(compute.id)).offer_id == BIGGER.id
+
+    def with_no_machine_alive() -> None:
+        async def it_is_bought_wherever_sells_because_there_is_no_peer_to_be_apart_from(tmp_path: Path) -> None:
+            provider = Scarce()
+            machines, computes, compute, east = await bound_east(tmp_path, provider)
+
+            _, machine, _ = await machines._place(provider, compute, east, "n1")
+
+            assert machine.id == "m-east-bigger"
+            assert (await computes.infrastructure(compute.id)).offer_id == BIGGER.id
 
 
 def describe_two_nodes_refused_by_the_same_region() -> None:
     async def the_one_that_follows_the_move_does_not_hang_when_it_is_refused_again(tmp_path: Path) -> None:
         """The second node finds the compute already moved, follows it, is refused there too, and must keep walking."""
-        await connect(tmp_path / "skyward.sqlite")
         provider = Scarce()
-        events = EventStore()
-        nodes, blobs = NodeStore(), BlobStore()
-        computes = ComputeStore(events, nodes)
-        machines = Machines(computes, nodes, Providers(provider), TwoOffers(), blobs, events)  # type: ignore[arg-type]
-
-        spec = ComputeSpec(
-            specs=(Spec(provider=ProviderRef(kind="scarce"), accelerator="a100", accelerator_count=1),),
-            nodes=NodeBounds(initial=2),
-            image=Image(python="3.13"),
-            worker=Worker(concurrency=1, executor="thread"),
-        )
-        compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="given")
-        east = Infrastructure(provider_id="prv_scarce", offer_id=EAST.id, offer=EAST, binding={"region": "east"}, private_key=KEY, markets=("spot",))
-        await computes.bind(compute.id, east)
-        compute = await computes.get(compute.id)
+        machines, _, compute, east = await bound_east(tmp_path, provider, multi_subnet=True)
+        provider.stock[BIGGER.id] = 0
 
         async with asyncio.timeout(5):
             first, second = await asyncio.gather(

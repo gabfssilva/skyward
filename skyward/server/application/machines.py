@@ -35,7 +35,7 @@ from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.events import ComputeAdopted, NodeEvent, ProgressEvent, StraysTerminated, progressed
 from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
-from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
+from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, NodeState, Offer, Volume
 from skyward.shared.tls import authority
 from skyward.worker import bootstrap
 
@@ -77,6 +77,9 @@ REFUSED_FIRST = 10.0
 
 REFUSED_MAX = 300.0
 """The longest that wait grows to: it doubles with each further refusal and stops here."""
+
+GONE: frozenset[NodeState] = frozenset({"lost", "deleting", "deleted", "failed"})
+"""The states of a row whose machine is no longer a peer of anything."""
 
 
 class Machines:
@@ -125,7 +128,7 @@ class Machines:
         """
         log = logger.bind(compute_id=compute_id, node_id=node_id)
         if (left := self._refusal(compute_id)) is not None:
-            log.debug("not buying for another {:.0f}s: every market and region refused the last machine", left)
+            log.debug("not buying for another {:.0f}s: the last machine was refused", left)
             return
         compute = await self._computes.get(compute_id)
         node = await self._nodes.get(compute_id, node_id)
@@ -188,24 +191,33 @@ class Machines:
     async def _place(
         self, adapter: Provider, compute: Compute, infrastructure: Infrastructure, node: str
     ) -> tuple[Infrastructure, Machine, Market]:
-        """Buy one machine, and if the bound region will not sell one, find one that will.
+        """Buy one machine where the compute was bound, and elsewhere only as far as its peers allow.
 
-        Two nested fallbacks. Within a region, ``markets`` is tried in order — this is
-        where ``spot_if_available`` becomes liquid, leading with spot and dropping to
-        on-demand for the node whose spot launch the provider refuses. Across regions,
-        when a whole region has no market left that will sell — an exhausted quota, no
-        capacity — the next cheapest offer is bound into its own region and tried there,
-        and the region that refused is released so it does not leak the network it
-        briefly held.
+        Within the binding, ``markets`` is tried in order — this is where
+        ``spot_if_available`` becomes liquid, leading with spot and dropping to
+        on-demand for the node whose spot launch the provider refuses. When none of
+        them sells, the binding gives way to the next cheapest offer that is open to
+        this compute, bound and tried in turn, and the one that refused is released so
+        it does not leak the network it briefly held.
 
-        The region is a decision one refused node makes and the rest inherit. Twenty
+        Which offers are open is a question about the machines alive. They are peers:
+        one bought in another place is traffic billed and a private address that does
+        not answer, and one of another instance is a pool that is no longer uniform. So
+        an offer elsewhere is open only to a binding that says ``multi_subnet``, and an
+        offer of another instance only to one that says ``heterogeneous_instances`` —
+        both the provider's to say, from the account it was given, and a binding that
+        says neither keeps its machines together and alike. A compute with no machine
+        alive has no peer to differ from, and every offer is open to it. With none
+        open, the refusal escapes: :meth:`create` writes it on the compute, waits
+        it out, and the tick offers the row again, in the same place.
+
+        The move is a decision one refused node makes and the rest inherit. Twenty
         nodes refused together are twenty candidates to move the compute, and one
         move is all it needs: the walk is taken under the binding lock, after reading
         the binding back, and a node that finds it already moved lets go of the lock
         and buys where the winner did rather than move it again — and walks itself if
-        that region refuses it too, with every refusal so far still on the list. Only
-        when every region has refused does the compound failure escape, and the tick
-        offers the row again.
+        that offer refuses it too, with every refusal so far still on the list. Only
+        when every offer has refused does the compound failure escape.
         """
         failures: list[Exception] = []
 
@@ -222,8 +234,9 @@ class Machines:
                     continue
 
                 tried = {infrastructure.offer_id}
+                peers = any(peer.machine and peer.state not in GONE for peer in await self._nodes.of(compute.id))
                 for offer in await market.rank(compute.spec, self._offers):
-                    if offer.id in tried:
+                    if offer.id in tried or (peers and not _open(infrastructure.binding, infrastructure.offer, offer)):
                         continue
                     tried.add(offer.id)
 
@@ -239,10 +252,11 @@ class Machines:
                         await self._abandon(adapter, infrastructure)
                         return relocated, machine, sold
                     await self._abandon(adapter, relocated)
+            break
 
-            if not failures:
-                raise CapabilityMismatchError(f"{adapter.kind} was bound with no market to buy on")
-            raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
+        if not failures:
+            raise CapabilityMismatchError(f"{adapter.kind} was bound with no market to buy on")
+        raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
 
     async def _buy(
         self, adapter: Provider, infrastructure: Infrastructure, node: str, failures: list[Exception]
@@ -673,6 +687,15 @@ class Machines:
         self._progress.pop(node.id, None)
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
         await self._events.record(NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why))
+
+
+def _open(binding: Binding, bound: Offer | None, offer: Offer) -> bool:
+    """Whether a compute with machines alive under ``bound`` may buy its next one from ``offer``."""
+    if bound is None:
+        return False
+    same_place = (offer.provider_id, offer.region) == (bound.provider_id, bound.region)
+    same_instance = offer.instance_type == bound.instance_type
+    return (same_place or bool(binding.get("multi_subnet"))) and (same_instance or bool(binding.get("heterogeneous_instances")))
 
 
 def claim(node_id: str) -> str:

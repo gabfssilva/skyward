@@ -136,6 +136,9 @@ class AWS(Provider, frozen=True, kw_only=True):
     disk_gb: int = 100
     instance_timeout: int = 300
     request_timeout: int = 30
+    launch_window: float = 1.0
+    multi_subnet: bool = False
+    heterogeneous_instances: bool = False
     allocation_strategy: Literal["price-capacity-optimized", "capacity-optimized", "lowest-price"] = "price-capacity-optimized"
     exclude_burstable: bool = False
 

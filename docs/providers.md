@@ -115,6 +115,9 @@ sky.AWS(region=["us-east-1", "us-west-2"])
 | `disk_gb` | `int` | `100` | Root volume size in GB. |
 | `instance_timeout` | `int` | `300` | Safety timeout in seconds (auto-shutdown timer). |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+| `launch_window` | `float` | `1.0` | Seconds a launch waits for the others of its compute, so that they are bought as one EC2 Fleet request. |
+| `multi_subnet` | `bool` | `False` | Let the machines of a compute live in different subnets. Unset, the machines alive share one availability zone, picked by the first fleet, and a zone with no capacity is retried. Set, every fleet is offered every subnet, and a refused launch may move on to another region; nodes in different zones pay for the traffic between them and cannot reach each other on a private address. |
+| `heterogeneous_instances` | `bool` | `False` | Let the machines of a compute be different instance types. Unset, the machines alive are all the instance the compute was bound to. Set, a refused launch may move on to the next cheapest instance the spec allows. Neither holds a compute with no machine alive: a refusal then moves it to whatever offer sells. |
 | `allocation_strategy` | `str` | `"price-capacity-optimized"` | EC2 Fleet spot allocation strategy. Also `"capacity-optimized"`, `"lowest-price"`. |
 | `exclude_burstable` | `bool` | `False` | Exclude burstable instances (t3, t4g). |
 
@@ -389,7 +392,7 @@ with sky.Compute(
 
 Verda is a GPU cloud with data centers in Europe and the Middle East. It uses OAuth2 authentication — a client ID and secret, not a single API key.
 
-SSH keys are auto-registered if needed. If the requested GPU isn't available in the configured region, Skyward looks for another region with availability.
+SSH keys are auto-registered if needed. If the requested GPU isn't available in the region the compute was bound to, Skyward looks for another region with availability while the compute has no machine alive. Once it has one, it retries where that machine is.
 
 ### Setup
 
