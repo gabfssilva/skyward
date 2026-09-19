@@ -340,6 +340,10 @@ test.describe('metrics', () => {
     await expect(note).toHaveText('of 640 GB')
     await memory.locator('.plot svg').hover()
     await expect(note).toContainText(/\d{2}:\d{2}:\d{2}/)
+    const showing = await metrics.locator('.chart').evaluateAll((charts) =>
+      charts.filter((c) => /\d{2}:\d{2}:\d{2}/.test(c.querySelector('.val .r')?.textContent ?? '')).length,
+    )
+    expect(showing).toBe(1)
     await memory.locator('.l').hover()
     await expect(note).toHaveText('of 640 GB')
   })

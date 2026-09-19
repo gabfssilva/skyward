@@ -8,6 +8,9 @@ import type { Readings } from '../../state/nodes'
 import { useStore } from '../../state/store'
 import { Plot } from '../../ui/charts'
 
+/** The chart a page is holding a moment on: its key, and the moment. */
+type Scrub = { key: string; at: number }
+
 /** What one node reads for a line now: the live stream where there is one, the newest sample the daemon kept where there is not. */
 const nowOf = (line: Line, computeId: string, n: Node, readings: Readings, feed: Feed | null): number | null => {
   const live = lineValue(line, readings[`${computeId}/${n.rank}`])
@@ -70,8 +73,8 @@ function Chart({
  * A compute's chart is a statistic across its nodes with the band from the lowest to the highest; a
  * node's chart is its own line with that statistic dashed behind it, which is how a machine slower
  * than its peers shows without a list of stragglers. The statistic is picked on the card, the window
- * is picked or typed beside it, and a moment is read by moving across a plot: every chart shares the
- * crosshair, and the number beside each says what it was then. The lines come off the daemon's
+ * is picked or typed beside it, and a moment is read by moving across a plot: the chart under the
+ * pointer reads it, and the others keep on living. The lines come off the daemon's
  * history — ``/v1/computes/{id}/metrics`` — so a page that has just opened already has the window;
  * the numbers beside them come off the live stream.
  */
@@ -79,7 +82,7 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
   const [window, setWindow] = useState<Window>('1h')
   const [draft, setDraft] = useState('')
   const [agg, setAgg] = useState<Agg>('median')
-  const [scrub, setScrub] = useState<number | null>(null)
+  const [scrub, setScrub] = useState<Scrub | null>(null)
   const readings = useStore((s) => s.readings)
   const sliding = useSpan(window, created)
   const span = over ? spanOver(over[0], over[1]) : sliding
@@ -108,7 +111,8 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
     const total = g.total ? Math.max(0, ...valuesOf(g.total, computeId, reported, readings, feed)) : 0
     const second = g.lines[1] ? valuesOf(g.lines[1], computeId, reported, readings, feed) : []
     const marks = node ? onNode(feed, g, node.id, agg) : acrossNodes(feed, g, agg)
-    const at = scrub !== null ? valueAt(marks, scrub) : null
+    const holding = scrub !== null && scrub.key === g.key
+    const at = holding ? valueAt(marks, scrub.at) : null
     const note = at
       ? clock(at[0])
       : total
@@ -131,8 +135,8 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
         note={note}
         marks={marks}
         axis={axis}
-        scrub={scrub}
-        onScrub={setScrub}
+        scrub={holding ? scrub.at : null}
+        onScrub={(t) => setScrub(t ? { key: g.key, at: t } : null)}
       />
     )
   }
@@ -144,9 +148,10 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
       'Custom',
       custom.map((metric) => {
         const marks = customMetric(feed, metric, node?.id, agg)
-        const at = scrub !== null ? valueAt(marks, scrub) : null
+        const holding = scrub !== null && scrub.key === metric
+        const at = holding ? valueAt(marks, scrub.at) : null
         const live = node ? newest(feed, node.id, metric) : reduce(nodes.map((n) => newest(feed, n.id, metric)).filter((v): v is number => v !== null), agg)
-        return <Chart key={metric} label={metric} mono value={at ? plain(at[1]) : live === null ? '—' : plain(live)} note={at ? clock(at[0]) : undefined} marks={marks} axis={axis} scrub={scrub} onScrub={setScrub} />
+        return <Chart key={metric} label={metric} mono value={at ? plain(at[1]) : live === null ? '—' : plain(live)} note={at ? clock(at[0]) : undefined} marks={marks} axis={axis} scrub={holding ? scrub.at : null} onScrub={(t) => setScrub(t ? { key: metric, at: t } : null)} />
       }),
     ],
   ]
