@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import resource
 import socket
 import subprocess
 import sys
@@ -34,6 +35,17 @@ Uvicorn's default is forever, and this daemon's connections are the kind that
 never end on their own — an event stream being watched, a result being
 long-polled. A stop that waits for those outlives every ``sky server stop``
 timeout; the clients know how to come back, so they are cut instead.
+"""
+
+DESCRIPTORS = 8192
+"""How many descriptors a daemon asks for, whatever the shell that started it had.
+
+A daemon's descriptors are its work and not a leak: a node is an SSH connection, a
+listening tunnel and the connections through it, and every task in flight is a
+client connection held open for its result. Thirty-two nodes running four tasks
+each is past the 256 a macOS shell hands down, and the first thing to fail there
+is whatever opens a file next — the database, which then answers every write
+with a 500.
 """
 
 
@@ -91,6 +103,14 @@ def environment(database: Path | None, log_level: str | None = None) -> dict[str
     }
 
 
+def descriptors(wanted: int = DESCRIPTORS) -> None:
+    """Raise this process's descriptor limit to ``wanted``, as far as the hard limit lets it."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    ceiling = wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
+    if soft < ceiling:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (ceiling, hard))
+
+
 def serve(host: str, port: int, database: Path | None = None, log_level: str | None = None, access_log: bool = True) -> None:
     """Run the daemon here, ending with whoever started it.
 
@@ -104,6 +124,7 @@ def serve(host: str, port: int, database: Path | None = None, log_level: str | N
     from skyward.server.http.app import daemon
 
     os.environ.update(environment(database, log_level))
+    descriptors()
     standalone = daemon()
 
     class Server(uvicorn.Server):
@@ -144,7 +165,7 @@ def spawn(host: str, port: int, database: Path | None = None, log_level: str | N
     return process.pid
 
 
-__all__ = ["LOG_FILE", "MISSING", "PID_FILE", "RUNTIME_DIR", "alive", "forget", "installed", "pid", "record", "serve", "spawn"]
+__all__ = ["DESCRIPTORS", "LOG_FILE", "MISSING", "PID_FILE", "RUNTIME_DIR", "alive", "descriptors", "forget", "installed", "pid", "record", "serve", "spawn"]
 
 
 if __name__ == "__main__":

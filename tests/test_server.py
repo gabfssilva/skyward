@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import resource
+from collections.abc import Iterator
+
 import pytest
 
 from skyward.cli import server
@@ -84,3 +87,23 @@ def describe_stopping_the_daemon() -> None:
         server.stop()
 
         assert recorded.signalled == [] and recorded.process is None
+
+
+def describe_a_daemon_starting() -> None:
+    @pytest.fixture
+    def shell_limit() -> Iterator[int]:
+        """The descriptor limit a macOS shell hands down, put back afterwards."""
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+        yield 256
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+    def it_raises_the_descriptor_limit_it_inherited(shell_limit: int) -> None:
+        daemon.descriptors(4096)
+
+        assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] == 4096
+
+    def it_never_lowers_a_limit_already_above_what_it_wants(shell_limit: int) -> None:
+        daemon.descriptors(64)
+
+        assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] == shell_limit
