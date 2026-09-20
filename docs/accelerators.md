@@ -75,6 +75,8 @@ with sky.Compute(
 
 Memory and form-factor variants are separate catalog entries rather than arguments: `H100()` and `H100_NVL()`, not `H100(memory=...)`. For CPU-only compute, leave `accelerator=None`.
 
+`accelerator=None` asks for a machine *without* an accelerator, not for whatever is cheapest: the market matches it against offers that carry none. On a provider that sells CPU machines this changes nothing — its CPU offers were already the cheap ones. On a provider that sells only GPUs, or one that bundles the vCPUs and RAM into a GPU's price so that a GPU undercuts a CPU node of the same size, it is the difference between the pool you asked for and a pool holding accelerators nobody wanted. A spec with `accelerator=None` against a GPU-only account matches nothing and is refused rather than placed.
+
 ### Detecting at runtime
 
 `Info` describes the compute's topology — rank, peers, worker slots — and says nothing about the hardware. Ask the machine itself:

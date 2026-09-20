@@ -25,12 +25,28 @@ The API key can come from `SALAD_API_KEY`. `organization` and `project` can come
 | `priority` | `"low"` | `high`, `medium`, `low` or `batch`. Selects the price and how readily the workload is preempted. |
 | `country_codes` | every country | Restrict placement to these ISO country codes. |
 | `image` | a CUDA runtime image | Base image, overridden by `Image(base=...)`. An image that already carries sshd, curl and websocat is used as is; otherwise it must be Debian or Ubuntu based, because the container command installs them with `apt-get`. |
-| `cpus` | `4` | vCPUs per node. |
-| `memory_gb` | `16` | RAM per node, in whole GiB up to 60. Salad quotes no size with a GPU class, so this is what the offer advertises and what the container is created with. |
+| `cpus` | `4` | vCPUs given to a node **with a GPU**. CPU-only nodes are sized by the spec. |
+| `memory_gb` | `16` | The same, for RAM, in whole GiB. |
 | `storage_gb` | `50` | Container storage. Salad's floor is 1 GiB. |
+| `vcpu_price` | `0.005` | Dollars per vCPU-hour, for CPU-only nodes. |
+| `memory_price` | `0.001` | Dollars per GB-hour, for CPU-only nodes. |
 | `request_timeout` | `30` | Seconds for one Salad API call. |
 
-Salad prices GPU classes by container priority. Skyward exposes the selected priority as an on-demand offer; it is billed per second. `spot` allocation is not available.
+`spot` allocation is not available; every offer is on-demand, billed per second.
+
+## What the account is offered
+
+Salad sells nodes with a GPU and nodes without, and prices only the first. The adapter offers both.
+
+A **GPU class** carries its own price, one per container priority, and Salad bills no vCPUs or RAM beside it — the quoted price is the whole node. A class is offered at `cpus` × `memory_gb`, trimmed to the class's own maximum, and a class whose *minimum* is above `cpus` or `memory_gb` is left out rather than offered and refused at creation.
+
+A **CPU-only node** is the same container group without a GPU class, billed per vCPU-hour and per GB-hour. Salad sizes a container group from the request that creates it and quotes no CPU catalog over its API, so every size between 1 and 16 vCPUs and between 1 and 32 GiB is offered — 512 of them, priced `cpus × vcpu_price + memory_gb × memory_price`. Nothing is rounded to a list of sizes somebody chose: asking for 5 vCPUs and 7 GiB buys 5 vCPUs and 7 GiB. The default rates are Salad's published ones as of September 2026; **check them against your account**, since nothing in the API quotes them back.
+
+`priority` selects a GPU class's price. Salad's published CPU-only rates do not vary by priority, and its pricing page states CPU-only groups run at the lowest tier; whether an account is ever billed a different CPU rate per priority is not something the API answers, so `vcpu_price` and `memory_price` are single values.
+
+The container is created at the size of the offer that was bought, whichever shelf it came from.
+
+A compute that names no accelerator is sold a CPU node, even where a GPU class would be cheaper — and on Salad one often is, since a class bundles its vCPUs and RAM. The saving is not the whole price: a GPU class places only on machines carrying that GPU, a smaller pool than a CPU node runs on. Name `accelerator` to buy one deliberately.
 
 ## How a node is reached
 

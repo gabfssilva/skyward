@@ -874,12 +874,17 @@ def _credential(value: Credential | None) -> str | None:
 
 
 def _accelerator(wanted: str | Accelerator | None) -> tuple[str | None, int]:
-    """A raw name goes through the same normalization every offer went through."""
+    """A raw name goes through the same normalization every offer went through.
+
+    Naming no accelerator is asking for none of them, so the count is zero and not
+    the one it used to be: there is no such thing as one accelerator of no
+    particular model, and the count is what the spec is read back by.
+    """
     match wanted:
         case Accelerator(name, count):
             return name, count
         case str(name):
             return resolve(name, None)[0], 1
         case None:
-            return None, 1
+            return None, 0
 

@@ -503,10 +503,14 @@ with sky.Compute(
 | `priority` | `"high", "medium", "low", "batch"` | `"low"` | Allocation priority. Higher is faster to place and more expensive. |
 | `country_codes` | `str or Sequence[str] or None` | `None` | Restrict placement to these countries. |
 | `image` | `str or None` | `None` | Container image override. |
-| `cpus` | `int` | `4` | vCPUs per node. |
-| `memory_gb` | `int` | `16` | RAM per node, in whole GiB up to 60. |
+| `cpus` | `int` | `4` | The largest a node of this account may be, in vCPUs. |
+| `memory_gb` | `int` | `16` | The same ceiling for RAM, in whole GiB. |
 | `storage_gb` | `int` | `50` | Container storage in GB. |
+| `vcpu_price` | `float` | `0.005` | Dollars per vCPU-hour, for CPU-only nodes. |
+| `memory_price` | `float` | `0.001` | Dollars per GB-hour, for CPU-only nodes. |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
+Salad sells nodes with a GPU and nodes without. A GPU class is priced by Salad and includes its vCPUs and RAM; a CPU-only node is priced here, from `vcpu_price` and `memory_price`, because Salad quotes no CPU catalog over its API. See [the provider reference](reference/providers/salad.md) for which sizes are offered.
 
 ## Novita
 

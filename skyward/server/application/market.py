@@ -12,7 +12,7 @@ from typing import NamedTuple
 from skyward.server.persistence.offers import OfferCache
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Allocation, ComputeSpec, Market, Offer
+from skyward.shared.schemas import Allocation, ComputeSpec, Market, Offer, Spec
 
 logger = logger.bind(component="market")
 
@@ -37,7 +37,7 @@ async def pick(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, Market]:
     """
     candidates = await _candidates(spec, offers)
     if not candidates:
-        raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
+        raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market{_because(spec)}")
 
     buy = _cheapest(candidates, spec.allocation)
     logger.bind(provider=buy.offer.provider_name).info(
@@ -89,7 +89,7 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
         )
         fitting = [
             offer for offer in page.items
-            if (wanted.accelerator is None or offer.accelerator_count == wanted.accelerator_count)
+            if _accelerators(offer, wanted)
             and (wanted.cpus is None or offer.cpus >= wanted.cpus)
             and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
             and (wanted.region is None or offer.region == wanted.region)
@@ -114,6 +114,36 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
         candidates.extend(buys)
 
     return candidates
+
+
+def _because(spec: ComputeSpec) -> str:
+    """The suspect worth naming when a spec matches nothing: it asked for no accelerator.
+
+    An account selling GPUs and nothing else has no machine without one, and a spec
+    that names no accelerator asks for exactly that — where it used to be sold the
+    cheapest GPU instead. The floors may equally be what nothing cleared, so this
+    points rather than concludes; it is here because it is the one cause a reader
+    is unlikely to think of on their own.
+    """
+    if any(wanted.accelerator for wanted in spec.specs):
+        return ""
+    return " — it asks for a machine with no accelerator"
+
+
+def _accelerators(offer: Offer, wanted: Spec) -> bool:
+    """Whether the offer carries the accelerators the spec asked for, including none of them.
+
+    A spec that names no accelerator is asking for a machine without one, and the
+    count it carries is not consulted: there is no such thing as one accelerator of
+    no particular model. It used to mean "anything that clears the other floors",
+    which reads the same on a provider whose GPUs cost more than its CPUs and quite
+    differently on one that bundles the vCPUs and the RAM into the GPU's price —
+    there the cheapest machine clearing a CPU floor is a GPU nobody asked for, on a
+    smaller pool of machines, and the pool comes up holding one.
+    """
+    if wanted.accelerator is None:
+        return offer.accelerator is None
+    return offer.accelerator_count == wanted.accelerator_count
 
 
 def order(offer: Offer, allocation: Allocation) -> tuple[Market, ...]:

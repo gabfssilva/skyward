@@ -234,13 +234,29 @@ class Salad(Provider, frozen=True, kw_only=True):
     image: str | None = None
     cpus: int = 4
     memory_gb: int = 16
-    """What a node's container is given, in vCPUs and whole GiB up to 60.
+    """What a node *with a GPU* is given, in vCPUs and whole GiB.
 
-    A container is sized by the request that creates it, and Salad quotes no size
-    with a GPU class — so these are what the offer advertises and what the node
-    gets, and a spec asking for more than them is a spec no Salad offer fits.
+    Salad quotes no size with a GPU class and bills no vCPUs or RAM beside one, so
+    the size of such a node is neither priced nor chosen by the spec — it is the
+    account's to name, held to the bounds the class itself declares. A spec asking
+    for more than this is a spec no GPU offer of this account fits.
+
+    A CPU-only node is not sized from here: it is paid for by the vCPU and by the
+    GB, so every size is its own offer and the spec picks one.
     """
     storage_gb: int = 50
+    vcpu_price: float = 0.005
+    memory_price: float = 0.001
+    """What a CPU-only node costs, per vCPU-hour and per GB-hour.
+
+    Salad publishes no CPU catalogue — ``list_gpu_classes`` is the only thing it
+    quotes — so the price of a CPU-only offer is computed from these rather than
+    fetched. They are the published rates at the time of writing and the account
+    is what settles it, which is why they are here and not a constant.
+
+    A GPU class is unaffected: Salad bills no vCPU or RAM alongside one, and its
+    quoted price is the whole of it.
+    """
     request_timeout: int = 30
 
     @property

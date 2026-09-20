@@ -202,7 +202,7 @@ export function Wizard() {
           specs: chosen.map((p) => ({
             provider: { kind: p.kind, name: p.name },
             accelerator: w.count ? m.accel : null,
-            accelerator_count: w.count || 1,
+            accelerator_count: w.count,
             cpus: w.cpus,
             memory_gb: w.memory,
           })),
@@ -288,8 +288,9 @@ export function Wizard() {
 
 /**
  * The market the daemon would buy from, read the way `market._candidates` reads it: over one spec per chosen
- * account, the accelerator count is matched exactly and vCPUs and RAM as floors. Asking for no accelerator filters on
- * nothing but those floors.
+ * account, the accelerator count is matched exactly and vCPUs and RAM as floors. Asking for no accelerator asks for a
+ * machine without one, which is not the same as asking for anything that clears the floors: on an account that bundles
+ * the vCPUs into a GPU's price, the cheapest machine clearing a CPU floor is a GPU.
  */
 function market(offers: readonly Offer[], catalog: ReadonlyMap<string, Accelerator>, w: Draft): Market {
   const inAccounts = (o: Offer) => !w.providers.length || w.providers.includes(o.provider_id)
@@ -322,7 +323,7 @@ function market(offers: readonly Offer[], catalog: ReadonlyMap<string, Accelerat
       : models.reduce((best, model) => (Math.abs(model.vram - want) < Math.abs(best.vram - want) ? model : best)).name
 
   const fits = (o: Offer) =>
-    (!w.count || (o.accelerator === accel && o.accelerator_count === w.count)) &&
+    (w.count ? o.accelerator === accel && o.accelerator_count === w.count : !o.accelerator) &&
     (w.cpus === null || o.cpus >= w.cpus) &&
     (w.memory === null || o.memory_gb >= w.memory)
   const buys = offers.filter((o) => inAccounts(o) && fits(o)).flatMap((o) => buysOf(o, w.allocation))
