@@ -238,7 +238,21 @@ export const holdersOf = (nodes: readonly Node[]): Node[] => {
 export const holderOf = (nodes: readonly Node[], rank: number): Node | undefined => holdersOf(nodes).find((n) => n.rank === rank)
 export const readyOf = (nodes: readonly Node[]): Node[] => nodes.filter((n) => n.state === 'ready')
 export const rateOf = (nodes: readonly Node[]): number => nodes.filter(nodeLive).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
-export const targetOf = (c: Compute): number => c.spec.nodes.max ?? c.spec.nodes.initial
+/**
+ * The range a compute is held within, read the way the reconciler reads it.
+ *
+ * ``initial`` is the size the pool opened at and is asked for once; what holds it afterwards is ``min`` up to
+ * ``max``, and a bound left unset falls back to the opening size. Reading it anywhere else is how a page ends up
+ * naming a size nothing is held to — a resize moves the bounds and leaves ``initial`` where it was.
+ */
+export const rangeOf = (c: Compute): { floor: number; ceiling: number; elastic: boolean } => {
+  const b = c.spec.nodes
+  const floor = b.min ?? b.initial
+  const ceiling = b.max ?? b.initial
+  return { floor: Math.min(floor, ceiling), ceiling: Math.max(floor, ceiling), elastic: b.max !== null && floor !== ceiling }
+}
+
+export const targetOf = (c: Compute): number => rangeOf(c).ceiling
 export const endedAt = (c: Compute): number => ms(c.ended?.at ?? c.created_at)
 export const ranOf = (c: Compute): number => endedAt(c) - ms(c.created_at)
 
@@ -272,15 +286,17 @@ export const machineOf = (c: Compute): string => {
   return `${b.accelerator_count > 1 ? `${b.accelerator_count}× ` : ''}${b.accelerator.toUpperCase()}`
 }
 
-/** How many nodes a compute is, and the floor or the range it is held to. */
-export const sizeOf = (c: Compute, nodes: readonly Node[], live: boolean): { nodes: number; note: string } => {
-  const b = c.spec.nodes
-  const floor = b.min ?? b.initial
-  return {
-    nodes: live ? b.initial : nodes.length || targetOf(c),
-    note: b.max ? `elastic ${floor} to ${b.max}` : floor !== b.initial ? `floor ${floor}` : '',
-  }
+/** The floor and the ceiling a compute is held to, where they are not simply one number. */
+export const boundsOf = (c: Compute): string => {
+  const { floor, ceiling, elastic } = rangeOf(c)
+  return elastic ? `elastic ${floor} to ${ceiling}` : floor !== ceiling ? `floor ${floor}` : ''
 }
+
+/** How many nodes a compute is, and the floor or the range it is held to. */
+export const sizeOf = (c: Compute, nodes: readonly Node[], live: boolean): { nodes: number; note: string } => ({
+  nodes: live ? rangeOf(c).ceiling : nodes.length || targetOf(c),
+  note: boundsOf(c),
+})
 
 export const hash01 = (s: string): number => {
   let h = 2166136261

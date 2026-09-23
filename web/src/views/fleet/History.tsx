@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Compute } from '../../api/client'
 import { useHistory, useStore } from '../../state/store'
 import type { HistoryFilters } from '../../state/store'
-import { DAY, HOUR, ago, boundOf, callsOf, dateOf, dur, endedAt, failedOf, machineOf, money, ranOf, targetOf } from '../../state/model'
+import { DAY, HOUR, ago, boundOf, boundsOf, callsOf, dateOf, dur, endedAt, failedOf, machineOf, money, ranOf, targetOf } from '../../state/model'
 import { TableScroll } from '../../ui/primitives'
 
 const SINCE: Record<HistoryFilters['since'], number> = { '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY, all: Infinity }
@@ -29,13 +29,6 @@ export const hardwareOf = (c: Compute): { text: string; code: boolean } => {
   const cpus = c.offer?.cpus ?? s?.cpus
   const memory = c.offer?.memory_gb ?? s?.memory_gb
   return { text: [cpus ? `${cpus} vCPU` : null, memory ? `${memory} GB` : null].filter(Boolean).join(', '), code: false }
-}
-
-/** The floor and the ceiling a compute was held to, where they were not simply the size it opened at. */
-export const boundsOf = (c: Compute): string => {
-  const b = c.spec.nodes
-  const floor = b.min ?? b.initial
-  return b.max ? `elastic ${floor} to ${b.max}` : floor !== b.initial ? `floor ${floor}` : ''
 }
 
 /** What went wrong with the calls, worst first — nothing where nothing did. */

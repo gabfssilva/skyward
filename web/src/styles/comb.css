@@ -6,7 +6,8 @@
  * paints by execution instead.
  */
 .logo{display:block;flex:none;color:var(--accent);fill:currentColor;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round}
-.comb{display:block;width:100%}
+/* the drawing is as wide as its rings need, which is rarely the column's width: the slack belongs on both sides */
+.comb{display:block;width:100%;margin-inline:auto}
 .comb svg{display:block;height:auto;max-width:100%;overflow:visible}
 .hx{cursor:pointer;transform-box:fill-box;transform-origin:center;transform:translate(var(--x),var(--y));transition:transform .4s cubic-bezier(.2,.7,.2,1),opacity .3s}
 .hx polygon.cell{transition:fill .5s ease;stroke:inherit;stroke-width:2px;stroke-linejoin:round;paint-order:stroke;vector-effect:non-scaling-stroke}

@@ -227,3 +227,34 @@ export function Tip() {
 
   return <div className="tip" id="tip" ref={ref} popover="manual" role="tooltip" />
 }
+
+type NumProps = { id: string; label: string; min?: number; placeholder?: string } & (
+  | { optional?: false; value: number; onChange: (value: number) => void }
+  | { optional: true; value: number | null; onChange: (value: number | null) => void }
+)
+
+/**
+ * A number field that can be emptied while it is retyped. An emptied required field writes nothing, rather than a
+ * zero or a default that would turn "0" into "10", and shows its value again once it loses focus.
+ */
+export function Num(props: NumProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>{props.label}</label>
+      <input
+        id={props.id}
+        type="number"
+        min={props.min ?? 1}
+        placeholder={props.placeholder}
+        value={draft !== null && (draft === '' || Number(draft) === props.value) ? draft : (props.value ?? '')}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          if (e.target.value !== '') props.onChange(Number(e.target.value))
+          else if (props.optional) props.onChange(null)
+        }}
+        onBlur={() => setDraft(null)}
+      />
+    </div>
+  )
+}

@@ -1,9 +1,9 @@
 import { useNavigate } from 'react-router-dom'
 import type { Compute } from '../../api/client'
 import { useStore } from '../../state/store'
-import { boundOf, callsOf, failedOf, machineOf, money } from '../../state/model'
+import { boundOf, boundsOf, callsOf, failedOf, machineOf, money } from '../../state/model'
 import { Pill, TableScroll } from '../../ui/primitives'
-import { boundsOf, hardwareOf, outcomeOf } from './History'
+import { hardwareOf, outcomeOf } from './History'
 
 /**
  * The computes that hold no machine: a row each, in the columns the ended ones are read in.

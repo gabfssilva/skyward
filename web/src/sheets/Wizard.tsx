@@ -6,7 +6,7 @@ import type { Accelerator, ComputeCreate, ComputeSpec, Offer, Provider, Worker }
 import { useStore } from '../state/store'
 import { money } from '../state/model'
 import { Icon } from '../ui/icons'
-import { Chip, Pick, Tick } from '../ui/primitives'
+import { Chip, Num, Pick, Tick } from '../ui/primitives'
 import { Facts } from '../ui/head'
 import { Scrim, CloseBtn } from './Scrim'
 import { COLLECTIVE, PLUGINS } from './catalog'
@@ -622,37 +622,6 @@ const Item = ({ label, wide, children }: { label: string; wide?: 'wide' | 'wide3
     <span className="mono">{children}</span>
   </div>
 )
-
-type NumProps = { id: string; label: string; min?: number; placeholder?: string } & (
-  | { optional?: false; value: number; onChange: (value: number) => void }
-  | { optional: true; value: number | null; onChange: (value: number | null) => void }
-)
-
-/**
- * A number field that can be emptied while it is retyped. An emptied required field writes nothing, rather than a
- * zero or a default that would turn "0" into "10", and shows its value again once it loses focus.
- */
-function Num(props: NumProps) {
-  const [draft, setDraft] = useState<string | null>(null)
-  return (
-    <div className="field">
-      <label htmlFor={props.id}>{props.label}</label>
-      <input
-        id={props.id}
-        type="number"
-        min={props.min ?? 1}
-        placeholder={props.placeholder}
-        value={draft !== null && (draft === '' || Number(draft) === props.value) ? draft : (props.value ?? '')}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          if (e.target.value !== '') props.onChange(Number(e.target.value))
-          else if (props.optional) props.onChange(null)
-        }}
-        onBlur={() => setDraft(null)}
-      />
-    </div>
-  )
-}
 
 /** A tag field: a comma or Enter turns what was typed into a package, and Backspace on an empty field takes the last one back. */
 function Packages({ pip, onChange }: { pip: readonly string[]; onChange: (pip: readonly string[]) => void }) {

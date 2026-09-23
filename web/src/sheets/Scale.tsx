@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { api, type Compute } from '../api/client'
 import { computeById, useStore } from '../state/store'
-import { targetOf } from '../state/model'
+import { rangeOf } from '../state/model'
+import { Num } from '../ui/primitives'
 import { Scrim, CloseBtn } from './Scrim'
 import { COLLECTIVE } from './catalog'
 
@@ -10,20 +11,33 @@ export function Scale({ computeId }: { computeId: string }) {
   return compute ? <Form compute={compute} /> : null
 }
 
+/**
+ * The size a compute is held to: the floor it stands on, and the ceiling it may grow to.
+ *
+ * ``initial`` is not here and is sent back untouched. It is the size the pool opened at, asked for once when it was
+ * created, and nothing after the creation gets to reopen a pool that is already standing. What a resize moves is the
+ * range — which is also what the reconciler holds the pool within, so the number typed here is the number it keeps.
+ *
+ * Both bounds are written, never one: leaving the ceiling out is what lets ``initial`` come back as the other end of
+ * the range, and a pool asked for fifty under a ceiling of twenty is the one thing this form must not be able to say.
+ */
 function Form({ compute }: { compute: Compute }) {
   const closeSheet = useStore((s) => s.closeSheet)
   const reload = useStore((s) => s.reloadCompute)
+  const held = rangeOf(compute)
   const [busy, setBusy] = useState(false)
-  const [nodes, setNodes] = useState(() => targetOf(compute))
-  const [floor, setFloor] = useState(() => compute.spec.nodes.min ?? compute.spec.nodes.initial)
+  const [nodes, setNodes] = useState(held.floor)
+  const [upTo, setUpTo] = useState(held.elastic ? held.ceiling : null)
 
   const collective = compute.spec.plugins.filter((p) => COLLECTIVE.has(p.kind))
   const frozen = collective.length > 0
+  const inverted = upTo !== null && upTo < nodes
+  const asked = upTo === null || upTo === nodes ? `${nodes} node${nodes === 1 ? '' : 's'}` : `${nodes}–${upTo} nodes`
 
   const submit = async () => {
     setBusy(true)
     try {
-      await api.scale(compute.id, { initial: nodes, min: floor, max: compute.spec.nodes.max ?? null })
+      await api.scale(compute.id, { initial: compute.spec.nodes.initial, min: nodes, max: upTo ?? nodes })
       closeSheet()
       await reload(compute.id)
     } finally {
@@ -48,20 +62,23 @@ function Form({ compute }: { compute: Compute }) {
             </div>
           ) : null}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div className="field">
-              <label htmlFor="sc-initial">Nodes</label>
-              <input id="sc-initial" type="number" min={0} value={nodes} disabled={frozen} onChange={(e) => setNodes(Number(e.target.value))} />
-            </div>
-            <div className="field">
-              <label htmlFor="sc-min">Floor</label>
-              <input id="sc-min" type="number" min={0} value={floor} disabled={frozen} onChange={(e) => setFloor(Number(e.target.value))} />
-            </div>
+            <Num id="sc-nodes" label="Nodes" min={0} value={nodes} onChange={setNodes} />
+            <Num id="sc-up" label="Up to" min={0} placeholder="not elastic" optional value={upTo} onChange={setUpTo} />
           </div>
-          <div className="sub">A resize opens generation {compute.generation + 1}; nodes already ready are kept.</div>
+          {inverted ? (
+            <div className="strip" style={{ background: 'var(--warn-soft)' }}>
+              <span className="sub">A ceiling of {upTo} is below the {nodes} asked for, and the ceiling is what the pool would be held to.</span>
+            </div>
+          ) : (
+            <div className="sub">
+              A resize opens generation {compute.generation + 1}; nodes already ready are kept. It opened at {compute.spec.nodes.initial}, which only its
+              creation decides.
+            </div>
+          )}
         </div>
         <div className="sheet-foot">
-          <button className="btn primary" disabled={frozen || busy} onClick={() => void submit()}>
-            Scale to {nodes} node{nodes === 1 ? '' : 's'}
+          <button className="btn primary" disabled={frozen || busy || inverted} onClick={() => void submit()}>
+            Scale to {asked}
           </button>
         </div>
       </div>

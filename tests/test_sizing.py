@@ -152,3 +152,26 @@ def describe_the_ways_a_size_is_spelled() -> None:
 
     def a_range_opens_at_its_floor_and_grows_into_the_rest() -> None:
         assert spelled((2, 8)) == NodeBounds(initial=2, min=2, max=8)
+
+
+def describe_a_size_whose_opening_disagrees_with_its_ceiling() -> None:
+    """What a resize that moves the bounds and leaves ``initial`` behind must not cost.
+
+    The console writes the bounds and keeps the opening size, because reopening a pool
+    is something only its creation decides. So ``initial`` outlives the size it was
+    written for, and the one thing it may never do is buy past the ceiling the same
+    pass is draining down to.
+    """
+
+    def it_buys_nothing_the_same_pass_would_call_surplus() -> None:
+        standing = rows(*(["ready"] * 8), generation=3)
+
+        buy, spare = demand(pool(NodeBounds(initial=50, min=4, max=4)), standing, load=0)
+
+        assert buy == 0, "an opening size of fifty under a ceiling of four asks for nothing"
+        assert spare == 4, "and the four over the ceiling are still surplus"
+
+    def it_still_opens_at_the_size_it_was_given_under_a_ceiling_that_allows_it() -> None:
+        buy, _ = demand(pool(NodeBounds(initial=6, min=2, max=8)), (), load=0)
+
+        assert buy == 6, "the clamp is the ceiling, and six is under it"

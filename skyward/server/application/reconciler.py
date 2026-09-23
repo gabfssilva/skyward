@@ -444,6 +444,12 @@ def demand(compute: Compute, nodes: Sequence[Node], load: int) -> tuple[int, int
     been asked for and not yet answered — queued and running together, because they
     are the same demand seen a moment apart. Sizing to what is running would size the
     pool to what the pool can already do, and a queue would never be a reason to grow.
+
+    The opening size is asked for only as far as the ceiling allows. An ``initial``
+    above it is a definition that disagrees with itself — a resize that moved the
+    bounds and left the opening size where it was — and buying the difference would
+    be this function contradicting itself inside one pass: machines bought by one
+    term and counted as surplus by the other, paid for and then drained.
     """
     alive = sum(1 for node in nodes if node.state in LIVE)
 
@@ -451,13 +457,15 @@ def demand(compute: Compute, nodes: Sequence[Node], load: int) -> tuple[int, int
         return 0, alive
 
     hold, ceiling = bounds(compute.spec)
+    opening = min(compute.spec.nodes.initial, ceiling)
+
     if compute.spec.nodes.max is not None:
         slots = compute.spec.worker.concurrency or 1
         hold = ceiling = max(hold, min(ceiling, ceil(load / slots)))
 
     spent = sum(1 for node in nodes if node.generation == compute.generation or node.state in LIVE)
 
-    return max(hold - alive, compute.spec.nodes.initial - spent, 0), alive - ceiling
+    return max(hold - alive, opening - spent, 0), alive - ceiling
 
 
 def bounds(spec: ComputeSpec) -> tuple[int, int]:

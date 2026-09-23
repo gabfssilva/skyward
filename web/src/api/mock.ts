@@ -7,6 +7,7 @@ import type {
   Execution,
   Image,
   Node,
+  NodeBounds,
   Offer,
   Options,
   Provider,
@@ -975,6 +976,22 @@ const carrying = (c: Compute, include: string | null): Compute =>
       }
     : c
 
+/**
+ * The one field a PATCH moves: a size is a definition, so it is a new generation, and the machines are kept.
+ *
+ * The bounds are taken whole, exactly as the daemon takes them — a form that sends two of the three and keeps the
+ * third is how a pool ends up opening at fifty and being held at twenty.
+ */
+function resized(compute: Compute, init: RequestInit | undefined): Compute {
+  const nodes = (JSON.parse(String(init?.body ?? '{}')) as { nodes?: NodeBounds }).nodes
+  const row = computes.find((c) => c.id === compute.id)
+  if (!nodes || !row) return compute
+  row.spec = { ...row.spec, nodes }
+  row.generation += 1
+  row.revision += 1
+  return { ...compute, spec: row.spec, generation: row.generation, revision: row.revision }
+}
+
 function route(path: string, init: RequestInit | undefined): Response {
   const method = (init?.method ?? 'GET').toUpperCase()
   const [raw] = path.split('?')
@@ -1030,6 +1047,7 @@ function route(path: string, init: RequestInit | undefined): Response {
     if (!c) return notFound()
     if (!parts[2]) {
       if (method === 'DELETE') return new Response(null, { status: 204 })
+      if (method === 'PATCH') return json(carrying(resized(c, init), null))
       return json(carrying(c, new URLSearchParams(path.split('?')[1] ?? '').get('include')))
     }
     if (parts[2] === 'metrics' && !parts[3]) return metricHistory(c.id, path.split('?')[1] ?? '')

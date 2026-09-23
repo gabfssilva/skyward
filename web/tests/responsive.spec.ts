@@ -348,3 +348,23 @@ test.describe('metrics', () => {
     await expect(note).toHaveText('of 640 GB')
   })
 })
+
+/**
+ * The hive is drawn at the size its rings need, which is rarely the width of the column holding it: a compute of
+ * fifty in one phone column is a drawing narrower than the card. What is left over belongs on both sides of it.
+ */
+test.describe('the hive in its column', () => {
+  for (const screen of [PHONE, IPAD, DESKTOP]) {
+    test(`is centred at ${screen.viewport.width}px`, async ({ page }) => {
+      await page.setViewportSize(screen.viewport)
+      await open(page, COMPUTE)
+      const column = await page.locator('#stage .ov .map').boundingBox()
+      const drawing = await page.locator('#stage .ov .comb').boundingBox()
+      expect(column).not.toBeNull()
+      expect(drawing).not.toBeNull()
+      const left = (drawing?.x ?? 0) - (column?.x ?? 0)
+      const right = (column?.x ?? 0) + (column?.width ?? 0) - ((drawing?.x ?? 0) + (drawing?.width ?? 0))
+      expect.soft(Math.abs(left - right), `left ${left}, right ${right}`).toBeLessThanOrEqual(1)
+    })
+  }
+})
