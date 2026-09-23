@@ -47,7 +47,7 @@ Ideal time (2000 tasks / 100 workers * 5s): 100s
 Efficiency: 97.5%
 ```
 
-97.5% efficiency — nearly perfect linear scaling. The overhead comes from serialization, network round-trips, and scheduling. Skyward communicates with each worker via an SSH tunnel to a lightweight [Casty](https://github.com/gabfssilva/casty) actor system running on the node, using raw TCP over asyncio. The minimal protocol overhead — no HTTP, no REST, no message broker — is what makes near-ideal throughput possible even on the smallest instances.
+97.5% efficiency — nearly perfect linear scaling. The overhead comes from serialization, network round-trips, and scheduling. Skyward communicates with each worker via an SSH tunnel to a lightweight [Casty](https://github.com/gabfssilva/casty) actor system running on the node, over raw TCP. The minimal protocol overhead — no HTTP, no REST, no message broker — is what makes near-ideal throughput possible even on the smallest instances.
 
 This also illustrates the cost model: 10 `t4g.micro` instances at ~$0.008/hour each costs $0.08/hour total. The same 2000 tasks running locally at 1 task/second would take ~2.8 hours. The cluster finishes in under 2 minutes for a fraction of a cent.
 

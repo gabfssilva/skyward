@@ -1,6 +1,6 @@
 # Distributed collections
 
-Distributed collections let functions running in the same compute share state. They are backed by Casty's replicated collections and acknowledge writes according to the selected consistency level. Values are serialized by Skyward; keys must be hashable.
+Distributed collections let functions running in the same compute share state. They are backed by Casty's replicated collections and acknowledge writes according to the selected consistency level. Values are serialized by Skyward. Keys are strings, numbers, bytes, `None`, or tuples of them: a key is stored as its msgpack encoding, which is the same on every node.
 
 The constructors are available inside a running `@sky.function` call:
 
@@ -145,7 +145,7 @@ def load(step: int) -> object | None:
     return sky.registry("checkpoints").lookup(step)
 ```
 
-Use `register`, `lookup`, `unregister`, and `list`. Registry keys follow the same hashability rule as dict keys.
+Use `register`, `lookup`, `unregister`, and `list`. Registry keys follow the same rule as dict keys.
 
 ## Consistency
 
@@ -156,7 +156,7 @@ strong = sky.dict("source_of_truth")
 eventual = sky.dict("cache", consistency="eventual")
 ```
 
-Strong writes use the replicated collection's default quorum. Eventual consistency acknowledges one replica and may return a stale read while replication catches up.
+Strong writes are acknowledged by a majority of the replicas. Eventual writes are acknowledged by one, and a write acknowledged that way can be lost if the collection's owner changes before the other replicas have it.
 
 ## Next steps
 

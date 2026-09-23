@@ -11,8 +11,7 @@ inside whichever one it dialled first.
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -188,22 +187,6 @@ def describe_the_world_a_worker_is_told_about() -> None:
         assert _peers(rows) == ("10.0.0.1", "10.0.0.3")
 
 
-def describe_waiting_for_a_seed_to_answer() -> None:
-    async def it_settles_for_the_first_one_that_answers() -> None:
-        """Casty joins through the first seed that answers, so one of them is enough.
-
-        The others are machines that may still be installing their dependencies, and
-        a worker that waited for all of them would wait for the slowest bootstrap in
-        the compute before joining anything.
-        """
-        async with _listening() as answering:
-            assert await worker.reachable([_SILENT, answering]) == (answering, _SILENT)
-
-    async def it_waits_for_nobody_when_it_is_the_one_opening_the_cluster() -> None:
-        async with asyncio.timeout(5):
-            assert await worker.reachable([]) == ()
-
-
 def describe_a_client_that_dialled_the_wrong_cluster() -> None:
     async def it_dials_again_when_a_worker_that_is_up_is_not_in_its_view(monkeypatch: pytest.MonkeyPatch) -> None:
         """What a split leaves behind: the daemon inside the cluster of one.
@@ -216,11 +199,11 @@ def describe_a_client_that_dialled_the_wrong_cluster() -> None:
 
         found = await runtime.member("nod_1")
 
-        assert found.addr == f"10.0.0.2:{worker.PORT}"
+        assert found.node.address == f"10.0.0.2:{worker.PORT}"
         assert dialled[0].closed, "the client that saw the wrong cluster is dropped, not kept beside the new one"
 
     async def it_dials_again_only_once_for_a_worker_that_is_in_no_cluster_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
-        """A dropped client takes every call riding it with it, so a dead worker gets one and no more.
+        """A dropped client takes every ask riding it with it, so a dead worker gets one and no more.
 
         The second attempt placed on that node finds the same absence, and dialling
         again over it would cost the compute every function running on every other
@@ -233,10 +216,6 @@ def describe_a_client_that_dialled_the_wrong_cluster() -> None:
                 await runtime.member("nod_1")
 
         assert len(dialled) == 2, "one dial to find out, and none after that"
-
-
-_SILENT = "127.0.0.1:1"
-"""A port nothing listens on, on a host that answers at once that nothing does."""
 
 
 class _Recording(Runtimes):
@@ -255,13 +234,16 @@ class _View:
     """A casty client that sees whichever cluster it was dialled into."""
 
     def __init__(self, members: Sequence[str]) -> None:
-        self._members = tuple(casty.Member(node_id=uuid.uuid4(), addr=f"{addr}:{worker.PORT}") for addr in members)
+        self.members = tuple(
+            casty.Member(node=casty.NodeId(address=f"{addr}:{worker.PORT}", incarnation=uuid.uuid4()), status="alive", types=frozenset())
+            for addr in members
+        )
         self.closed = False
 
-    def members(self) -> tuple[casty.Member, ...]:
-        return self._members
+    async def __aenter__(self) -> "_View":
+        return self
 
-    async def close(self) -> None:
+    async def __aexit__(self, *_: object) -> None:
         self.closed = True
 
 
@@ -336,7 +318,7 @@ async def _dialling(monkeypatch: pytest.MonkeyPatch, *clusters: Sequence[str]) -
     views = iter([_View(members) for members in clusters])
     dialled: list[_View] = []
 
-    async def connect(*_: object, **__: object) -> _View:
+    def client(**_: object) -> _View:
         match next(views, None):
             case None:
                 dialled.append(dialled[-1])
@@ -344,7 +326,7 @@ async def _dialling(monkeypatch: pytest.MonkeyPatch, *clusters: Sequence[str]) -
                 dialled.append(view)
         return dialled[-1]
 
-    monkeypatch.setattr(casty, "connect", connect)
+    monkeypatch.setattr(casty, "Client", client)
     monkeypatch.setattr(runtimes_module, "MEMBERSHIP", 0.05)
 
     runtime = _runtime()
@@ -352,10 +334,3 @@ async def _dialling(monkeypatch: pytest.MonkeyPatch, *clusters: Sequence[str]) -
         runtime.track(f"nod_{index}", _machinery(address, tunnel=40000 + index))
     return runtime, dialled
 
-
-@asynccontextmanager
-async def _listening(host: str = "127.0.0.1") -> AsyncIterator[str]:
-    """A socket that accepts and hangs up, as a seed that is up looks from outside."""
-    server = await asyncio.start_server(lambda _, writer: writer.close(), host, 0)
-    async with server:
-        yield f"{host}:{server.sockets[0].getsockname()[1]}"

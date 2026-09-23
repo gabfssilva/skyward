@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar
 
-import casty
 import cloudpickle
 import msgspec
 import pytest
@@ -25,6 +24,7 @@ from skyward.shared.observability.logger import NAME
 from skyward.worker import worker
 from skyward.worker.api import Info
 from skyward.worker.plugins import Plugin
+from tests.conftest import execution, hosting
 
 cloudpickle.register_pickle_by_value(sys.modules[__name__])
 
@@ -146,10 +146,13 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         monkeypatch.setenv("SKYWARD_PEERS", "10.0.0.1")
         monkeypatch.setenv("SKYWARD_PLUGINS", "[]")
         monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "admission", asyncio.Semaphore(8), raising=False)
         with ThreadPoolExecutor(2) as pool:
             monkeypatch.setattr(worker, "thread_pool", pool, raising=False)
             yield
         worker.generators.clear()
+        worker.streams.clear()
+        worker.steps.clear()
         worker.pulling.clear()
 
     async def it_closes_an_abandoned_stream_whose_cleanup_blocks_on_the_loop(on_a_node: None) -> None:
@@ -171,12 +174,8 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         assert next(stream) == 1
         worker.generators["exe_abandoned"] = stream
 
-        system = casty.local()
-        try:
-            async with asyncio.timeout(5):
-                await system.service(worker.Worker).close("exe_abandoned")
-        finally:
-            await system.close()
+        async with hosting() as system, asyncio.timeout(5):
+            await execution(system, "exe_abandoned").ask(worker.Close)
 
         assert cleaned.is_set(), "the cleanup reached the loop and came back, so it did not run on the loop"
         assert "exe_abandoned" not in worker.generators
@@ -198,23 +197,22 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         assert next(stream) == 1
         worker.generators["exe_mid_pull"] = stream
 
-        system = casty.local()
         try:
-            stepping = asyncio.create_task(worker.advance("exe_mid_pull"))
-            async with asyncio.timeout(5):
-                while "exe_mid_pull" not in worker.pulling:
-                    await asyncio.sleep(0.01)
-                await system.service(worker.Worker).close("exe_mid_pull")
+            async with hosting() as system:
+                stepping = asyncio.create_task(worker.advance("exe_mid_pull"))
+                async with asyncio.timeout(5):
+                    while "exe_mid_pull" not in worker.pulling:
+                        await asyncio.sleep(0.01)
+                    await execution(system, "exe_mid_pull").ask(worker.Close)
 
-            assert order == [], "a generator that is executing is not closed under the pull"
-            assert not stepping.done()
+                assert order == [], "a generator that is executing is not closed under the pull"
+                assert not stepping.done()
 
-            release.set()
-            async with asyncio.timeout(5):
-                step = await stepping
+                release.set()
+                async with asyncio.timeout(5):
+                    step = await stepping
         finally:
             release.set()
-            await system.close()
 
         assert step == End(), "a stream closed mid-pull ends instead of delivering to nobody"
         assert order == ["pulled", "finalized"]
@@ -237,12 +235,10 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         previous = target.level
         target.addHandler(records)
         target.setLevel(logging.WARNING)
-        system = casty.local()
         try:
-            async with asyncio.timeout(5):
-                await system.service(worker.Worker).close("exe_broken_cleanup")
+            async with hosting() as system, asyncio.timeout(5):
+                await execution(system, "exe_broken_cleanup").ask(worker.Close)
         finally:
-            await system.close()
             target.removeHandler(records)
             target.setLevel(previous)
 
@@ -252,6 +248,7 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         ), [record.getMessage() for record in records.records]
 
     async def it_answers_a_ping_while_a_plugin_s_run_hook_blocks_the_open(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The first pull opens the stream, in the thread pool, so a hook that blocks there holds nothing the node answers on."""
         hook_entered.clear()
         hook_released.clear()
         hook_returned.clear()
@@ -260,22 +257,22 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         def numbers() -> Iterator[int]:
             yield 7
 
-        system = casty.local()
         try:
-            opening = asyncio.create_task(system.service(worker.Worker).open("exe_opened", codec.dumps(numbers), codec.dumps(((), {}))))
-            async with asyncio.timeout(5):
-                while not hook_entered.is_set():
-                    await asyncio.sleep(0.01)
-                node = await system.service(worker.Control).ping()
-            answered_while_blocked = not hook_returned.is_set()
+            async with hosting() as system:
+                stream = execution(system, "exe_opened")
+                await stream.ask(worker.Open, codec.dumps(numbers), codec.dumps(((), {})))
+                stepping = asyncio.create_task(stream.ask(worker.Next))
+                async with asyncio.timeout(5):
+                    while not hook_entered.is_set():
+                        await asyncio.sleep(0.01)
+                    node = await system.ref(worker.control, worker.CONTROL, at=system.node).ask(worker.Ping)
+                answered_while_blocked = not hook_returned.is_set()
 
-            hook_released.set()
-            async with asyncio.timeout(5):
-                await opening
-                first = msgspec.msgpack.decode(await system.service(worker.Worker).step("exe_opened"), type=Step)
+                hook_released.set()
+                async with asyncio.timeout(5):
+                    first = msgspec.msgpack.decode(await stepping, type=Step)
         finally:
             hook_released.set()
-            await system.close()
 
         assert node == "nod_test"
         assert answered_while_blocked, "the ping was answered only after the plugin's hook had returned"

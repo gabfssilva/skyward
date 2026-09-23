@@ -60,12 +60,16 @@ class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
     """The worker has never heard of the task."""
 
 
-type Outcome = Done | Failed | Lost | Stopped
-type Lookup = Done | Failed | Lost | Stopped | Unknown
-"""What a worker answers whoever waits on an attempt: its outcome once there is one, or that it never had it."""
+class Pending(Struct, frozen=True, tag="pending", tag_field="status"):
+    """Not yet: the worker held the question for a while and the answer did not come. Asked again, it holds it again."""
 
-type Step = Chunk | Failed | End
-"""What one pull on a generator produces, as the worker answers the daemon."""
+
+type Outcome = Done | Failed | Lost | Stopped
+type Lookup = Done | Failed | Lost | Stopped | Unknown | Pending
+"""What a worker answers whoever waits on an attempt: its outcome, that there is none yet, or that it never had it."""
+
+type Step = Chunk | Failed | End | Pending
+"""What one pull on a generator produces, as the worker answers the daemon: an item, the end, or that it is not here yet."""
 
 type Frame = Chunk | Failed
 """What a streaming task sends back: items, and at most one failure, which ends it.

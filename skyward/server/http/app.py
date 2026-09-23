@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import casty
 from litestar import Litestar, Router
 from litestar.di import Provide
 from litestar.openapi import OpenAPIConfig
@@ -21,7 +22,7 @@ from skyward.server.application.machines import Machines
 from skyward.server.application.metering import Meter
 from skyward.server.application.reading import Reader
 from skyward.server.application.reconciler import Reconciler, Wakeup
-from skyward.server.application.runtimes import Files, Forward, Runtimes, Terminal
+from skyward.server.application.runtimes import THREADS, Files, Forward, Runtimes, Terminal
 from skyward.server.http.controllers.blobs import BlobController
 from skyward.server.http.controllers.computes import ComputeController
 from skyward.server.http.controllers.console import console
@@ -163,6 +164,7 @@ def services() -> Services:
         output=console,
         sample=sampled,
         phase=phased,
+        transport=casty.Runtime(threads=THREADS),
     )
 
     offers = OfferCache(providers)

@@ -302,7 +302,7 @@ def pool(kind: Kind, reuse: bool, workers: int) -> Iterator[Pool]:
 
     ``workers`` is the pool's width — how many tasks run at once. It is the
     ``concurrency`` the pool was asked for; the buffer lives above it, in how many
-    calls casty admits, not in how many the pool runs.
+    attempts the worker admits, not in how many the pool runs.
     """
     spawn = multiprocessing.get_context("spawn")
     registrations: Registrations = spawn.Queue()

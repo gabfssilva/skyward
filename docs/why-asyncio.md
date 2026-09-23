@@ -53,11 +53,11 @@ Each node in the pool gets its own persistent SSH connection. With 8 nodes, that
 
 ### TCP tunnels
 
-Each SSH connection also establishes a **local port forward** — a TCP tunnel from a random local port to the remote machine's port 25520, where the Casty worker listens. This tunnel stays open for the lifetime of the pool, carrying all task payloads and results as Casty RPC.
+Each SSH connection also establishes a **local port forward** — a TCP tunnel from a random local port to the remote machine's port 25520, where the Casty worker listens. This tunnel stays open for the lifetime of the pool, carrying all task payloads and results as Casty messages.
 
-### Casty RPC
+### Casty messages
 
-Task dispatch — the `>>`, `@`, `&` operators — translates to Casty RPC calls sent over these TCP tunnels. When you write `train(10) >> compute`, the function and arguments are serialized (cloudpickle + lz4), sent through the SSH tunnel to the worker service on the remote node, executed there, and the result flows back as the awaited return value. The client's role is purely routing: serialize, send, wait for response, deserialize.
+Task dispatch — the `>>`, `@`, `&` operators — translates to messages to Casty actors sent over these TCP tunnels. When you write `train(10) >> compute`, the function and arguments are serialized (cloudpickle + lz4) and sent through the SSH tunnel to the actor that holds that attempt on the remote node, which runs it and keeps the result until it is asked for. The client's role is purely routing: serialize, send, ask for the result, deserialize.
 
 ### What's not here
 
@@ -68,7 +68,7 @@ Computation. The client never executes your `@sky.function` functions — that h
 Consider a pool with 100 nodes. The client simultaneously:
 
 - Maintains **100 SSH connections** (each with keepalive heartbeats)
-- Runs **100 TCP tunnels** (port forwards carrying Casty RPC)
+- Runs **100 TCP tunnels** (port forwards carrying Casty messages)
 - Polls **100 cloud API endpoints** during provisioning
 - Routes tasks to **100 workers** through the task manager
 - Streams bootstrap output from **100 instances** in parallel

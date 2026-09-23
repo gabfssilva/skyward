@@ -4,7 +4,7 @@ Some cloud providers launch instances as isolated pods or VMs without private ne
 
 ## The topology
 
-In cluster mode, all nodes form a Casty cluster and communicate directly with each other. Your client connects through a single Casty lite-member client (`casty.connect`):
+In cluster mode, all nodes form a Casty cluster and communicate directly with each other. Your client connects through a single Casty client (`casty.Client`), which hosts no actors and joins no membership:
 
 ```mermaid
 graph LR
@@ -52,7 +52,7 @@ For providers that default to standalone (RunPod, VastAI, TensorDock, JarvisLabs
 
 For providers that default to cluster mode (AWS, GCP, etc.), pass `options=sky.Options(cluster=False)` to `Compute` to opt out. Conversely, on a standalone-default provider that exposes private networking (e.g. RunPod with global networking enabled), pass `options=sky.Options(cluster=True)` to force cluster mode.
 
-Behind the scenes, standalone mode changes two things. First, each worker starts its Casty member without seeds, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool creates a separate lite-member client per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
+Behind the scenes, standalone mode changes two things. First, each worker starts its Casty member without seeds, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the daemon creates a separate Casty client per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
 
 Task dispatch is unaffected. `>>` sends to one node (round-robin), `@` broadcasts to all nodes, `&` runs tasks in parallel, `>` returns a future. `sky.gather` distributes work across all available workers. The operators are client-side constructs — they don't depend on inter-node communication.
 

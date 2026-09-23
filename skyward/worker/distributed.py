@@ -15,50 +15,61 @@ which is where they were always going to end up.
 
 Values are pickled, keys are not. A value is a user's object — an array, a model,
 a dataclass they wrote this morning — and there is no wire format for that but
-theirs. A key has to route to a shard, so it stays something casty can hash: a
-string, a number, a tuple of them.
+theirs. A key has to be the same bytes wherever it is written, because those bytes
+are what finds its entry, so it is msgpack, which has one encoding per value: a
+string, a number, bytes, or a tuple of them. Pickle has more than one.
 """
 
 from __future__ import annotations
 
 import asyncio
+import builtins
 import itertools
 import threading
 from collections.abc import Callable, Hashable, Mapping, MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Literal, TypedDict
+from typing import Literal
 
 import casty
+import msgspec
+from casty.collections import MISSING, Lease
 
 from skyward.shared.codec import dumps, loads
 from skyward.shared.observability import logger
-from skyward.worker.api import NotOnANodeError, instance_info
+from skyward.worker.api import NotOnANodeError
 
 type Consistency = Literal["strong", "eventual"]
 """How hard a write is acknowledged before the call returns.
 
 - ``"strong"`` — the default: a majority of replicas must ack, so a value read
   back after a write is the value written, and it survives losing a minority.
-- ``"eventual"`` — one replica acks and reads take the nearest copy. Cheaper, and
-  enough when a collection is a scratchpad rather than a source of truth.
+- ``"eventual"`` — one replica acks. Cheaper, and enough when a collection is a
+  scratchpad rather than a source of truth: a change of owner can lose a write.
 """
 
 REPLICAS = 3
 """What a compute replicates to, when it is big enough to.
 
 Three is the smallest number that survives losing one and still has a majority.
-A quorum bigger than the cluster fences every write, so the actual figure is
-``min(REPLICAS, nodes)`` — a one-node compute replicates to itself, and the
-collections work there too.
+casty caps it at the size of the cluster, so a one-node compute replicates to
+itself and the collections work there too — and a compute that grows keeps asking
+for the same three, which is what lets a node that joins later use a name the
+others already configured.
 """
 
 
 @dataclass(frozen=True, slots=True)
 class Cluster:
-    system: casty.ActorSystem
     loop: asyncio.AbstractEventLoop
-    replicas: int
+    collections: casty.Collections
+    held: builtins.set[object] = field(default_factory=builtins.set)
+    """Every collection object built here, kept for as long as the worker lives.
+
+    casty hands back the object it built for the same name and settings only while
+    somebody holds it, and one built afresh checks its settings with the cluster on
+    its first call — a round trip per call, for a user who called ``sky.dict`` once.
+    """
 
 
 _cluster: Cluster | None = None
@@ -67,7 +78,7 @@ _cluster: Cluster | None = None
 def bind(system: casty.ActorSystem, loop: asyncio.AbstractEventLoop) -> None:
     """Hand the worker's cluster to the user's code. Called once, by the worker."""
     global _cluster
-    _cluster = Cluster(system, loop, replicas=min(REPLICAS, instance_info().nodes))
+    _cluster = Cluster(loop, casty.Collections(system))
 
 
 def unbind() -> None:
@@ -91,28 +102,23 @@ The collection classes below are the same on both sides — only what ``invoke``
 to changes.
 """
 
-_leases: MutableMapping[str, casty.Lease] = {}
+_leases: MutableMapping[str, Lease] = {}
 """Locks held on behalf of a subprocess, by token. The lease is not serialisable, so it
 stays here and the far side holds only the token that names it."""
 _tokens = itertools.count()
 
 
-class _Regime(TypedDict, total=False):
-    write: casty.Consistency
-    read: casty.Consistency
-
-
-def _regime(params: Params) -> _Regime:
-    """The casty write/read acks for this call's consistency.
-
-    ``"strong"`` is the empty mapping — casty's own defaults (majority write, one
-    read), so a strong call is byte-for-byte the call it always was.
-    """
+def _write(params: Params) -> casty.Write:
     match params.get("consistency", "strong"):
         case "eventual":
-            return {"write": casty.ONE, "read": casty.ONE}
+            return "one"
         case _:
-            return {}
+            return "majority"
+
+
+def _kept[F](current: Cluster, facade: F) -> F:
+    current.held.add(facade)
+    return facade
 
 
 async def _apply(
@@ -123,25 +129,57 @@ async def _apply(
     args: tuple[object, ...],
     params: Params,
 ) -> object:
+    """One call on the collection, with casty's absent entry answered as ``None``.
+
+    ``None`` is never a value here — values are pickled bytes — so it is free to mean
+    absent on both sides of the subprocess bridge, where casty's marker would not
+    survive the trip as itself.
+    """
+    collections = current.collections
     match kind:
         case "map":
-            return await getattr(current.system.map(name, replicas=current.replicas, **_regime(params)), method)(*args)
+            table = _kept(current, collections.dict(name, key=bytes, value=bytes, replicas=REPLICAS, write=_write(params)))
+            match method, args:
+                case "items", ():
+                    return [(_unkey(key), value) for key, value in await table.items()]
+                case keyed, (key, *rest):
+                    answer = await getattr(table, keyed)(msgspec.msgpack.encode(key), *rest)
+                    return None if answer is MISSING else answer
+                case _:
+                    facade = table
         case "set":
-            return await getattr(current.system.set(name, replicas=current.replicas, **_regime(params)), method)(*args)
+            facade = _kept(current, collections.set(name, value=bytes, replicas=REPLICAS, write=_write(params)))
         case "counter":
-            return await getattr(current.system.counter(name, replicas=current.replicas, **_regime(params)), method)(*args)
+            facade = _kept(current, collections.counter(name, replicas=REPLICAS, write=_write(params)))
         case "queue":
-            return await getattr(current.system.queue(name, replicas=current.replicas), method)(*args)
+            facade = _kept(current, collections.queue(name, value=bytes, replicas=REPLICAS))
         case "barrier":
             parties = params["parties"]
             (timeout,) = args
             assert isinstance(parties, int)
             assert timeout is None or isinstance(timeout, int | float)
-            return await current.system.barrier(name, parties=parties, replicas=current.replicas).wait(timeout)
+            barrier = _kept(current, collections.barrier(name, parties=parties, replicas=REPLICAS))
+            async with asyncio.timeout(timeout):
+                return await barrier.wait()
         case "lock":
             return await _lease(current, name, method, args, params)
         case _:
             raise ValueError(f"unknown collection {kind!r}")
+    answer = await getattr(facade, method)(*args)
+    return None if answer is MISSING else answer
+
+
+def _unkey(raw: bytes) -> object:
+    """A key as it was written. msgpack has one kind of array, so a key that was a tuple comes back a list, and is made one again."""
+
+    def tupled(value: object) -> object:
+        match value:
+            case list():
+                return tuple(tupled(item) for item in value)
+            case _:
+                return value
+
+    return tupled(msgspec.msgpack.decode(raw))
 
 
 async def _lease(
@@ -156,7 +194,7 @@ async def _lease(
             ttl, timeout = params["ttl"], params["timeout"]
             assert isinstance(ttl, int | float)
             assert timeout is None or isinstance(timeout, int | float)
-            lock = current.system.lock(name, ttl=ttl, timeout=timeout, replicas=current.replicas)
+            lock = _kept(current, current.collections.lock(name, ttl=ttl, timeout=timeout, replicas=REPLICAS))
             token = str(next(_tokens))
             _leases[token] = await lock.acquire()
             return token
@@ -170,9 +208,8 @@ async def _lease(
         case "release":
             (token,) = args
             assert isinstance(token, str)
-            lease = _leases.pop(token, None)
-            if lease is not None:
-                await lease.release()
+            if (lease := _leases.pop(token, None)) is not None:
+                lease.release()
             return None
         case _:
             raise ValueError(f"unknown lock method {method!r}")

@@ -49,14 +49,18 @@ type Sample = Callable[[str, str, Metric], Awaitable[None]]
 type Phased = Callable[[str, str, PhaseMark, str, str | None], Awaitable[None]]
 """(compute, node, event, phase, error)"""
 
-CALL_TIMEOUT = 86_400.0
-"""A day. Long enough not to be a limit, short enough to eventually give up.
+THREADS = 2
+"""The threads casty's transport runs on, shared by every client this daemon holds — one per compute, or per node."""
 
-A call to a worker carries the user's function, and the user's function is what the
-machine was rented for. The thing that ends a task early is its own deadline, which
-the user set and the store knows about; this is only the point past which a reply is
-never coming.
+DIAL = 30.0
+"""How long a new client may take to reach a worker before the dial is given up on.
+
+casty keeps dialling until a seed answers, and a seed behind a tunnel that is down
+answers nobody: without a bound, whatever needed the client would wait for as long
+as the tunnel does.
 """
+
+UP = ("alive", "suspect")
 
 MEMBERSHIP = 30.0
 """How long a worker that is up may be missing from the client's view before it is not merely late.
@@ -97,7 +101,15 @@ class Runtime:
     nothing to connect to until a node says it is ready.
     """
 
-    def __init__(self, compute: str, skyward: SkywardSource, private_key: str, cluster: bool = True, authority: Authority | None = None) -> None:
+    def __init__(
+        self,
+        compute: str,
+        skyward: SkywardSource,
+        private_key: str,
+        cluster: bool = True,
+        authority: Authority | None = None,
+        transport: casty.Runtime | None = None,
+    ) -> None:
         self.compute = compute
         self.private_key = private_key
         self.cluster = cluster
@@ -131,6 +143,9 @@ class Runtime:
         self._source: asyncio.Task[Source] | None = None
         """The one resolution of what every node installs: in flight, done, or not yet asked for."""
 
+        self._transport = transport
+        """The threads this compute's clients run on, shared with the daemon's other computes. ``None`` is casty's
+        default: threads of their own."""
         self._systems: dict[str | None, casty.Client] = {}
         self._tunnels: dict[str, str] = {}
         self._tls: casty.TLS | None = None
@@ -250,7 +265,7 @@ class Runtime:
             node.tunnel = None
             self._refresh()
         if not self.cluster and (system := self._systems.pop(node_id, None)):
-            await system.close()
+            await system.__aexit__(None, None, None)
 
     @property
     def ready(self) -> tuple[str, ...]:
@@ -286,14 +301,8 @@ class Runtime:
         private network, where they can reach each other and the daemon cannot;
         every address they hand out is rewritten to the local port that tunnels to
         it. The dict is live — a node that becomes ready after the client
-        connected is reachable through the same map.
-
-        The call timeout is the user's function, not a protocol round trip. Casty
-        defaults it to ten seconds, which is right for asking an actor a question and
-        wrong for the thing this cluster exists to do: a call here *is* the training
-        run, and it is allowed to take as long as one takes. Whether it has taken too
-        long is the task's own deadline to answer, and a node that has actually died
-        is reported by the membership protocol, which has its own much shorter clock.
+        connected is reachable through the same map, and casty asks the map on every
+        dial, so a tunnel that comes back on another port is followed.
         """
         if not self.cluster and node_id is None:
             raise ValueError("a standalone runtime needs the node whose worker it should reach")
@@ -315,13 +324,17 @@ class Runtime:
 
                 logger.bind(compute_id=self.compute).debug("dialling the workers through {} seed(s)", len(seeds))
                 self._refresh()
-                self._systems[key] = await casty.connect(
-                    seeds,
+                client = casty.Client(
+                    seeds=tuple(seeds),
+                    name=self.compute,
                     tls=self._material(),
-                    config=casty.Config(call_timeout=CALL_TIMEOUT, transport=worker.TRANSPORT),
+                    compression=worker.COMPRESSION,
                     address_map=self.address_map(key),
-                    cluster_name=self.compute,
+                    limits=worker.LIMITS,
+                    runtime=self._transport,
                 )
+                async with asyncio.timeout(DIAL):
+                    self._systems[key] = await client.__aenter__()
 
         self._refresh()
         return self._systems[key]
@@ -360,9 +373,18 @@ class Runtime:
             return
 
         logger.bind(compute_id=self.compute, node_id=node_id).debug("telling the worker the world is now {} nodes", len(peers))
-        system = await self.system(node_id)
-        await system.service(worker.Control, at=await self.member(node_id)).topology(peers)
+        await (await self.control(node_id)).ask(worker.Topology, peers)
         node.peers = peers
+
+    async def execution(self, node_id: str, execution_id: str) -> casty.Ref[worker.ExecutionMessage]:
+        """The key one attempt lives at, on the worker of the node it was placed on."""
+        system = await self.system(node_id)
+        return system.ref(worker.execution, execution_id, at=await self.member(node_id))
+
+    async def control(self, node_id: str) -> casty.Ref[worker.ControlMessage]:
+        """The key the questions about one node go to."""
+        system = await self.system(node_id)
+        return system.ref(worker.control, worker.CONTROL, at=await self.member(node_id))
 
     async def member(self, node_id: str) -> casty.Member:
         """The cluster member that is one node's worker.
@@ -374,7 +396,7 @@ class Runtime:
         a cluster that worker is not in — which is not something waiting longer fixes.
 
         So a miss is answered with another dial, and with exactly one per node: dropping
-        the client takes every call riding it down with it, which the dispatcher
+        the client takes every ask riding it down with it, which the dispatcher
         recovers from and does not enjoy, and a worker that is simply dead would
         otherwise cost the compute a dial on every attempt placed on it.
         """
@@ -533,7 +555,7 @@ class Runtime:
 
     async def close(self) -> None:
         for system in self._systems.values():
-            await system.close()
+            await system.__aexit__(None, None, None)
         self._systems.clear()
 
         for node in self.nodes.values():
@@ -570,12 +592,17 @@ class Runtime:
         return self._tls
 
     async def _seen(self, node_id: str, seed: str) -> casty.Member | None:
-        """The member advertising that address, once it is in the view or never."""
+        """The member advertising that address, once it is up in the view or never.
+
+        Up is ``alive`` or ``suspect``, which is what casty routes to: a worker whose
+        heartbeats are late is still the one holding its attempts, and one ``dead`` or
+        ``leaving`` is somewhere to send nothing.
+        """
         system = await self.system(node_id)
         try:
             async with asyncio.timeout(MEMBERSHIP):
                 while True:
-                    if found := next((member for member in system.members() if member.addr == seed), None):
+                    if found := next((member for member in system.members if member.node.address == seed and member.status in UP), None):
                         return found
                     await asyncio.sleep(0.2)
         except TimeoutError:
@@ -584,7 +611,7 @@ class Runtime:
     async def _redial(self, node_id: str) -> None:
         """Drop the client so the next call builds one from every node that is ready now.
 
-        The calls riding it die with it, which is the price of the dial and not a loss:
+        The asks riding it die with it, which is the price of the dial and not a loss:
         a worker keeps its outcomes by execution id, and the dispatcher waits on them
         again the way it does for any dropped link. The client that replaces it owes
         nobody a dial — what was missing from the last one is a question about a
@@ -593,7 +620,7 @@ class Runtime:
         self._absent.clear()
         if system := self._systems.pop(None if self.cluster else node_id, None):
             with suppress(Exception):
-                await system.close()
+                await system.__aexit__(None, None, None)
 
     def _refresh(self) -> None:
         self._tunnels = {
@@ -606,11 +633,12 @@ class Runtime:
 class Runtimes:
     """Every live compute this daemon is holding."""
 
-    def __init__(self, listener: Listener, output: Output, sample: Sample, phase: Phased) -> None:
+    def __init__(self, listener: Listener, output: Output, sample: Sample, phase: Phased, transport: casty.Runtime | None = None) -> None:
         self._listener = listener
         self._output = output
         self._sample = sample
         self._phase = phase
+        self._transport = transport
         self._runtimes: dict[str, Runtime] = {}
 
     def of(self, compute: str) -> Runtime | None:
@@ -637,7 +665,7 @@ class Runtimes:
         cluster: bool = True,
         authority: Authority | None = None,
     ) -> Runtime:
-        return self._runtimes.setdefault(compute, Runtime(compute, skyward, private_key, cluster, authority))
+        return self._runtimes.setdefault(compute, Runtime(compute, skyward, private_key, cluster, authority, self._transport))
 
     async def start(
         self,

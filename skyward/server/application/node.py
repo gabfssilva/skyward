@@ -225,7 +225,7 @@ class Node:
         Adopting it is also what makes the tasks in flight survive: the worker never
         stopped, so neither did they.
         """
-        result = await self._ssh.run("pgrep -f skyward.worker.worker")
+        result = await self._ssh.run(f"pgrep -f {shlex.quote(bootstrap.WORKER)}")
         return result.exit_code == 0
 
     async def _bootstrap(self) -> None:
@@ -294,7 +294,7 @@ class Node:
             )
         )
         self._log.debug("starting the worker: rank {} of {} peers, {} slots on {}", self._rank, len(self.peers), self._concurrency, self._executor)
-        supervisor = bootstrap.supervised(f"{bootstrap.PYTHON} -m skyward.worker.worker")
+        supervisor = bootstrap.supervised(bootstrap.WORKER)
         await self._ssh.run(f"nohup {self._sudo}env {environment} bash -c {shlex.quote(supervisor)} >> {SKYWARD_DIR}/worker.log 2>&1 &")
 
         await self._reach("worker", self._worker_timeout)

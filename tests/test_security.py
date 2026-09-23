@@ -14,7 +14,6 @@ machines meet.
 from __future__ import annotations
 
 import asyncio
-import socket
 import ssl
 from pathlib import Path
 
@@ -50,11 +49,22 @@ def material(directory: Path, identity: tls.Identity) -> TLS:
     return TLS(cert=str(certificate), key=str(key), ca=str(authority), require_client_cert=True)
 
 
-def free() -> int:
-    """A port nobody is on, for a cluster that lives one test long."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+def serving(door: TLS) -> ssl.SSLContext:
+    """The door as a listener holds it: its identity, and the authority a caller must be signed by."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(door.cert, door.key)
+    context.load_verify_locations(door.ca)
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
+def calling(caller: TLS) -> ssl.SSLContext:
+    """A caller's side of the same material. Names are not checked: members are dialled by address and known by the authority."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.load_cert_chain(caller.cert, caller.key)
+    context.load_verify_locations(caller.ca)
+    return context
 
 
 async def reaches(door: TLS, caller: ssl.SSLContext) -> bool:
@@ -65,7 +75,7 @@ async def reaches(door: TLS, caller: ssl.SSLContext) -> bool:
         await writer.drain()
         writer.close()
 
-    listener = await asyncio.start_server(echo, "127.0.0.1", 0, ssl=door.server_context())
+    listener = await asyncio.start_server(echo, "127.0.0.1", 0, ssl=serving(door))
     async with listener:
         port = listener.sockets[0].getsockname()[1]
         try:
@@ -111,13 +121,13 @@ def describe_reaching_a_worker() -> None:
         door = material(tmp_path / "worker", tls.identity(compute, "nod_c19e40"))
         caller = material(tmp_path / "daemon", tls.identity(compute, "cmp_7f3a1c"))
 
-        assert await reaches(door, caller.client_context())
+        assert await reaches(door, calling(caller))
 
     async def it_refuses_a_member_of_another_compute(tmp_path: Path) -> None:
         door = material(tmp_path / "worker", tls.identity(tls.authority(), "nod_c19e40"))
         stranger = material(tmp_path / "stranger", tls.identity(tls.authority(), "nod_c19e40"))
 
-        assert not await reaches(door, stranger.client_context())
+        assert not await reaches(door, calling(stranger))
 
     async def it_refuses_a_caller_that_shows_no_certificate(tmp_path: Path) -> None:
         compute = tls.authority()
@@ -168,28 +178,24 @@ def describe_the_cluster_a_compute_forms() -> None:
         compute = tls.authority()
         _given(tmp_path / "node", tls.identity(compute, "nod_c19e40"), monkeypatch)
         daemon = material(tmp_path / "daemon", tls.identity(compute, "cmp_7f3a1c"))
-        port = free()
 
-        system = await casty.start(f"127.0.0.1:{port}", cluster_name="cmp_7f3a1c", tls=worker.material())
-        try:
-            client = await casty.connect([f"127.0.0.1:{port}"], cluster_name="cmp_7f3a1c", tls=daemon)
-            assert [member.addr for member in client.members()] == [f"127.0.0.1:{port}"]
-            await client.close()
-        finally:
-            await system.close()
+        async with casty.ActorSystem(cluster=casty.Cluster(bind="127.0.0.1:0", name="cmp_7f3a1c", tls=worker.material())) as system:
+            address = system.node.address
+            assert address is not None
+            async with asyncio.timeout(10), casty.Client(seeds=(address,), name="cmp_7f3a1c", tls=daemon) as client:
+                assert [member.node.address for member in client.members] == [address]
 
     async def it_refuses_a_caller_signed_by_another(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Refused is never let in: casty keeps dialling, and the client never enters."""
         _given(tmp_path / "node", tls.identity(tls.authority(), "nod_c19e40"), monkeypatch)
         stranger = material(tmp_path / "stranger", tls.identity(tls.authority(), "cmp_7f3a1c"))
-        port = free()
 
-        system = await casty.start(f"127.0.0.1:{port}", cluster_name="cmp_7f3a1c", tls=worker.material())
-        try:
-            async with asyncio.timeout(10):
-                with pytest.raises(ssl.SSLError):
-                    await casty.connect([f"127.0.0.1:{port}"], cluster_name="cmp_7f3a1c", tls=stranger)
-        finally:
-            await system.close()
+        async with casty.ActorSystem(cluster=casty.Cluster(bind="127.0.0.1:0", name="cmp_7f3a1c", tls=worker.material())) as system:
+            address = system.node.address
+            assert address is not None
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(3), casty.Client(seeds=(address,), name="cmp_7f3a1c", tls=stranger):
+                    pass
 
     def it_comes_up_without_material_on_a_compute_that_has_none(monkeypatch: pytest.MonkeyPatch) -> None:
         for variable in ("SKYWARD_TLS_CERT", "SKYWARD_TLS_KEY", "SKYWARD_TLS_CA"):

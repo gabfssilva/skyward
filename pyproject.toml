@@ -21,7 +21,7 @@ classifiers = [
 
 # What a bare node needs: it runs the worker and nothing else.
 dependencies = [
-    "casty>=0.22.1",
+    "casty>=0.30",
     "cloudpickle>=3.1",
     "loky>=3.5",
     "lz4>=4.3",
@@ -229,3 +229,7 @@ ignore_imports = [
 [tool.uv]
 # casty is ours; opt it out of the global 7-day exclude-newer quarantine.
 exclude-newer-package = { casty = "0 seconds" }
+
+[tool.uv.sources]
+# casty 0.30 is not on PyPI yet: the checkout beside this one is what the daemon runs and what `local` ships.
+casty = { path = "../casty", editable = true }

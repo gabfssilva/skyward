@@ -14,7 +14,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import casty
 import msgspec
 import pytest
 
@@ -30,14 +29,14 @@ from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.tables import ComputeRow, EventRow, GenerationRow
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared import codec, retry
+from skyward.shared import codec, frames, retry
 from skyward.shared.errors import TaskIndeterminateError
 from skyward.shared.events import TaskEvent
 from skyward.shared.frames import Done, Failed, Lookup, Lost, Unknown
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Error, Task, TaskCreate
 from skyward.worker import ipc, worker
-from tests.conftest import given
+from tests.conftest import execution, given, hosting
 
 pytestmark = pytest.mark.local
 
@@ -52,6 +51,10 @@ def always(reason: retry.Reason, attempt: int) -> bool:
 
 def broken(reason: retry.Reason, attempt: int) -> bool:
     raise RuntimeError("the decision itself is broken")
+
+
+def _lookup(answer: bytes) -> Lookup:
+    return msgspec.msgpack.decode(answer, type=Lookup)
 
 
 finished = threading.Event()
@@ -117,6 +120,7 @@ def describe_the_worker() -> None:
         monkeypatch.setenv("SKYWARD_RANK", "0")
         monkeypatch.setenv("SKYWARD_PEERS", "10.0.0.1")
         monkeypatch.setenv("SKYWARD_PLUGINS", "[]")
+        monkeypatch.setattr(worker, "admission", asyncio.Semaphore(8), raising=False)
 
     def it_asks_the_decision_with_the_live_exception(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
@@ -167,61 +171,96 @@ def describe_the_worker() -> None:
         monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
         finished.clear()
 
-        system = casty.local()
         try:
-            running = asyncio.create_task(system.service(worker.Worker).run("exe_waited_on", codec.dumps(unfinished), codec.dumps(((), {})), b"", 1, ()))
-            async with asyncio.timeout(5):
-                while "exe_waited_on" not in worker.outcomes:
-                    await asyncio.sleep(0.01)
+            async with hosting() as system:
+                waited = execution(system, "exe_waited_on")
+                await waited.ask(worker.Run, codec.dumps(unfinished), codec.dumps(((), {})))
+                assert "exe_waited_on" in worker.outcomes, "the handing over is answered once the worker holds the attempt"
 
-            waiting = asyncio.create_task(system.service(worker.Control).result("exe_waited_on"))
-            never = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_never_sent"), type=Lookup)
-            await asyncio.sleep(0.1)
+                waiting = asyncio.create_task(waited.ask(worker.Result))
+                never = _lookup(await execution(system, "exe_never_sent").ask(worker.Result))
+                await asyncio.sleep(0.1)
 
-            assert never == Unknown(), "an attempt the worker never had is answered at once"
-            assert not waiting.done(), "an attempt still running is not answered yet"
+                assert never == Unknown(), "an attempt the worker never had is answered at once"
+                assert not waiting.done(), "an attempt still running is not answered yet"
 
-            finished.set()
-            async with asyncio.timeout(5):
-                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
-                await running
+                finished.set()
+                async with asyncio.timeout(5):
+                    answered = _lookup(await waiting)
 
             assert isinstance(answered, Done)
         finally:
             finished.set()
-            await system.close()
+
+    async def it_says_an_attempt_is_not_done_once_it_held_the_question_long_enough(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A wait is let go of before the ask's own deadline, and the attempt goes on without it."""
+        monkeypatch.setattr(worker, "MODE", "thread")
+        monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
+        monkeypatch.setattr(worker, "HOLD", 0.2)
+        finished.clear()
+
+        try:
+            async with hosting() as system:
+                held = execution(system, "exe_held")
+                await held.ask(worker.Run, codec.dumps(unfinished), codec.dumps(((), {})))
+
+                async with asyncio.timeout(5):
+                    first = _lookup(await held.ask(worker.Result))
+                finished.set()
+                async with asyncio.timeout(5):
+                    while isinstance(second := _lookup(await held.ask(worker.Result)), frames.Pending):
+                        pass
+
+            assert first == frames.Pending()
+            assert isinstance(second, Done), "the attempt ran on while nobody was waiting on it"
+        finally:
+            finished.set()
+
+    async def it_takes_an_attempt_on_once_however_many_times_it_is_handed_over(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A daemon that lost the answer to a handing over cannot tell whether it arrived, and sends the same one again."""
+        ran: list[str] = []
+
+        async def counted(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1) -> Done:
+            ran.append(id)
+            return Done(value=b"")
+
+        monkeypatch.setattr(worker, "execute", counted)
+
+        async with hosting() as system:
+            twice = execution(system, "exe_twice")
+            await twice.ask(worker.Run, b"", b"")
+            await twice.ask(worker.Run, b"", b"")
+            async with asyncio.timeout(5):
+                answered = _lookup(await twice.ask(worker.Result))
+
+        assert isinstance(answered, Done)
+        assert ran == ["exe_twice"]
 
     async def it_answers_a_wait_for_an_attempt_that_arrived_and_waits_for_a_slot(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
         monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
-        monkeypatch.setattr(worker, "CONCURRENCY", 1)
-        monkeypatch.setattr(worker, "BUFFER", 0)
+        monkeypatch.setattr(worker, "admission", asyncio.Semaphore(1))
         arguments = codec.dumps(((), {}))
         finished.clear()
 
-        system = casty.local()
         try:
-            tasks = system.service(worker.Worker)
-            running = asyncio.create_task(tasks.run("exe_holding_the_slot", codec.dumps(unfinished), arguments, b"", 1, ()))
-            async with asyncio.timeout(5):
-                while "exe_holding_the_slot" not in worker.outcomes:
-                    await asyncio.sleep(0.01)
-            behind = asyncio.create_task(tasks.run("exe_behind_it", codec.dumps(answer), arguments, b"", 1, ()))
-            await asyncio.sleep(0.1)
+            async with hosting() as system:
+                holding = execution(system, "exe_holding_the_slot")
+                behind = execution(system, "exe_behind_it")
+                await holding.ask(worker.Run, codec.dumps(unfinished), arguments)
+                await behind.ask(worker.Run, codec.dumps(answer), arguments)
 
-            waiting = asyncio.create_task(system.service(worker.Control).result("exe_behind_it"))
-            await asyncio.sleep(0.1)
-            assert not waiting.done(), "an attempt waiting for a slot is not one the worker never had"
+                waiting = asyncio.create_task(behind.ask(worker.Result))
+                await asyncio.sleep(0.1)
+                assert not waiting.done(), "an attempt waiting for a slot is not one the worker never had"
 
-            finished.set()
-            async with asyncio.timeout(5):
-                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
-                await asyncio.gather(running, behind)
+                finished.set()
+                async with asyncio.timeout(5):
+                    answered = _lookup(await waiting)
 
             assert isinstance(answered, Done)
         finally:
             finished.set()
-            await system.close()
 
     async def it_answers_a_wait_with_a_loss_when_the_attempt_ends_without_an_outcome(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         entered = asyncio.Event()
@@ -234,67 +273,54 @@ def describe_the_worker() -> None:
 
         monkeypatch.setattr(worker, "execute", breaks)
 
-        system = casty.local()
-        try:
-            running = asyncio.create_task(system.service(worker.Worker).run("exe_broken", b"", b"", b"", 1, ()))
+        async with hosting() as system:
+            broken = execution(system, "exe_broken")
+            await broken.ask(worker.Run, b"", b"")
             async with asyncio.timeout(5):
                 await entered.wait()
 
-            waiting = asyncio.create_task(system.service(worker.Control).result("exe_broken"))
+            waiting = asyncio.create_task(broken.ask(worker.Result))
             await asyncio.sleep(0.1)
             assert not waiting.done(), "an attempt still running is not answered yet"
 
             release.set()
             async with asyncio.timeout(5):
-                answered = msgspec.msgpack.decode(await waiting, type=Lookup)
-                (failed,) = await asyncio.gather(running, return_exceptions=True)
+                answered = _lookup(await waiting)
 
-            assert isinstance(answered, Lost), "a wait on an attempt that ended without an outcome hears a loss"
-            assert isinstance(failed, BaseException), "the call that ran it still fails"
-        finally:
-            release.set()
-            await system.close()
+        assert isinstance(answered, Lost), "a wait on an attempt that ended without an outcome hears a loss"
 
     async def it_forgets_an_outcome_once_the_daemon_says_it_recorded_it(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
         monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
         arguments = codec.dumps(((), {}))
 
-        system = casty.local()
-        try:
-            tasks = system.service(worker.Worker)
-            await tasks.run("exe_recorded", codec.dumps(answer), arguments, b"", 1, ())
-            await tasks.run("exe_kept", codec.dumps(answer), arguments, b"", 1, ())
-            assert {"exe_recorded", "exe_kept"} <= worker.outcomes.keys()
+        async with hosting() as system:
+            for id in ("exe_recorded", "exe_kept"):
+                await execution(system, id).ask(worker.Run, codec.dumps(answer), arguments)
+                assert isinstance(_lookup(await execution(system, id).ask(worker.Result)), Done)
 
-            await tasks.run("exe_next", codec.dumps(answer), arguments, b"", 1, ("exe_recorded",))
+            await execution(system, "exe_next").ask(worker.Run, codec.dumps(answer), arguments, settled=("exe_recorded",))
 
             assert "exe_recorded" not in worker.outcomes
             assert {"exe_kept", "exe_next"} <= worker.outcomes.keys(), "only what the daemon named is dropped"
-            forgotten = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_recorded"), type=Lookup)
-            assert forgotten == Unknown()
-        finally:
-            await system.close()
+            assert _lookup(await execution(system, "exe_recorded").ask(worker.Result)) == Unknown()
 
     async def it_drops_an_outcome_nobody_acknowledged_after_keep_seconds(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
         monkeypatch.setattr(worker, "thread_pool", ThreadPoolExecutor(1), raising=False)
         monkeypatch.setattr(worker, "KEEP_SECONDS", 0.2)
 
-        system = casty.local()
-        try:
-            await system.service(worker.Worker).run("exe_unacknowledged", codec.dumps(answer), codec.dumps(((), {})), b"", 1, ())
-            kept = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_unacknowledged"), type=Lookup)
+        async with hosting() as system:
+            unacknowledged = execution(system, "exe_unacknowledged")
+            await unacknowledged.ask(worker.Run, codec.dumps(answer), codec.dumps(((), {})))
+            kept = _lookup(await unacknowledged.ask(worker.Result))
             assert isinstance(kept, Done), "within its time it is still answered"
 
             async with asyncio.timeout(5):
                 while "exe_unacknowledged" in worker.outcomes:
                     await asyncio.sleep(0.02)
 
-            dropped = msgspec.msgpack.decode(await system.service(worker.Control).result("exe_unacknowledged"), type=Lookup)
-            assert dropped == Unknown()
-        finally:
-            await system.close()
+            assert _lookup(await unacknowledged.ask(worker.Result)) == Unknown()
 
     def it_asks_the_decision_off_the_event_loop_thread(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
@@ -497,18 +523,28 @@ def describe_the_daemon() -> None:
             runtime = plane.runtimes.open(plane.compute, "pypi", "a private key")
             sent: list[tuple[str, str, tuple[str, ...]]] = []
 
-            class Node:
-                def __init__(self, node_id: str) -> None:
-                    self.node_id = node_id
+            class Attempt:
+                """The attempt's key on the worker, answering a handing over and then its outcome."""
 
-                async def run(self, id: str, code: bytes, args: bytes, decision: bytes, attempt: int, settled: tuple[str, ...]) -> bytes:
-                    sent.append((self.node_id, id, tuple(sorted(settled))))
-                    return worker.encode(Done(value=b"42"))
+                def __init__(self, node_id: str, id: str) -> None:
+                    self.node_id, self.id = node_id, id
 
-            async def at(_: object, node_id: str) -> Node:
-                return Node(node_id)
+                async def ask(self, build: object, *fields: object, **named: object) -> bytes | None:
+                    match build, fields:
+                        case worker.Run, (_, _, _, _, tuple() as settled):
+                            sent.append((self.node_id, self.id, tuple(sorted(str(id) for id in settled))))
+                            return None
+                        case _:
+                            return worker.encode(Done(value=b"42"))
 
-            monkeypatch.setattr(plane.dispatcher, "_worker", at)
+            async def at(node_id: str, id: str) -> Attempt:
+                return Attempt(node_id, id)
+
+            async def linked(_: str) -> None:
+                pass
+
+            monkeypatch.setattr(runtime, "execution", at)
+            monkeypatch.setattr(runtime, "linked", linked)
             code = await plane.blobs.store(codec.dumps(answer))
 
             async def attempt(node_id: str) -> str:

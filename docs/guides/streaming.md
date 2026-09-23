@@ -18,7 +18,7 @@ Dispatching this function returns a `Streaming` computation that produces an ite
 --8<-- "guides/13_streaming.py:61:62"
 ```
 
-Under the hood, the worker detects that the function is a generator and creates a Casty `stream_producer` actor. As the generator yields values, they're pushed into the stream with backpressure — if the client consumes slowly, the producer pauses. On the client side, the stream is wrapped in a synchronous iterator (`_SyncSource`) that bridges the async Casty protocol to Python's `__iter__`/`__next__`. The SSH tunnel carries the stream elements as individual messages, so each value crosses the network as soon as it's produced.
+Under the hood, the stream is a pull. The worker holds the generator, and the daemon asks it for the next item each time the caller has somewhere to put one; each value crosses the SSH tunnel as its own Casty message, as soon as it's produced. Nothing is produced before it is asked for — if the caller consumes slowly, the generator waits — and a caller that stops reading closes the generator on the node.
 
 This means **time-to-first-result** scales with your function's first `yield`, not with the total computation time. A function that yields a progress update every epoch gives you live feedback from the first epoch onward.
 
@@ -69,5 +69,5 @@ uv run python guides/13_streaming.py
 - **Output streaming** — `@sky.stream` generators yield results incrementally; `>>` returns a synchronous iterator on the client side.
 - **Input streaming** — Parameters annotated as `Iterator[T]` are streamed to the worker instead of serialized whole.
 - **Bidirectional** — Combine both: stream data in with `Iterator[T]`, yield results out with `yield`. Neither side buffers the full dataset.
-- **Backpressure** — Casty's stream protocol pauses the producer if the consumer falls behind, preventing unbounded memory growth.
+- **Backpressure** — The generator is pulled one item per request, so a consumer that falls behind pauses the producer, preventing unbounded memory growth.
 - **Explicit output API** — Use `@sky.stream` for generator functions and `@sky.function` for functions that consume streamed input.

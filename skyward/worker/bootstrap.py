@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 SCRIPT = f"{SKYWARD_DIR}/bootstrap.sh"
 VENV = f"{SKYWARD_DIR}/.venv"
 PYTHON = f"{VENV}/bin/python"
+WORKER = f"{PYTHON} -m skyward.worker"
+"""How the worker is started, and what ``pgrep`` finds on a machine already running one."""
 VARS = f"{SKYWARD_DIR}/vars.sh"
 ENV = f"{SKYWARD_DIR}/env.sh"
 

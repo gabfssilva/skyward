@@ -21,7 +21,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import casty
 import msgspec
 import pytest
 
@@ -33,7 +32,7 @@ from skyward.shared import codec, retry
 from skyward.shared.frames import Done, Failed, Stopped
 from skyward.shared.schemas import ComputeCreate, Task, TaskCreate
 from skyward.worker import ipc, stopping, worker
-from tests.conftest import SPEC
+from tests.conftest import SPEC, execution, hosting
 from tests.test_retry import _Plane, _plane
 
 pytestmark = pytest.mark.local
@@ -235,11 +234,8 @@ def on_a_node(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 async def _stop(id: str) -> bool:
-    system = casty.local()
-    try:
-        return await system.service(worker.Control).stop(id)
-    finally:
-        await system.close()
+    async with hosting() as system:
+        return await execution(system, id).ask(worker.Stop)
 
 
 def describe_the_worker_asked_to_stop_an_attempt() -> None:

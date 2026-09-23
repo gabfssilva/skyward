@@ -3,7 +3,7 @@
 Three answers, and the interesting one is ``local``: the daemon builds a wheel
 out of the checkout it is itself running from, and ships that. Without it nothing
 unpublished could ever run on a real machine — which, while the code is being
-written, is all of it.
+written, is all of it. The casty it runs goes with it when that is unpublished too.
 """
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ import subprocess
 import tempfile
 import threading
 from functools import cache
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlparse
 
 import msgspec
-from msgspec import Struct, field
+from msgspec import Struct
 
 from skyward.shared.schemas import SkywardSource
 from skyward.worker.journal import SKYWARD_DIR
@@ -38,7 +40,7 @@ class Source(Struct, frozen=True):
     ----------
     arguments : tuple[str, ...]
         What follows ``uv pip install`` — package names, git URLs, or the paths
-        of wheels on the machine.
+        of wheels on the machine, and the options that say where else to look.
     wheels : tuple[Wheel, ...]
         The wheels themselves, when there are wheels to upload. They are carried
         as bytes rather than paths because they are built once for the whole
@@ -59,7 +61,8 @@ class DirInfo(Struct):
 
 
 class DirectUrl(Struct):
-    dir_info: DirInfo = field(default_factory=DirInfo)
+    url: str = ""
+    dir_info: DirInfo | None = None
 
 
 async def resolve(mode: SkywardSource) -> Source:
@@ -71,7 +74,9 @@ async def resolve(mode: SkywardSource) -> Source:
             return Source(arguments=(REPO,))
         case "local":
             wheels = await asyncio.to_thread(build)
-            return Source(arguments=tuple(f"{SKYWARD_DIR}/{wheel.name}" for wheel in wheels), wheels=wheels)
+            casty = await asyncio.to_thread(checkout)
+            shipped = ("--find-links", SKYWARD_DIR, "--reinstall-package", "casty") if casty else ()
+            return Source(arguments=(*shipped, *(f"{SKYWARD_DIR}/{wheel.name}" for wheel in wheels)), wheels=(*wheels, *casty))
 
 
 async def detect() -> Literal["local", "pypi"]:
@@ -115,18 +120,50 @@ def build() -> tuple[Wheel, ...]:
         return tuple(Wheel(name=path.name, data=path.read_bytes()) for path in Path(out).glob("*.whl"))
 
 
+def checkout() -> tuple[Wheel, ...]:
+    """The casty this daemon runs, as the wheels a node installs, when it is a checkout and not a release.
+
+    A casty installed from an index is one the node installs from that index as well,
+    and nothing is shipped. One installed from a directory is unpublished, like the
+    skyward beside it, and a node has nowhere to get it from but here: the manylinux
+    wheels of the same version in that directory's ``dist``, one per architecture,
+    which the node picks from with ``--find-links``. Reinstalled, because a rebuilt
+    wheel keeps its version and a machine that has one would keep the old.
+
+    A checkout with no such wheel is refused here, by name, rather than leaving the
+    node to install whatever casty the index has — which is not the one this daemon
+    speaks, and would be refused by every worker's handshake after a whole bootstrap.
+    """
+    installed = distribution("casty")
+    origin = installed.read_text("direct_url.json")
+    if origin is None:
+        return ()
+    direct = msgspec.json.decode(origin.encode(), type=DirectUrl)
+    if direct.dir_info is None or not direct.url.startswith("file://"):
+        return ()
+
+    dist = Path(unquote(urlparse(direct.url).path)) / "dist"
+    wheels = sorted(dist.glob(f"casty-{installed.version}-*-manylinux*.whl"))
+    if not wheels:
+        raise RuntimeError(
+            f"casty {installed.version} is installed from {dist.parent}, and {dist} has no manylinux wheel of it for a node to install: "
+            "build them there with `uvx maturin build --release --zig --target <x86_64|aarch64>-unknown-linux-gnu --compatibility manylinux2014 --out dist`"
+        )
+    return tuple(Wheel(name=path.name, data=path.read_bytes()) for path in wheels)
+
+
 _lock = threading.Lock()
 """Held around the cached read: ``functools.cache`` alone lets two threads that miss at once both do the work."""
 
 
 @cache
 def _installation() -> Literal["local", "pypi"]:
-    from importlib.metadata import distribution, packages_distributions
+    from importlib.metadata import packages_distributions
 
     installed = packages_distributions().get("skyward")
     if not installed:
         return "local"
 
     url = distribution(installed[0]).read_text("direct_url.json")
-    editable = url is not None and msgspec.json.decode(url.encode(), type=DirectUrl).dir_info.editable
-    return "local" if editable else "pypi"
+    info = None if url is None else msgspec.json.decode(url.encode(), type=DirectUrl).dir_info
+    return "local" if info is not None and info.editable else "pypi"

@@ -21,12 +21,13 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import casty
 import httpx
 import msgspec
 import pytest
@@ -38,6 +39,7 @@ from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.shared.schemas import Compute, ComputeCreate, PluginRef
+from skyward.worker import worker
 
 PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 """The node's interpreter is the one running the tests.
@@ -213,3 +215,15 @@ async def given(database: Path, *plugins: str, events: EventStore | None = None)
     spec = msgspec.structs.replace(SPEC, plugins=tuple(PluginRef(kind=kind) for kind in plugins))
     compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="given")
     return store, compute
+
+
+@asynccontextmanager
+async def hosting() -> AsyncIterator[casty.ActorSystem]:
+    """A node on its own, hosting the worker's actors. A pinned key needs a cluster, so it binds a loopback port."""
+    async with casty.ActorSystem(cluster=casty.Cluster(bind="127.0.0.1:0")) as system:
+        yield system
+
+
+def execution(system: casty.ActorSystem, id: str) -> casty.Ref[worker.ExecutionMessage]:
+    """The key one attempt lives at, on that node."""
+    return system.ref(worker.execution, id, at=system.node)
