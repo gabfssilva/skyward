@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from litestar.events import EventListener, listener
+from litestar.events import EventListener
 
 from skyward.server.application import ports
 from skyward.server.application.connector import Connector
 from skyward.server.application.machines import Machines
+from skyward.server.http.emitter import Listener
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.observability import logger
 from skyward.shared.schemas import NodeState
@@ -34,11 +35,11 @@ def build_listeners(
     into, and the events they would react to are never emitted.
     """
 
-    @listener("compute.changed")
+    @Listener("compute.changed")
     async def on_compute_changed(compute_id: str) -> None:
         await reconciler.compute(compute_id)
 
-    @listener("node.requested")
+    @Listener("node.requested")
     async def on_node_requested(compute_id: str, node_id: str) -> None:
         if not machines:
             return
@@ -47,13 +48,13 @@ def build_listeners(
         except CapabilityMismatchError as mismatch:
             logger.bind(compute_id=compute_id, node_id=node_id).warning("node not placed: {}", mismatch)
 
-    @listener("node.connect")
+    @Listener("node.connect")
     async def on_node_connect(compute_id: str, node_id: str) -> None:
         """Somebody should be holding a live connection to this machine, and is not."""
         if connector:
             await connector.connect(compute_id, node_id)
 
-    @listener("node.deleting")
+    @Listener("node.deleting")
     async def on_node_deleting(compute_id: str, node_id: str) -> None:
         """Drop our connection, terminate the machine, then let the compute notice.
 
@@ -71,11 +72,11 @@ def build_listeners(
             await machines.terminate(compute_id, node_id)
             await reconciler.compute(compute_id)
 
-    @listener("node.draining")
+    @Listener("node.draining")
     async def on_node_draining(compute_id: str, node_id: str) -> None:
         await reconciler.compute(compute_id)
 
-    @listener("node.observed")
+    @Listener("node.observed")
     async def on_node_observed(compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
         """A node said what became of it.
 
@@ -84,16 +85,16 @@ def build_listeners(
         """
         await reconciler.observed(compute_id, node_id, state, error)
 
-    @listener("task.changed")
+    @Listener("task.changed")
     async def on_task_changed(task_id: str) -> None:
         await dispatcher.task(task_id)
 
-    @listener("compute.dispatch")
+    @Listener("compute.dispatch")
     async def on_compute_dispatch(compute_id: str) -> None:
         """A slot came free, or a machine arrived. Offer the queue what it can now have."""
         await dispatcher.resume(compute_id)
 
-    @listener("compute.deleted")
+    @Listener("compute.deleted")
     async def on_compute_deleted(compute_id: str) -> None:
         """The machines are gone for good: let go of the connections, then answer for the work they held.
 

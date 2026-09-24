@@ -1,6 +1,9 @@
 import type {
   Accelerator,
   Compute,
+  DaemonGroup,
+  DaemonLine,
+  LogLevel,
   FunctionRef,
   ComputeSpec,
   Ending,
@@ -997,6 +1000,9 @@ function route(path: string, init: RequestInit | undefined): Response {
   const [raw] = path.split('?')
   const parts = (raw ?? '').replace(/^\/v1\//, '').split('/')
 
+  if (raw === '/v1/daemon/log') return daemonPage(path.split('?')[1] ?? '')
+  if (raw === '/v1/daemon/log/summary') return daemonSummary(path.split('?')[1] ?? '')
+  if (raw === '/v1/daemon/log/stream') return daemonStream(path.split('?')[1] ?? '', new Headers(init?.headers).get('last-event-id'), init?.signal)
   if (raw === '/v1/events') return stream(path.split('?')[1] ?? '', new Headers(init?.headers).get('last-event-id'), init?.signal)
   if (raw === '/v1/events/log') return logPage(path.split('?')[1] ?? '')
   if (raw === '/v1/health/live') return json({ live: true, version: '0.9.3' })
@@ -1194,6 +1200,327 @@ function logPage(search: string): Response {
 
 const nodeId = (computeId: string, rank: number): string => `nd_${computeId.slice(4)}_${rank}`
 
+/* ---------- the daemon's own log ---------- */
+
+/** A generator of its own, so that writing the daemon's hour of log does not move every other number the example draws. */
+let spoken = 11
+const chance = (): number => {
+  spoken = (spoken * 1103515245 + 12345) % 2147483648
+  return spoken / 2147483648
+}
+const hexOf = (n: number): string => Array.from({ length: n }, () => Math.floor(chance() * 16).toString(16)).join('')
+
+type Failed = NonNullable<DaemonLine['exception']>
+type About = { compute?: string; node?: string; fields?: Record<string, string> }
+type DaemonFeed = { query: URLSearchParams; send: (chunk: string) => void }
+
+const SEVERITY: Record<LogLevel, number> = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3 }
+const PASSES: Record<string, string> = {
+  [C1]: 'pass: 64 alive within [64, 64], 0 in the queue, nodes 63 ready — buy 0, 0 over the target, draining 0',
+  [C2]: 'pass: 282 alive within [284, 284], 2 in the queue, nodes 282 ready — buy 2, 0 over the target, draining 0',
+  [C3]: 'pass: 6 alive within [4, 8], 0 in the queue, nodes 6 ready — buy 0, 0 over the target, draining 0',
+  [C4]: 'pass: 1 alive within [1, 1], 0 in the queue, nodes 1 ready — buy 0, 0 over the target, draining 0',
+}
+const BILLED: Record<string, [number, number]> = { [C1]: [64, 41.2], [C2]: [282, 88.4], [C3]: [6, 3.1], [C4]: [1, 0.6] }
+
+const unreachable = (address: string): Failed => ({
+  type: 'casty.errors.ActorUnavailableError',
+  message: `cannot reach member at ${address}:25520`,
+  cause: 'ConnectionRefusedError: [Errno 61] Connect call failed',
+  traceback: `Traceback (most recent call last):
+  File "skyward/server/application/connector.py", line 77, in connect
+    await runtime.retopology(node_id, _peers(nodes))
+  File "skyward/server/application/runtimes.py", line 376, in retopology
+    await (await self.control(node_id)).ask(worker.Topology, peers)
+casty.errors.ActorUnavailableError: cannot reach member at ${address}:25520`,
+})
+
+const UNPLACED: Failed = {
+  type: 'ExceptionGroup',
+  message: 'no market could place a runpod machine (1 sub-exception)',
+  cause:
+    "RuntimeError: Client error '400 Bad Request' for url 'https://api.runpod.io/v2/pods': There are no longer any instances available with the requested specifications.",
+  traceback: `  + Exception Group Traceback (most recent call last):
+  |   File "skyward/server/http/emitter.py", line 95, in _invoke
+  |     await listener.fn(*args, **kwargs)
+  |   File "skyward/server/http/listeners.py", line 46, in on_node_requested
+  |     await machines.create(compute_id, node_id)
+  |   File "skyward/server/application/machines.py", line 168, in _place
+  |     raise ExceptionGroup(f"no market could place a {adapter.kind} machine", failures)
+  | ExceptionGroup: no market could place a runpod machine (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | ExceptionGroup: runpod deployed 0 pods, 1 were required (1 sub-exception)
+    +-+---------------- 1 ----------------
+      | RuntimeError: Client error '400 Bad Request' for url 'https://api.runpod.io/v2/pods'
+      +------------------------------------`,
+}
+
+const ILLEGAL: Failed = {
+  type: 'skyward.shared.errors.IllegalTransitionError',
+  message: 'ComputeReady has no arrow from deleting',
+  cause: null,
+  traceback: `Traceback (most recent call last):
+  File "skyward/server/application/reconciler.py", line 130, in compute
+    if await self._pass(compute):
+  File "skyward/server/persistence/computes.py", line 160, in apply
+    state = lifecycle.compute(current, event)
+skyward.shared.errors.IllegalTransitionError: ComputeReady has no arrow from deleting`,
+}
+
+const daemonLines: DaemonLine[] = []
+const daemonFeeds = new Set<DaemonFeed>()
+let spokenUpTo = 0
+
+const line = (at: number, level: LogLevel, site: string, component: string, text: string, about: About = {}, exception: Failed | null = null): DaemonLine => ({
+  sequence: 0,
+  at: iso(at),
+  level,
+  site,
+  logger: 'skyward.log',
+  group: exception ? `${site}|${exception.type}` : site,
+  component,
+  compute: about.compute ?? null,
+  node: about.node ?? null,
+  fields: about.fields ?? {},
+  message: text,
+  exception,
+})
+
+/** Number it, keep it, and tell every follower whose filters keep it. */
+const speak = (said: DaemonLine): void => {
+  spokenUpTo += 1
+  const numbered = { ...said, sequence: spokenUpTo }
+  daemonLines.push(numbered)
+  for (const feed of daemonFeeds) if (keeps(numbered, feed.query)) feed.send(message(numbered.sequence, 'log', JSON.stringify(numbered)))
+}
+
+/** What the daemon says every five seconds whatever else is happening: the clock, a pass per compute, and every other time the meter. */
+const routine = (at: number, beat: number): DaemonLine[] => [
+  line(at, 'DEBUG', 'app:tick:246', 'daemon', `tick: 4 unsettled computes, ${Math.floor(chance() * 40)} unsettled tasks`),
+  ...[C1, C2, C3, C4].map((c, i) => line(at + 10 + i * 4, 'DEBUG', 'reconciler:_pass:197', 'reconciler', PASSES[c]!, { compute: c })),
+  ...(beat % 2
+    ? []
+    : [C1, C2, C3, C4].map((c, i) => {
+        const [machines, rate] = BILLED[c]!
+        return line(at + 1900 + i, 'DEBUG', 'metering:sample:43', 'metering', `${machines} machines billing, $${(rate * (1 + at / 3.6e9)).toFixed(4)} so far`, {
+          compute: c,
+        })
+      })),
+]
+
+const unplaced = (at: number): DaemonLine[] => {
+  const node = nodeId(C3, 6)
+  return [
+    line(
+      at,
+      'ERROR',
+      'emitter:_invoke:95',
+      'emitter',
+      'event listener failed: on_node_requested',
+      { compute: C3, node, fields: { listener: 'on_node_requested' } },
+      UNPLACED,
+    ),
+    line(at + 3, 'DEBUG', 'machines:create:131', 'machines', 'not buying for another 64s: the last machine was refused', { compute: C3, node }),
+  ]
+}
+
+/** The hour before the page opened: routine, two stretches of dispatching, a lost machine, a market that has nothing to sell, and a transition refused. */
+function daemonHistory(): void {
+  const t = now()
+  const draft: DaemonLine[] = []
+  let beat = 0
+  for (let at = t - 70 * 6e4; at < t; at += 5000) draft.push(...routine(at, beat++))
+
+  const dispatch = (compute: string, from: number, to: number, count: number, ranks: number): void => {
+    for (let k = 0; k < count; k++) {
+      const at = from + chance() * (to - from)
+      const exe = `exe_${hexOf(12)}`
+      draft.push(
+        line(at, 'INFO', 'dispatcher:_launch:347', 'dispatcher', `execution ${exe} of task tsk_${hexOf(12)} goes out`, {
+          compute,
+          node: nodeId(compute, Math.floor(chance() * ranks)),
+        }),
+      )
+      draft.push(line(at + 400 + chance() * 5600, 'INFO', 'dispatcher:_settle:535', 'dispatcher', `execution ${exe} succeeded`, { compute }))
+      if (chance() < 0.6)
+        draft.push(
+          line(
+            at + 6100,
+            'DEBUG',
+            'dispatcher:resume:117',
+            'dispatcher',
+            `${Math.floor(200 + chance() * 60)} free slots across ${ranks} ready nodes, 0 tasks waiting`,
+            { compute },
+          ),
+        )
+    }
+  }
+  dispatch(C2, t - 50 * 6e4, t - 35 * 6e4, 320, 284)
+  dispatch(C1, t - 25 * 6e4, t - 10 * 6e4, 420, 64)
+
+  const lost = nodeId(C2, 140)
+  const address = '176.9.31.140'
+  const at = t - 3 * 6e4
+  draft.push(line(at, 'WARNING', 'ssh:_watch:412', 'ssh', `ssh: ${address} dropped, reconnecting`))
+  draft.push(
+    line(at + 1200, 'WARNING', 'runtimes:member:411', 'runtimes', `the worker at ${address}:25520 is in no cluster this client can see; dialling again`, {
+      compute: C2,
+      node: lost,
+    }),
+  )
+  draft.push(
+    line(
+      at + 1500,
+      'WARNING',
+      'dispatcher:_run:414',
+      'dispatcher',
+      `the link dropped handing execution exe_${hexOf(12)} over; the worker will be asked for it when the link is back`,
+      { compute: C2, node: lost },
+    ),
+  )
+  draft.push(
+    line(at + 16_000, 'ERROR', 'dispatcher:_await:520', 'dispatcher', `could not wait for execution exe_${hexOf(12)}; the next pass waits again`, {
+      compute: C2,
+      node: lost,
+    }),
+  )
+  for (let k = 0; k < 18; k++)
+    draft.push(
+      line(
+        at + 3000 + k * 10_000,
+        'ERROR',
+        'emitter:_invoke:95',
+        'emitter',
+        'event listener failed: on_node_connect',
+        { compute: C2, node: lost, fields: { listener: 'on_node_connect' } },
+        unreachable(address),
+      ),
+    )
+  draft.push(line(at + 170_000, 'WARNING', 'machines:_lost:686', 'machines', 'giving up on rank 140: the machine went away', { compute: C2, node: lost }))
+
+  for (let when = t - 6 * 6e4; when < t; when += 30_000) draft.push(...unplaced(when + chance() * 900))
+  draft.push(line(t - 27 * 6e4, 'ERROR', 'reconciler:compute:134', 'reconciler', 'reconcile failed', { compute: C5 }, ILLEGAL))
+
+  draft.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).forEach(speak)
+  let live = beat
+  setInterval(() => {
+    const when = now()
+    routine(when, live++).forEach(speak)
+    if (live % 6 === 0) unplaced(when + 200).forEach(speak)
+  }, 5000)
+}
+
+/** Whether the filters of a read keep a line; ``faceted`` leaves the components out, which is how a summary counts them. */
+function keeps(said: DaemonLine, query: URLSearchParams, faceted = false): boolean {
+  const level = (query.get('level') ?? 'DEBUG') as LogLevel
+  const components = query.getAll('component')
+  const groups = query.getAll('group')
+  const contains = query.getAll('contains').map((text) => text.toLowerCase())
+  const failed = said.exception
+  const haystack = `${said.message}\n${failed ? `${failed.type}\n${failed.message}\n${failed.cause ?? ''}\n${failed.traceback}` : ''}`.toLowerCase()
+  return (
+    (SEVERITY[said.level] ?? 0) >= (SEVERITY[level] ?? 0) &&
+    (!query.get('compute') || said.compute === query.get('compute')) &&
+    (!query.get('node') || said.node === query.get('node')) &&
+    (faceted || !components.length || components.includes(said.component ?? '')) &&
+    (!groups.length || groups.includes(said.group)) &&
+    !query.getAll('hide').includes(said.group) &&
+    (!contains.length || contains.some((text) => haystack.includes(text)))
+  )
+}
+
+function daemonPage(search: string): Response {
+  const query = new URLSearchParams(search)
+  const cursor = Number(query.get('cursor') ?? Infinity)
+  const limit = Number(query.get('limit') ?? 200)
+  const since = query.get('since') ? Number(query.get('since')) : -Infinity
+  const until = query.get('until') ? Number(query.get('until')) : Infinity
+  const items: DaemonLine[] = []
+  for (let i = daemonLines.length - 1; i >= 0 && items.length < limit; i--) {
+    const said = daemonLines[i]!
+    const at = Date.parse(said.at)
+    if (said.sequence >= cursor || at >= until) continue
+    if (at < since) break
+    if (keeps(said, query)) items.push(said)
+  }
+  return json({ items, next_cursor: items.length === limit ? String(items[items.length - 1]!.sequence) : null, total: null })
+}
+
+function daemonSummary(search: string): Response {
+  const query = new URLSearchParams(search)
+  const until = Number(query.get('until') ?? now())
+  const since = Number(query.get('since') ?? until - 3.6e6)
+  const step = Number(query.get('step') ?? Math.ceil((until - since) / 60))
+  const steps = Math.max(1, Math.ceil((until - since) / step))
+  const volume = {
+    debug: new Array<number>(steps).fill(0),
+    info: new Array<number>(steps).fill(0),
+    warning: new Array<number>(steps).fill(0),
+    error: new Array<number>(steps).fill(0),
+  }
+  const column = { DEBUG: 'debug', INFO: 'info', WARNING: 'warning', ERROR: 'error' } as const
+  const components: Record<string, number> = {}
+  const groups = new Map<string, DaemonGroup & { held: Set<string> }>()
+  for (const said of daemonLines) {
+    const at = Date.parse(said.at)
+    if (at < since || at >= until || !keeps(said, query, true)) continue
+    if (said.component) components[said.component] = (components[said.component] ?? 0) + 1
+    if (query.getAll('component').length && !query.getAll('component').includes(said.component ?? '')) continue
+    const index = Math.min(steps - 1, Math.floor((at - since) / step))
+    volume[column[said.level]][index]! += 1
+    const group =
+      groups.get(said.group) ??
+      groups
+        .set(said.group, {
+          key: said.group,
+          site: said.site,
+          exception: said.exception?.type ?? null,
+          component: said.component,
+          level: said.level,
+          count: 0,
+          first: said.at,
+          last: said.at,
+          computes: 0,
+          series: new Array<number>(steps).fill(0),
+          latest: said,
+          held: new Set(),
+        })
+        .get(said.group)!
+    group.count += 1
+    group.last = said.at
+    group.latest = said
+    group.series[index]! += 1
+    if (SEVERITY[said.level] > SEVERITY[group.level]) group.level = said.level
+    if (said.compute) group.held.add(said.compute)
+    group.computes = group.held.size
+  }
+  const listed = [...groups.values()].map(({ held: _, ...group }) => group).sort((a, b) => SEVERITY[b.level] - SEVERITY[a.level] || b.count - a.count)
+  return json({ sequence: spokenUpTo, volume: { since, step, ...volume }, components, groups: listed })
+}
+
+/** The daemon's log followed: what came after ``Last-Event-ID`` first, when it names one, then each line as it is said. */
+function daemonStream(search: string, lastEventId: string | null, signal: AbortSignal | null | undefined): Response {
+  const query = new URLSearchParams(search)
+  const encoder = new TextEncoder()
+  let feed: DaemonFeed | null = null
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      feed = { query, send: (chunk) => controller.enqueue(encoder.encode(chunk)) }
+      const after = Number(lastEventId ?? spokenUpTo)
+      for (const said of daemonLines) if (said.sequence > after && keeps(said, query)) feed.send(message(said.sequence, 'log', JSON.stringify(said)))
+      daemonFeeds.add(feed)
+      signal?.addEventListener('abort', () => {
+        if (feed) daemonFeeds.delete(feed)
+        controller.close()
+      })
+    },
+    cancel() {
+      if (feed) daemonFeeds.delete(feed)
+    },
+  })
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
 const gauges = (computeId: string, rank: number, m: Live): void => {
   for (const [name, value] of Object.entries(readingsOf(computeId, m)))
     emit('node.metrics', { type: 'node.metrics', compute: computeId, node: nodeId(computeId, rank), name, value })
@@ -1331,5 +1658,6 @@ export function installMock(): void {
 
   setTimeout(history, 40)
   setTimeout(seed_all, 60)
+  daemonHistory()
   setInterval(tick, 1200)
 }

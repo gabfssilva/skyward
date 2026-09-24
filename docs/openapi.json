@@ -1025,6 +1025,132 @@
         "title": "CreateTaskResource",
         "type": "object"
       },
+      "DaemonLogResource": {
+        "description": "One line of the daemon's own log.\n\n``sequence`` is the stream's ``id:`` for the same line. ``site`` is the call that\nlogged it, ``module:function:line``; ``group`` is that call and the exception it\nwas failing with, which is what ``group`` and ``hide`` take. A library's line\ncarries the library as its ``component``.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "component": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compute": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exception": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LogException"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "group": {
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "DEBUG",
+              "INFO",
+              "WARNING",
+              "ERROR"
+            ],
+            "type": "string"
+          },
+          "logger": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "node": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sequence": {
+            "type": "integer"
+          },
+          "site": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "component",
+          "compute",
+          "exception",
+          "fields",
+          "group",
+          "level",
+          "logger",
+          "message",
+          "node",
+          "sequence",
+          "site"
+        ],
+        "title": "DaemonLogResource",
+        "type": "object"
+      },
+      "DaemonLogSummaryResource": {
+        "description": "A window of the daemon's log at a glance.\n\n``sequence`` is the newest line the summary could have counted: a stream opened\nfrom it adds to these counts without counting anything twice. ``components``\ncounts what the filters would keep if they named no component.",
+        "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/LogGroup"
+            },
+            "type": "array"
+          },
+          "sequence": {
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/LogVolume"
+          }
+        },
+        "required": [
+          "components",
+          "groups",
+          "sequence",
+          "volume"
+        ],
+        "title": "DaemonLogSummaryResource",
+        "type": "object"
+      },
       "Ending": {
         "properties": {
           "at": {
@@ -1710,6 +1836,161 @@
           "type"
         ],
         "title": "LogEntryResource",
+        "type": "object"
+      },
+      "LogException": {
+        "description": "The exception a line was logged with. ``cause`` is the innermost one, as ``Type: message``, when it is another.",
+        "properties": {
+          "cause": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "traceback": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cause",
+          "message",
+          "traceback",
+          "type"
+        ],
+        "title": "LogException",
+        "type": "object"
+      },
+      "LogGroup": {
+        "description": "The lines one call logged, failing the same way. ``series`` counts them on the volume's steps.",
+        "properties": {
+          "component": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "computes": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "exception": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "first": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "last": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/DaemonLogResource"
+          },
+          "level": {
+            "enum": [
+              "DEBUG",
+              "INFO",
+              "WARNING",
+              "ERROR"
+            ],
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "site": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "computes",
+          "count",
+          "exception",
+          "first",
+          "key",
+          "last",
+          "latest",
+          "level",
+          "series",
+          "site"
+        ],
+        "title": "LogGroup",
+        "type": "object"
+      },
+      "LogVolume": {
+        "description": "Lines per ``step`` milliseconds from ``since``, one count per step for each level.",
+        "properties": {
+          "debug": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "error": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "info": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "since": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "warning": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "debug",
+          "error",
+          "info",
+          "since",
+          "step",
+          "warning"
+        ],
+        "title": "LogVolume",
         "type": "object"
       },
       "MetricHistoryResource": {
@@ -2613,6 +2894,44 @@
           "total"
         ],
         "title": "Page[ComputeResource]",
+        "type": "object"
+      },
+      "Page_skyward.api.v1.DaemonLogResource_": {
+        "description": "A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DaemonLogResource"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "total"
+        ],
+        "title": "Page[DaemonLogResource]",
         "type": "object"
       },
       "Page_skyward.api.v1.ExecutionResource_": {
@@ -7133,6 +7452,832 @@
         ]
       }
     },
+    "/v1/daemon/log": {
+      "get": {
+        "deprecated": false,
+        "description": "What the daemon itself logged \u2014 reconciling, buying, connecting, dispatching, and every failure along the way \u2014 newest first, a page at a time. `cursor` is the `sequence` the previous page ended on.\n\nEvery filter narrows the scan rather than the page, and they combine: `level` is the lowest level kept, a repeated `component`, `group` or `contains` keeps a line matching any one of them, and `hide` drops the groups it names. `since` and `until` bound it in time, `until` exclusive.\n\nOnly a standalone daemon keeps a log; an application embedded in another process answers 404.",
+        "operationId": "V1DaemonLogPage",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The compute's name or id.",
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "description": "The compute's name or id.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The lowest level kept.",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "default": "DEBUG",
+              "description": "The lowest level kept.",
+              "enum": [
+                "DEBUG",
+                "INFO",
+                "WARNING",
+                "ERROR"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these components.",
+            "in": "query",
+            "name": "component",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these components.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines about this node.",
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines about this node.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these groups.",
+            "in": "query",
+            "name": "group",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Drops the lines of these groups.",
+            "in": "query",
+            "name": "hide",
+            "required": false,
+            "schema": {
+              "description": "Drops the lines of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+            "in": "query",
+            "name": "contains",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the range starts at.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the range starts at.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the range stops before.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the range stops before.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.api.v1.DaemonLogResource_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Read the daemon's log",
+        "tags": [
+          "daemon"
+        ]
+      }
+    },
+    "/v1/daemon/log/stream": {
+      "get": {
+        "deprecated": false,
+        "description": "Every line the filters keep, as it is written. Each message's `id:` is the line's `sequence` and its `event:` is `log`. `Last-Event-ID` first replays what was written after it and then carries on, with nothing between the two.\n\nA reader that falls too far behind is hung up on and comes back from its last id. A stream with nothing to say for 15 seconds sends a comment line, `: ping`.",
+        "operationId": "V1DaemonLogStreamStream",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The compute's name or id.",
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "description": "The compute's name or id.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The lowest level kept.",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "default": "DEBUG",
+              "description": "The lowest level kept.",
+              "enum": [
+                "DEBUG",
+                "INFO",
+                "WARNING",
+                "ERROR"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these components.",
+            "in": "query",
+            "name": "component",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these components.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines about this node.",
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines about this node.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these groups.",
+            "in": "query",
+            "name": "group",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Drops the lines of these groups.",
+            "in": "query",
+            "name": "hide",
+            "required": false,
+            "schema": {
+              "description": "Drops the lines of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+            "in": "query",
+            "name": "contains",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaemonLogResource"
+                }
+              }
+            },
+            "description": "One `data:` payload per line, framed as Server-Sent Events"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Follow the daemon's log (SSE)",
+        "tags": [
+          "daemon"
+        ]
+      }
+    },
+    "/v1/daemon/log/summary": {
+      "get": {
+        "deprecated": false,
+        "description": "A window of the log counted three ways: by level on each `step`, by component, and by group. A group is one logging call and the exception it was failing with, so a line repeated thirty thousand times is one group with a count, and a failure beside it is not lost among them. Groups come most severe first, then most frequent.\n\nThe window is the last hour unless `since` and `until` say otherwise, cut into 60 steps unless `step` does, and into at most 2000. The component counts ignore the `component` filter, so they say what choosing another one would keep.\n\n`sequence` is the newest line counted: the stream opened with it as `Last-Event-ID` carries on from exactly there.",
+        "operationId": "V1DaemonLogSummarySummary",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The compute's name or id.",
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "description": "The compute's name or id.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "The lowest level kept.",
+            "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "default": "DEBUG",
+              "description": "The lowest level kept.",
+              "enum": [
+                "DEBUG",
+                "INFO",
+                "WARNING",
+                "ERROR"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these components.",
+            "in": "query",
+            "name": "component",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these components.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines about this node.",
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines about this node.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines of any one of these groups.",
+            "in": "query",
+            "name": "group",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines of any one of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Drops the lines of these groups.",
+            "in": "query",
+            "name": "hide",
+            "required": false,
+            "schema": {
+              "description": "Drops the lines of these groups.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+            "in": "query",
+            "name": "contains",
+            "required": false,
+            "schema": {
+              "description": "Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried.",
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the window starts at.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the window starts at.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds since the epoch the window stops before.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds since the epoch the window stops before.",
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Milliseconds each count of the volume stands for.",
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "description": "Milliseconds each count of the volume stands for.",
+              "minimum": 1,
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaemonLogSummaryResource"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such resource \u2014 `not_found`"
+          }
+        },
+        "summary": "Summarize the daemon's log",
+        "tags": [
+          "daemon"
+        ]
+      }
+    },
     "/v1/events": {
       "get": {
         "deprecated": false,
@@ -9907,6 +11052,10 @@
     {
       "description": "One log per compute, and the only place anything observable is written: node output, bootstrap phases, lifecycle transitions and task outcomes all go here. There is no `logs` resource holding a second copy.\n\nIt is a stream rather than a status to poll, and it replays from any cursor that was ever valid \u2014 nothing garbage-collects it, which is what lets a client reconnect and print a bootstrap it was not around to watch.",
       "name": "events"
+    },
+    {
+      "description": "What the daemon itself logged: the reconciler's passes, what it bought and from whom, the machines it connected to, the tasks it placed, and every failure along the way, with the compute and node it was about. The events are what happened to the computes; this is the daemon's account of its own work.\n\nIt is kept in a file beside the database, rolled over and trimmed by size, so it reaches back days rather than forever. A summary counts a window by level, component and group \u2014 one logging call and the exception it was failing with \u2014 which is how a failure repeated among routine lines is found.",
+      "name": "daemon"
     },
     {
       "description": "What each node measures about itself \u2014 CPU, memory, GPU, network, disk, and whatever the image adds \u2014 kept as history. The stream's `node.metrics` frames are the same readings live, and never replay; this is where they can be read back.\n\nRecent samples are kept as they came, and a closed window is compacted into one compressed chunk per node. A read joins the two, so compaction never shows through it, except to a cursor that fell behind it.",

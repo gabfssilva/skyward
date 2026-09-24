@@ -5,6 +5,8 @@ import { CONSOLE_FRAMES, HEAD, STATE_FRAMES, recorded, subscribe } from '../api/
 import type { SkyEvent, Subscription } from '../api/events'
 import { useEffect, useMemo } from 'react'
 import { endedAt, groupOf, ms } from './model'
+import { DAEMON } from './daemonlog'
+import type { DaemonFilters } from './daemonlog'
 import type { NodeProgress, PhaseMark, Readings } from './nodes'
 
 /** One printed line: ``sequence`` and ``part`` place it in the daemon's order, and ``rank`` is ``null`` until the store has the row of the node that printed it. */
@@ -59,9 +61,9 @@ export type MarketFilters = { accel: string; market: 'all' | 'spot'; sort: Offer
  */
 export type TaskFilters = { compute: 'all' | string; state: 'all' | Task['state']; lineage: 'all' | string }
 
-/** What the Activity view is looking at. */
+/** What the Activity view is looking at: the machines' output, the daemon's record of what happened, or the daemon's own log. */
 export type ActivityFilters = {
-  kind: 'logs' | 'events'
+  kind: 'logs' | 'events' | 'daemon'
   compute: 'all' | string
   rank: 'all' | number
   level: string
@@ -83,6 +85,8 @@ export type Ui = {
   shell: boolean
   logFollow: boolean
   act: ActivityFilters
+  /** what the daemon's own log is filtered by, apart from the other two tabs because it filters on other things */
+  daemon: DaemonFilters
   hist: HistoryFilters
   task: TaskFilters
   market: MarketFilters
@@ -209,6 +213,7 @@ export const useStore = create<Store>((set, get) => ({
   shell: false,
   logFollow: true,
   act: { kind: 'logs', compute: 'all', rank: 'all', level: 'all', q: '', since: 'all' },
+  daemon: DAEMON,
   hist: { q: '', cause: 'all', provider: 'all', accel: 'all', since: 'all' },
   task: { compute: 'all', state: 'all', lineage: 'all' },
   market: { accel: 'all', market: 'all', sort: 'price' },

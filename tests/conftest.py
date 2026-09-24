@@ -38,6 +38,7 @@ from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
+from skyward.shared.observability import LogFile, logger
 from skyward.shared.schemas import Compute, ComputeCreate, PluginRef
 from skyward.worker import worker
 
@@ -227,3 +228,16 @@ async def hosting() -> AsyncIterator[casty.ActorSystem]:
 def execution(system: casty.ActorSystem, id: str) -> casty.Ref[worker.ExecutionMessage]:
     """The key one attempt lives at, on that node."""
     return system.ref(worker.execution, id, at=system.node)
+
+
+@contextmanager
+def logfile(path: Path, size: int = 1 << 20) -> Iterator[LogFile]:
+    """A log file at ``path`` taking every record logged in the block, all of it written once the block ends."""
+    logger.enable()
+    file = LogFile(path, size=size, keep=3)
+    sink = logger.add(file)
+    try:
+        yield file
+    finally:
+        logger.remove(sink)
+        file.close()

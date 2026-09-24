@@ -35,6 +35,10 @@ export type Call = Schemas['Call']
 export type Generation = Schemas['GenerationResource']
 export type Liveness = Schemas['LivenessResource']
 export type LogEntry = Schemas['LogEntryResource']
+export type DaemonLine = Schemas['DaemonLogResource']
+export type DaemonSummary = Schemas['DaemonLogSummaryResource']
+export type DaemonGroup = Schemas['LogGroup']
+export type LogLevel = DaemonLine['level']
 export type MetricHistory = Schemas['MetricHistoryResource']
 export type MetricSample = Schemas['MetricSampleResource']
 export type WireError = Schemas['Error']
@@ -157,6 +161,24 @@ export type TaskQuery = {
   order?: TaskOrder
 }
 export type LogQuery = { cursor?: string; limit?: number; compute?: string; task?: string; node?: string; types?: readonly string[]; contains?: readonly string[] }
+/**
+ * What a read of the daemon's own log keeps: every filter narrows, and the repeatable ones keep a line matching any one.
+ * ``hide`` drops the groups it names; ``since`` and ``until`` are milliseconds, ``until`` exclusive.
+ */
+export type DaemonLogQuery = {
+  level?: LogLevel
+  compute?: string
+  node?: string
+  component?: readonly string[]
+  group?: readonly string[]
+  hide?: readonly string[]
+  contains?: readonly string[]
+  since?: number
+  until?: number
+  step?: number
+  cursor?: string
+  limit?: number
+}
 /** A range of a compute's metrics — ``since`` with an optional ``step`` — or what one ``after`` a cursor has recorded. */
 export type MetricQuery = { since?: number; until?: number; after?: string; step?: number; agg?: Aggregate; node?: readonly string[]; name?: readonly string[] }
 export type OfferQuery = {
@@ -207,6 +229,11 @@ export const api = {
   writeFunction: (payload: FunctionSource): Promise<FunctionRef> => request<FunctionRef>('/functions', { method: 'POST', ...body(payload) }),
 
   log: (query?: LogQuery): Promise<Page<LogEntry>> => request<Page<LogEntry>>(`/events/log${qs(query)}`),
+
+  daemonLog: (query?: DaemonLogQuery): Promise<Page<DaemonLine>> => request<Page<DaemonLine>>(`/daemon/log${qs(query)}`),
+  daemonLogSummary: (query?: DaemonLogQuery): Promise<DaemonSummary> => request<DaemonSummary>(`/daemon/log/summary${qs(query)}`),
+  /** Where the daemon's log is followed from, for ``listen``: the same filters, never a window. */
+  daemonLogStream: (query?: DaemonLogQuery): string => `${BASE}/daemon/log/stream${qs(query)}`,
 
   providers: (): Promise<Page<Provider>> => request<Page<Provider>>('/providers'),
   provider: (id: string): Promise<Provider> => request<Provider>(`/providers/${id}`),

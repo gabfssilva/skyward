@@ -5,6 +5,7 @@ import { computeById, isLive, useEvents, useLogs, useStore, type ActivityFilters
 import { PageHead, Tabs } from '../../ui/head'
 import { EvBox, LogBox } from '../../ui/lines'
 import { Chip, Pick } from '../../ui/primitives'
+import { Daemon } from './Daemon'
 
 const ACT_SINCE: Record<ActivityFilters['since'], number> = { '5m': 5 * 60e3, '15m': 15 * 60e3, '1h': HOUR, all: Infinity }
 const SINCE_OPTIONS = (Object.keys(ACT_SINCE) as ActivityFilters['since'][]).map((k) => [k, k === 'all' ? 'all time' : k] as const)
@@ -38,8 +39,32 @@ const counted = (shown: number, loaded: number, noun: string): string => (shown 
 /** A log level is not an event kind: a pick left over from the other list asks the daemon for every kind, never for none. */
 const kindOf = (level: string): string => (EV_KINDS.some(([kind]) => kind === level) ? level : 'all')
 
-/** Everything the fleet has said: the machines' own output, or the daemon's account of what happened. */
+/** Everything that was said: the machines' own output, the daemon's account of what happened, or the daemon's own log. */
 export function Stage() {
+  const act = useStore((s) => s.act)
+  const setUi = useStore((s) => s.setUi)
+  return (
+    <>
+      <PageHead>
+        <div className="tabrow">
+          <Tabs<ActivityFilters['kind']>
+            value={act.kind}
+            options={[
+              ['logs', 'Logs', null],
+              ['events', 'Events', null],
+              ['daemon', 'Daemon', null],
+            ]}
+            onChange={(kind) => setUi({ act: { ...act, kind } })}
+          />
+        </div>
+      </PageHead>
+      {act.kind === 'daemon' ? <Daemon /> : <Fleet />}
+    </>
+  )
+}
+
+/** What the fleet has said: the machines' own output, or the daemon's account of what happened to them. */
+function Fleet() {
   const act = useStore((s) => s.act)
   const setUi = useStore((s) => s.setUi)
   const logFollow = useStore((s) => s.logFollow)
@@ -84,82 +109,67 @@ export function Stage() {
   const rankOptions = [['all', 'all'] as const, ...[...new Set(nodes.map((n) => n.rank))].sort((a, b) => a - b).slice(0, 10).map((r) => [String(r), String(r)] as const)]
 
   return (
-    <>
-      <PageHead>
-        <div className="tabrow">
-          <Tabs<ActivityFilters['kind']>
-            value={act.kind}
-            options={[
-              ['logs', 'Logs', null],
-              ['events', 'Events', null],
-            ]}
-            onChange={(kind) => set({ kind })}
-          />
-        </div>
-      </PageHead>
-
-      <section className="card">
-        <div className="row wrap" style={{ gap: 8, marginBottom: 10 }}>
-          <select className="search" aria-label="compute" style={{ minWidth: 150 }} value={act.compute} onChange={(e) => set({ compute: e.target.value, rank: 'all' })}>
-            <option value="all">Every compute</option>
-            {computes.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name ?? c.id}
-              </option>
-            ))}
-            {history.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name ?? c.id} · ended
-              </option>
-            ))}
-          </select>
-          {logs && chosen ? (
-            <>
-              <span className="cap">rank</span>
-              <Pick value={String(act.rank)} options={rankOptions} onChange={(r) => set({ rank: r === 'all' ? 'all' : Number(r) })} />
-            </>
-          ) : null}
-          <Pick value={act.level} options={logs ? LOG_LEVELS : EV_KINDS} onChange={(level) => set({ level })} />
-          <Pick value={act.since} options={SINCE_OPTIONS} onChange={(since) => set({ since })} />
-          <input className="search" placeholder={logs ? 'filter lines' : 'filter events'} value={act.q} autoComplete="off" onChange={(e) => set({ q: e.target.value })} />
-          <span className="sub spread">{logs ? counted(lines.length, feed?.lines.length ?? 0, 'lines') : counted(matched.length, events.items.length, 'events')}</span>
-          {logs ? (
-            <Chip pressed={logFollow} onClick={() => setUi({ logFollow: !logFollow })}>
-              {logFollow ? 'following' : 'paused'}
-            </Chip>
-          ) : null}
-        </div>
+    <section className="card">
+      <div className="row wrap" style={{ gap: 8, marginBottom: 10 }}>
+        <select className="search" aria-label="compute" style={{ minWidth: 150 }} value={act.compute} onChange={(e) => set({ compute: e.target.value, rank: 'all' })}>
+          <option value="all">Every compute</option>
+          {computes.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name ?? c.id}
+            </option>
+          ))}
+          {history.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name ?? c.id} · ended
+            </option>
+          ))}
+        </select>
+        {logs && chosen ? (
+          <>
+            <span className="cap">rank</span>
+            <Pick value={String(act.rank)} options={rankOptions} onChange={(r) => set({ rank: r === 'all' ? 'all' : Number(r) })} />
+          </>
+        ) : null}
+        <Pick value={act.level} options={logs ? LOG_LEVELS : EV_KINDS} onChange={(level) => set({ level })} />
+        <Pick value={act.since} options={SINCE_OPTIONS} onChange={(since) => set({ since })} />
+        <input className="search" placeholder={logs ? 'filter lines' : 'filter events'} value={act.q} autoComplete="off" onChange={(e) => set({ q: e.target.value })} />
+        <span className="sub spread">{logs ? counted(lines.length, feed?.lines.length ?? 0, 'lines') : counted(matched.length, events.items.length, 'events')}</span>
         {logs ? (
-          <LogBox
-            lines={lines}
-            names={names}
-            tall
-            follow={logFollow}
-            empty="No line matches."
-            older={
-              olderLines ? (
-                <button className="btn sm" style={{ marginBottom: 10 }} disabled={feed.loading} onClick={() => void pageLogs()}>
-                  Load older lines
-                </button>
-              ) : null
-            }
-          />
-        ) : (
-          <EvBox
-            events={matched}
-            names={names}
-            tall
-            empty="No event matches."
-            older={
-              events.cursor ? (
-                <button className="btn sm" style={{ marginBottom: 10 }} disabled={events.loading} onClick={() => void pageEvents(chosen?.id ?? null, kindOf(act.level))}>
-                  Load older events
-                </button>
-              ) : null
-            }
-          />
-        )}
-      </section>
-    </>
+          <Chip pressed={logFollow} onClick={() => setUi({ logFollow: !logFollow })}>
+            {logFollow ? 'following' : 'paused'}
+          </Chip>
+        ) : null}
+      </div>
+      {logs ? (
+        <LogBox
+          lines={lines}
+          names={names}
+          tall
+          follow={logFollow}
+          empty="No line matches."
+          older={
+            olderLines ? (
+              <button className="btn sm" style={{ marginBottom: 10 }} disabled={feed.loading} onClick={() => void pageLogs()}>
+                Load older lines
+              </button>
+            ) : null
+          }
+        />
+      ) : (
+        <EvBox
+          events={matched}
+          names={names}
+          tall
+          empty="No event matches."
+          older={
+            events.cursor ? (
+              <button className="btn sm" style={{ marginBottom: 10 }} disabled={events.loading} onClick={() => void pageEvents(chosen?.id ?? null, kindOf(act.level))}>
+                Load older events
+              </button>
+            ) : null
+          }
+        />
+      )}
+    </section>
   )
 }

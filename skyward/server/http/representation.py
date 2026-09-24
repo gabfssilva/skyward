@@ -13,6 +13,7 @@ from msgspec import UNSET
 
 from skyward.api import v1
 from skyward.server.application.reading import Code, ComputeReading, Finished, NodeReading, TaskReading
+from skyward.shared.observability import Entry, Summary
 from skyward.shared.schemas import Error, TaskCounts
 
 
@@ -114,6 +115,15 @@ def task(reading: TaskReading) -> v1.TaskResource:
     )
 
 
+def logged(entry: Entry) -> v1.DaemonLogResource:
+    return msgspec.convert(_line(entry), v1.DaemonLogResource)
+
+
+def summarized(summary: Summary) -> v1.DaemonLogSummaryResource:
+    groups = [{**msgspec.to_builtins(group, builtin_types=(datetime,)), "latest": _line(group.latest)} for group in summary.groups]
+    return msgspec.convert({**msgspec.to_builtins(summary, builtin_types=(datetime,)), "groups": groups}, v1.DaemonLogSummaryResource)
+
+
 def _counts(counts: TaskCounts, reading: ComputeReading) -> v1.TaskCounts:
     return v1.TaskCounts(
         queued=counts.queued,
@@ -156,3 +166,8 @@ def _function(code: Code) -> v1.FunctionSummary:
 
 def _error(error: Error | None) -> v1.Error | None:
     return recast(error, v1.Error) if error else None
+
+
+def _line(entry: Entry) -> dict[str, object]:
+    """An entry, and the group it is counted under, which the file does not spend a field on."""
+    return {**msgspec.to_builtins(entry, builtin_types=(datetime,)), "group": entry.group}

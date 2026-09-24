@@ -450,6 +450,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/daemon/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the daemon's log
+         * @description What the daemon itself logged — reconciling, buying, connecting, dispatching, and every failure along the way — newest first, a page at a time. `cursor` is the `sequence` the previous page ended on.
+         *
+         *     Every filter narrows the scan rather than the page, and they combine: `level` is the lowest level kept, a repeated `component`, `group` or `contains` keeps a line matching any one of them, and `hide` drops the groups it names. `since` and `until` bound it in time, `until` exclusive.
+         *
+         *     Only a standalone daemon keeps a log; an application embedded in another process answers 404.
+         */
+        get: operations["V1DaemonLogPage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/daemon/log/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow the daemon's log (SSE)
+         * @description Every line the filters keep, as it is written. Each message's `id:` is the line's `sequence` and its `event:` is `log`. `Last-Event-ID` first replays what was written after it and then carries on, with nothing between the two.
+         *
+         *     A reader that falls too far behind is hung up on and comes back from its last id. A stream with nothing to say for 15 seconds sends a comment line, `: ping`.
+         */
+        get: operations["V1DaemonLogStreamStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/daemon/log/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Summarize the daemon's log
+         * @description A window of the log counted three ways: by level on each `step`, by component, and by group. A group is one logging call and the exception it was failing with, so a line repeated thirty thousand times is one group with a count, and a failure beside it is not lost among them. Groups come most severe first, then most frequent.
+         *
+         *     The window is the last hour unless `since` and `until` say otherwise, cut into 60 steps unless `step` does, and into at most 2000. The component counts ignore the `component` filter, so they say what choosing another one would keep.
+         *
+         *     `sequence` is the newest line counted: the stream opened with it as `Last-Event-ID` carries on from exactly there.
+         */
+        get: operations["V1DaemonLogSummarySummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/events": {
         parameters: {
             query?: never;
@@ -1305,6 +1375,49 @@ export interface components {
             retry?: string | null;
             run_timeout_seconds?: number | null;
         };
+        /**
+         * DaemonLogResource
+         * @description One line of the daemon's own log.
+         *
+         *     ``sequence`` is the stream's ``id:`` for the same line. ``site`` is the call that
+         *     logged it, ``module:function:line``; ``group`` is that call and the exception it
+         *     was failing with, which is what ``group`` and ``hide`` take. A library's line
+         *     carries the library as its ``component``.
+         */
+        DaemonLogResource: {
+            /** Format: date-time */
+            at: string;
+            component: string | null;
+            compute: string | null;
+            exception: components["schemas"]["LogException"] | null;
+            fields: {
+                [key: string]: string;
+            };
+            group: string;
+            /** @enum {string} */
+            level: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+            logger: string;
+            message: string;
+            node: string | null;
+            sequence: number;
+            site: string;
+        };
+        /**
+         * DaemonLogSummaryResource
+         * @description A window of the daemon's log at a glance.
+         *
+         *     ``sequence`` is the newest line the summary could have counted: a stream opened
+         *     from it adds to these counts without counting anything twice. ``components``
+         *     counts what the filters would keep if they named no component.
+         */
+        DaemonLogSummaryResource: {
+            components: {
+                [key: string]: number;
+            };
+            groups: components["schemas"]["LogGroup"][];
+            sequence: number;
+            volume: components["schemas"]["LogVolume"];
+        };
         /** Ending */
         Ending: {
             /** Format: date-time */
@@ -1450,6 +1563,48 @@ export interface components {
             data: components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
             sequence: number;
             type: string;
+        };
+        /**
+         * LogException
+         * @description The exception a line was logged with. ``cause`` is the innermost one, as ``Type: message``, when it is another.
+         */
+        LogException: {
+            cause: string | null;
+            message: string;
+            traceback: string;
+            type: string;
+        };
+        /**
+         * LogGroup
+         * @description The lines one call logged, failing the same way. ``series`` counts them on the volume's steps.
+         */
+        LogGroup: {
+            component: string | null;
+            computes: number;
+            count: number;
+            exception: string | null;
+            /** Format: date-time */
+            first: string;
+            key: string;
+            /** Format: date-time */
+            last: string;
+            latest: components["schemas"]["DaemonLogResource"];
+            /** @enum {string} */
+            level: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+            series: number[];
+            site: string;
+        };
+        /**
+         * LogVolume
+         * @description Lines per ``step`` milliseconds from ``since``, one count per step for each level.
+         */
+        LogVolume: {
+            debug: number[];
+            error: number[];
+            info: number[];
+            since: number;
+            step: number;
+            warning: number[];
         };
         /**
          * MetricHistoryResource
@@ -1698,6 +1853,15 @@ export interface components {
          */
         "Page_skyward.api.v1.ComputeResource_": {
             items: components["schemas"]["ComputeResource"][];
+            next_cursor: string | null;
+            total: number | null;
+        };
+        /**
+         * Page[DaemonLogResource]
+         * @description A slice of a listing. ``next_cursor`` is null on the last page; ``total`` is null where nothing counted.
+         */
+        "Page_skyward.api.v1.DaemonLogResource_": {
+            items: components["schemas"]["DaemonLogResource"][];
             next_cursor: string | null;
             total: number | null;
         };
@@ -3655,6 +3819,197 @@ export interface operations {
             };
             /** @description Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `source_rejected` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    V1DaemonLogPage: {
+        parameters: {
+            query?: {
+                /** @description The compute's name or id. */
+                compute?: string | null;
+                /** @description The lowest level kept. */
+                level?: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+                /** @description Keeps the lines of any one of these components. */
+                component?: string[] | null;
+                /** @description Keeps the lines about this node. */
+                node?: string | null;
+                /** @description Keeps the lines of any one of these groups. */
+                group?: string[] | null;
+                /** @description Drops the lines of these groups. */
+                hide?: string[] | null;
+                /** @description Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried. */
+                contains?: string[] | null;
+                /** @description Milliseconds since the epoch the range starts at. */
+                since?: number | null;
+                /** @description Milliseconds since the epoch the range stops before. */
+                until?: number | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_skyward.api.v1.DaemonLogResource_"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    V1DaemonLogStreamStream: {
+        parameters: {
+            query?: {
+                /** @description The compute's name or id. */
+                compute?: string | null;
+                /** @description The lowest level kept. */
+                level?: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+                /** @description Keeps the lines of any one of these components. */
+                component?: string[] | null;
+                /** @description Keeps the lines about this node. */
+                node?: string | null;
+                /** @description Keeps the lines of any one of these groups. */
+                group?: string[] | null;
+                /** @description Drops the lines of these groups. */
+                hide?: string[] | null;
+                /** @description Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried. */
+                contains?: string[] | null;
+            };
+            header?: {
+                "Last-Event-ID"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One `data:` payload per line, framed as Server-Sent Events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["DaemonLogResource"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    V1DaemonLogSummarySummary: {
+        parameters: {
+            query?: {
+                /** @description The compute's name or id. */
+                compute?: string | null;
+                /** @description The lowest level kept. */
+                level?: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+                /** @description Keeps the lines of any one of these components. */
+                component?: string[] | null;
+                /** @description Keeps the lines about this node. */
+                node?: string | null;
+                /** @description Keeps the lines of any one of these groups. */
+                group?: string[] | null;
+                /** @description Drops the lines of these groups. */
+                hide?: string[] | null;
+                /** @description Keeps the lines that hold any one of these, ignoring case, in what they said or in the exception they carried. */
+                contains?: string[] | null;
+                /** @description Milliseconds since the epoch the window starts at. */
+                since?: number | null;
+                /** @description Milliseconds since the epoch the window stops before. */
+                until?: number | null;
+                /** @description Milliseconds each count of the volume stands for. */
+                step?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request fulfilled, document follows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DaemonLogSummaryResource"];
+                };
+            };
+            /** @description Bad request syntax or unsupported method */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        detail: string;
+                        extra?: null | {
+                            [key: string]: unknown;
+                        } | unknown[];
+                        status_code: number;
+                    };
+                };
+            };
+            /** @description No such resource — `not_found` */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

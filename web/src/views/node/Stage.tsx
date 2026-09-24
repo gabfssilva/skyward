@@ -14,6 +14,7 @@ import { PhaseProgress } from '../compute/Progress'
 import { Shell } from './Shell'
 import { VRAM } from './Shell'
 import { Stage as ComputeStage } from '../compute/Stage'
+import { openDaemonLog } from '../activity/Daemon'
 
 const NONE: never[] = []
 
@@ -96,9 +97,10 @@ export function Stage() {
           live
             ? [
                 { label: 'Replace', icon: 'refresh', onClick: () => void replace(c, n) },
+                { label: 'Daemon log', onClick: () => openDaemonLog(navigate, c.id, n.id) },
                 { label: 'Drain', icon: 'drain', danger: true, onClick: () => void drain() },
               ]
-            : undefined
+            : [{ label: 'Daemon log', onClick: () => openDaemonLog(navigate, c.id, n.id) }]
         }
       />
 

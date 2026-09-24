@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Collection, Iterable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, NamedTuple, Protocol, runtime_checkable
 
 from skyward.server.application.ssh import Pty, Result
 from skyward.shared.events import LogEntry
+from skyward.shared.observability import Entry, Query, Summary
 from skyward.shared.schemas import (
     Aggregate,
     Compute,
@@ -483,3 +484,23 @@ class Health(Protocol):
     async def ready(self) -> bool: ...
 
     async def dependencies(self) -> dict[str, DependencyState]: ...
+
+
+@runtime_checkable
+class DaemonLog(Protocol):
+    """The daemon's own log, read back: what it did, as opposed to what the computes did."""
+
+    async def page(self, query: Query, cursor: str | None, limit: int) -> Page[Entry]:
+        """The entries the query keeps, newest first; ``cursor`` is the sequence the previous page ended on."""
+        ...
+
+    async def summary(self, query: Query, since: datetime, until: datetime, step: timedelta) -> Summary:
+        """The window counted by level, by component and by group, and the sequence a follower picks up from."""
+        ...
+
+    def follow(self, query: Query, after: int | None) -> AsyncIterator[tuple[Entry, ...]]:
+        """The entries the query keeps as they are written, after ``after`` when given, in runs.
+
+        An empty run is a quiet log saying the stream is still there.
+        """
+        ...

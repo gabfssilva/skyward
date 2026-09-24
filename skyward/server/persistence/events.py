@@ -163,12 +163,12 @@ class EventStore:
             while not closed:
                 try:
                     async with asyncio.timeout(HEARTBEAT):
-                        held, closed = await _held(feed)
+                        arrived, closed = await held(feed)
                 except TimeoutError:
                     yield ()
                     continue
                 run: list[Record] = []
-                for live in held:
+                for live in arrived:
                     if live.sequence is None:
                         run.append((cursor, live.type, live.payload))
                     elif live.sequence > seen:
@@ -274,20 +274,20 @@ class EventStore:
         feed.put_nowait(live)
 
 
-async def _held(feed: asyncio.Queue[Live | None]) -> tuple[list[Live], bool]:
+async def held[T](feed: asyncio.Queue[T | None]) -> tuple[list[T], bool]:
     """Wait for the next event, then take every other one the feed already holds.
 
     The flag says the feed was hung up on. The goodbye is queued behind the events
     that came before it, and those are still handed over.
     """
-    held: list[Live] = []
+    taken: list[T] = []
     item = await feed.get()
     while item is not None:
-        held.append(item)
+        taken.append(item)
         if feed.empty():
-            return held, False
+            return taken, False
         item = feed.get_nowait()
-    return held, True
+    return taken, True
 
 
 async def _row(event: Event) -> tuple[EventRow, str, bytes]:

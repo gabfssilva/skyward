@@ -249,8 +249,11 @@ async function* blocks(body: ReadableStream<Uint8Array>): AsyncGenerator<string>
   }
 }
 
-/** One SSE block, as the fields the daemon sets. */
-function read(block: string): SkyEvent | null {
+/** One SSE message, as the fields the daemon sets. */
+export type Message = { frame: string; id: string; data: string }
+
+/** One SSE block, or nothing when it carried no data — a ping. */
+function read(block: string): Message | null {
   let frame = 'message'
   let id = ''
   const data: string[] = []
@@ -263,11 +266,11 @@ function read(block: string): SkyEvent | null {
     else if (field === 'id') id = value
     else if (field === 'data') data.push(value)
   }
-  return data.length ? decode(frame, id, data.join('\n')) : null
+  return data.length ? { frame, id, data: data.join('\n') } : null
 }
 
 /**
- * Subscribe to the daemon's event stream.
+ * Follow a stream of the daemon's, from ``lastEventId`` when given, and go on following it.
  *
  * Read with ``fetch`` rather than ``EventSource`` for one reason: ``Last-Event-ID``
  * is a request header, and an ``EventSource`` sets it itself only after it has been
@@ -275,19 +278,12 @@ function read(block: string): SkyEvent | null {
  * has to take the whole log, which is what freezes the page.
  *
  * The cursor is remembered as the stream runs, so a reconnect resumes where the last
- * one stopped. Published frames — metrics, progress, cost — carry the last recorded
- * sequence rather than one of their own, and never move it.
+ * one stopped. A message whose id is not a sequence — a frame the daemon published
+ * rather than recorded — never moves it.
  */
-export function subscribe(onEvent: EventHandler, options: SubscribeOptions = {}): Subscription {
-  const params = new URLSearchParams()
-  if (options.compute) params.set('compute', options.compute)
-  if (options.task) params.set('task', options.task)
-  for (const t of options.types ?? []) params.append('types', t)
-  const query = params.toString()
-  const url = `/v1/events${query ? `?${query}` : ''}`
-
+export function listen(url: string, onMessage: (message: Message) => void, lastEventId?: string): Subscription {
   const abort = new AbortController()
-  let cursor = options.lastEventId
+  let cursor = lastEventId
   let closed = false
 
   const advance = (id: string): void => {
@@ -304,13 +300,13 @@ export function subscribe(onEvent: EventHandler, options: SubscribeOptions = {})
           cache: 'no-store',
           headers: { accept: 'text/event-stream', ...(cursor ? { 'Last-Event-ID': cursor } : {}) },
         })
-        if (!response.ok || !response.body) throw new Error(`event stream: ${response.status}`)
+        if (!response.ok || !response.body) throw new Error(`stream: ${response.status}`)
         attempt = 0
         for await (const block of blocks(response.body)) {
-          const event = read(block)
-          if (!event) continue
-          advance(event.id)
-          onEvent(event)
+          const message = read(block)
+          if (!message) continue
+          advance(message.id)
+          onMessage(message)
         }
       } catch {
         /* a dropped stream is resumed from the cursor, not reported */
@@ -328,4 +324,21 @@ export function subscribe(onEvent: EventHandler, options: SubscribeOptions = {})
       abort.abort()
     },
   }
+}
+
+/** Subscribe to the daemon's event stream. Published frames — metrics, progress, cost — carry the last recorded sequence. */
+export function subscribe(onEvent: EventHandler, options: SubscribeOptions = {}): Subscription {
+  const params = new URLSearchParams()
+  if (options.compute) params.set('compute', options.compute)
+  if (options.task) params.set('task', options.task)
+  for (const t of options.types ?? []) params.append('types', t)
+  const query = params.toString()
+  return listen(
+    `/v1/events${query ? `?${query}` : ''}`,
+    (message) => {
+      const event = decode(message.frame, message.id, message.data)
+      if (event) onEvent(event)
+    },
+    options.lastEventId,
+  )
 }

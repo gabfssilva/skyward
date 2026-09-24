@@ -124,6 +124,17 @@ TAGS: tuple[Tag, ...] = (
         ),
     ),
     Tag(
+        name="daemon",
+        description=(
+            "What the daemon itself logged: the reconciler's passes, what it bought and from whom, the machines it "
+            "connected to, the tasks it placed, and every failure along the way, with the compute and node it was "
+            "about. The events are what happened to the computes; this is the daemon's account of its own work.\n\n"
+            "It is kept in a file beside the database, rolled over and trimmed by size, so it reaches back days rather "
+            "than forever. A summary counts a window by level, component and group — one logging call and the "
+            "exception it was failing with — which is how a failure repeated among routine lines is found."
+        ),
+    ),
+    Tag(
         name="metrics",
         description=(
             "What each node measures about itself — CPU, memory, GPU, network, disk, and whatever the image adds — "

@@ -38,6 +38,7 @@ import { openPorts, openRun, openScale, openConfirm } from '../../sheets'
 import { api } from '../../api/client'
 import { usePorts } from '../../sheets/port-state'
 import { Metrics } from './Metrics'
+import { openDaemonLog } from '../activity/Daemon'
 import { Booting } from './Progress'
 
 const NONE: never[] = []
@@ -157,6 +158,7 @@ export function Stage() {
                 },
                 { label: 'Scale', onClick: () => openScale(c.id) },
                 { label: 'Forward a port', icon: 'ports', onClick: () => openPorts(c.id) },
+                { label: 'Daemon log', onClick: () => openDaemonLog(navigate, c.id) },
                 {
                   label: 'Delete compute',
                   icon: 'trash',
@@ -171,7 +173,7 @@ export function Stage() {
                     }),
                 },
               ]
-            : undefined
+            : [{ label: 'Daemon log', onClick: () => openDaemonLog(navigate, c.id) }]
         }
       />
 

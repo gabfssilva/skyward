@@ -869,6 +869,83 @@ class LogEntryResource(Struct, frozen=True, kw_only=True):
     data: Event
 
 
+type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+class LogException(Struct, frozen=True, kw_only=True):
+    """The exception a line was logged with. ``cause`` is the innermost one, as ``Type: message``, when it is another."""
+
+    type: str
+    message: str
+    cause: str | None
+    traceback: str
+
+
+class DaemonLogResource(Struct, frozen=True, kw_only=True):
+    """One line of the daemon's own log.
+
+    ``sequence`` is the stream's ``id:`` for the same line. ``site`` is the call that
+    logged it, ``module:function:line``; ``group`` is that call and the exception it
+    was failing with, which is what ``group`` and ``hide`` take. A library's line
+    carries the library as its ``component``.
+    """
+
+    sequence: int
+    at: datetime
+    level: LogLevel
+    site: str
+    logger: str
+    group: str
+    component: str | None
+    compute: str | None
+    node: str | None
+    fields: dict[str, str]
+    message: str
+    exception: LogException | None
+
+
+class LogVolume(Struct, frozen=True, kw_only=True):
+    """Lines per ``step`` milliseconds from ``since``, one count per step for each level."""
+
+    since: int
+    step: int
+    debug: tuple[int, ...]
+    info: tuple[int, ...]
+    warning: tuple[int, ...]
+    error: tuple[int, ...]
+
+
+class LogGroup(Struct, frozen=True, kw_only=True):
+    """The lines one call logged, failing the same way. ``series`` counts them on the volume's steps."""
+
+    key: str
+    site: str
+    exception: str | None
+    component: str | None
+    level: LogLevel
+    """The highest level among them."""
+    count: int
+    first: datetime
+    last: datetime
+    computes: int
+    series: tuple[int, ...]
+    latest: DaemonLogResource
+
+
+class DaemonLogSummaryResource(Struct, frozen=True, kw_only=True):
+    """A window of the daemon's log at a glance.
+
+    ``sequence`` is the newest line the summary could have counted: a stream opened
+    from it adds to these counts without counting anything twice. ``components``
+    counts what the filters would keep if they named no component.
+    """
+
+    sequence: int
+    volume: LogVolume
+    components: dict[str, int]
+    groups: tuple[LogGroup, ...]
+
+
 class ChunkFrame(Struct, frozen=True, kw_only=True, tag_field="status", tag="chunk"):
     """One item the generator yielded, pickled."""
 
@@ -931,6 +1008,8 @@ __all__ = [
     "CreateGenerationResource",
     "CreateProviderResource",
     "CreateTaskResource",
+    "DaemonLogResource",
+    "DaemonLogSummaryResource",
     "DeletionCause",
     "DependencyState",
     "Desired",
@@ -953,6 +1032,10 @@ __all__ = [
     "LeaseResource",
     "LivenessResource",
     "LogEntryResource",
+    "LogException",
+    "LogGroup",
+    "LogLevel",
+    "LogVolume",
     "Market",
     "MetricHistoryResource",
     "MetricSampleResource",

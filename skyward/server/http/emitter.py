@@ -5,12 +5,30 @@ from collections.abc import Sequence
 from typing import Any
 
 from litestar.events import BaseEventEmitterBackend, EventListener
+from litestar.types import AsyncAnyCallable
 
 from skyward.shared.observability import logger
 
 logger = logger.bind(component="emitter")
 
 type Key = tuple[EventListener, str, tuple[Any, ...], frozenset[tuple[str, Any]]]
+
+IDS = ("compute_id", "node_id", "task_id")
+"""The payload fields a failing listener is logged with: what a reader of the log filters it by."""
+
+
+class Listener(EventListener):
+    """A listener whose failure reaches the emitter.
+
+    Litestar wraps every listener in a handler that logs the failure through its own
+    logger and swallows it, so an emitter never sees one raise, and the line says
+    nothing about which compute the call was for. This one is left bare: the emitter
+    isolates it, and logs it with the ids its payload carried.
+    """
+
+    @staticmethod
+    def wrap_in_error_handler(fn: AsyncAnyCallable) -> AsyncAnyCallable:
+        return fn
 
 
 class ReconcilingEventEmitter(BaseEventEmitterBackend):
@@ -75,7 +93,8 @@ class ReconcilingEventEmitter(BaseEventEmitterBackend):
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("event listener failed: {}", listener.fn.__name__)
+            name = listener.fn.__name__
+            logger.bind(listener=name, **{key: kwargs[key] for key in IDS if key in kwargs}).exception("event listener failed: {}", name)
 
     @staticmethod
     def _key(listener: EventListener, event_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Key | None:

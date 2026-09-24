@@ -184,6 +184,70 @@ td.err,.codebox.err{color:var(--bad)}
   .evline{grid-template-columns:54px minmax(0,1fr)} .evline span:nth-child(2){display:none}
 }
 
+/*
+ * The daemon's own log. A level has one colour wherever it is drawn — a bar of the chart, the stripe of a group,
+ * the edge of a line — and routine is drawn quietly on purpose: ninety-odd per cent of what the daemon says is it,
+ * and the colour is for what is not.
+ */
+.card.daemon{display:grid;gap:12px}
+.dvol{display:grid;gap:6px}
+.dvol svg{display:block;width:100%;height:76px;cursor:crosshair;touch-action:none}
+.dvol-legend{display:flex;gap:12px;font-size:11.5px;color:var(--muted)}
+.dvol-legend span{display:inline-flex;align-items:center;gap:5px}
+.dvol-legend i{width:9px;height:9px;border-radius:2px}
+.dvol-shade{fill:var(--panel);opacity:.72}
+rect.lv-debug{fill:var(--edge)} rect.lv-info{fill:var(--faint)} rect.lv-warn{fill:var(--warn)} rect.lv-err{fill:var(--bad)}
+i.lv-debug{background:var(--edge)} i.lv-info{background:var(--faint)} i.lv-warn{background:var(--warn)} i.lv-err{background:var(--bad)}
+.chip em{font-style:normal;font-weight:500;color:var(--faint)}
+.chip[aria-pressed="true"] em{color:var(--accent)}
+.chip.narrowed{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line-2);color:var(--ink);font-family:var(--mono);font-weight:400;font-size:11.5px}
+.chip.narrowed span{color:var(--faint);font-family:var(--sans);font-weight:600}
+.chip.narrowed svg{font-size:13px;color:var(--muted)}
+.dlist{height:calc(100svh - 420px);min-height:300px;overflow:auto;border-top:1px solid var(--line)}
+.dlist.sub{display:block;padding-top:14px}
+
+.dgroup{display:grid;grid-template-columns:4px minmax(0,1fr) 112px 72px 64px 36px;gap:12px;align-items:center;padding:8px 2px;border-bottom:1px solid var(--line)}
+.dgroup .sev{align-self:stretch;border-radius:2px;background:var(--edge)}
+.dgroup.info .sev{background:var(--faint)} .dgroup.warn .sev{background:var(--warn)} .dgroup.err .sev{background:var(--bad)}
+.dg-main{display:grid;gap:2px;min-width:0;border-radius:6px}
+.dg-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.dg-top .mono{color:var(--ink)}
+.xt{font-family:var(--mono);font-size:11px;padding:0 6px;border-radius:5px;background:var(--bad-soft);color:var(--bad)}
+.dg-msg{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgroup.err .dg-msg{color:var(--bad)}
+@media (hover:hover){.dg-main:hover .dg-top .mono{text-decoration:underline;text-underline-offset:3px}}
+.dgroup .spark{width:112px;height:26px;display:block}
+.spark .a{fill:var(--line)} .spark .l{fill:none;stroke:var(--faint);stroke-width:1.2}
+.dgroup.warn .spark .l{stroke:var(--warn)} .dgroup.warn .spark .a{fill:var(--warn-soft)}
+.dgroup.err .spark .l{stroke:var(--bad)} .dgroup.err .spark .a{fill:var(--bad-soft)}
+.dg-count{text-align:right;font-weight:700;font-size:15px;letter-spacing:-.01em;line-height:1.15}
+.dg-count small{display:block;font-size:11px;font-weight:600;color:var(--faint);letter-spacing:0}
+.dg-when{text-align:right;font-size:12px;color:var(--muted);white-space:nowrap}
+.dg-hide{width:30px;height:30px;font-size:15px}
+
+.dline{display:grid;grid-template-columns:92px 58px 84px minmax(0,1fr);gap:10px;font-family:var(--mono);font-size:12px;line-height:1.65;padding:1px 4px;border-left:2px solid transparent}
+.dline .t{color:var(--faint);white-space:nowrap}
+.dline .t small{font-size:10px}
+.dline .lv{font-size:10.5px;color:var(--faint)}
+.dline .cmp{color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dline .m{min-width:0;overflow-wrap:anywhere}
+.dline.info .lv{color:var(--muted)}
+.dline.warn{border-left-color:var(--warn)} .dline.warn .lv,.dline.warn .txt{color:var(--warn)}
+.dline.err{border-left-color:var(--bad);background:var(--bad-soft)} .dline.err .lv,.dline.err .txt{color:var(--bad)}
+.fld{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--sunk);padding:0 6px;border-radius:5px;margin-left:6px;white-space:nowrap}
+@media (hover:hover){button.fld:hover{background:var(--edge);color:var(--ink)}}
+.exc{display:block;margin-top:2px;font-family:var(--mono);font-size:11.5px;color:var(--bad)}
+.exc b{font-weight:500}
+.exc .cause{display:block;color:var(--ink);opacity:.8}
+.tb{margin:6px 0 8px;padding:10px 12px;border-radius:8px;background:var(--panel);color:var(--ink);font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre;overflow-x:auto}
+@container stage (max-width:688px){
+  .dgroup{grid-template-columns:4px minmax(0,1fr) auto 30px}
+  .dgroup .spark,.dg-when{display:none}
+  .dline{grid-template-columns:62px minmax(0,1fr)}
+  .dline .lv,.dline .cmp{display:none}
+  .dvol-legend{margin-left:0}
+}
+
 /* ---------- terminal ---------- */
 .term{background:var(--term-bg);border-radius:12px;color:var(--term-ink);font-family:var(--mono);font-size:12px;overflow:hidden}
 .term-screen{height:320px;padding:10px 12px;overflow:hidden}

@@ -81,6 +81,16 @@ for (const screen of SCREENS) {
         expect.soft(await sideways(page), name).toBe(0)
       }
     })
+
+    test("the daemon's log scrolls sideways in neither of its views", async ({ page }) => {
+      await open(page, '/activity')
+      await page.getByRole('tab', { name: 'Daemon' }).click()
+      await expect(page.locator('.dgroup').first()).toBeVisible()
+      expect.soft(await sideways(page), 'grouped').toBe(0)
+      await page.getByRole('button', { name: 'Lines', exact: true }).click()
+      await expect(page.locator('.dline').first()).toBeVisible()
+      expect.soft(await sideways(page), 'lines').toBe(0)
+    })
   })
 }
 
@@ -119,6 +129,31 @@ test.describe('every width', () => {
     const said = await card.locator('.evline > span:first-child').evaluateAll((all) => all.map((at) => at.textContent ?? ''))
     expect(said.length).toBeGreaterThan(1)
     expect([...said].sort()).toEqual(said)
+  })
+
+  test("the daemon's log puts what failed first, and a group opens on its own lines", async ({ page }) => {
+    await open(page, '/activity')
+    await page.getByRole('tab', { name: 'Daemon' }).click()
+    const first = page.locator('.dgroup').first()
+    await expect(first).toHaveClass(/\berr\b/)
+    const site = (await first.locator('.dg-top .mono').textContent()) ?? ''
+
+    await first.locator('.dg-main').click()
+    await expect(page.getByRole('button', { name: 'Lines', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.chip.narrowed', { hasText: 'group' })).toBeVisible()
+    const shown = await page.locator('.dline .cmp').evaluateAll((all) => all.map((cmp) => cmp.getAttribute('title')))
+    expect(shown.length).toBeGreaterThan(0)
+    expect(new Set(shown)).toEqual(new Set([site]))
+  })
+
+  test("a compute's page opens the daemon's log on that compute", async ({ page }) => {
+    await open(page, COMPUTE)
+    await page.getByRole('button', { name: 'More actions' }).first().click()
+    await page.getByRole('menuitem', { name: 'Daemon log' }).click()
+    await expect(page).toHaveURL(/\/activity$/)
+    await expect(page.getByRole('tab', { name: 'Daemon' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('compute', { exact: true })).toHaveValue('cmp_7f31ab')
+    await expect(page.locator('.dgroup').first()).toBeVisible()
   })
 
   test('tasks and functions are one page: every task until a function is picked', async ({ page }) => {

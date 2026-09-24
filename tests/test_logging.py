@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from skyward.server import daemon
+from skyward.shared.observability import LogFile, entries
 from skyward.shared.observability.logger import NAME, logger
 
 module = importlib.import_module("skyward.shared.observability.logger")
@@ -37,7 +38,7 @@ def _skyward_handlers(target: logging.Logger) -> list[logging.Handler]:
     return [handler for handler in target.handlers if handler is module._front or handler in module._handlers.values()]
 
 
-def describe_file_sink() -> None:
+def describe_log_file_sink() -> None:
     def it_writes_records_from_a_thread_other_than_the_one_that_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         writers: set[int] = set()
         original = logging.handlers.RotatingFileHandler.emit
@@ -47,7 +48,7 @@ def describe_file_sink() -> None:
             original(self, record)
 
         monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", emit)
-        sink = logger.add(str(tmp_path / "skyward.log"))
+        sink = logger.add(LogFile(tmp_path / "skyward.log"))
         logger.info("hello")
         logger.remove(sink)
 
@@ -56,19 +57,19 @@ def describe_file_sink() -> None:
 
     def it_has_written_every_record_once_the_sink_is_removed(tmp_path: Path) -> None:
         path = tmp_path / "skyward.log"
-        sink = logger.add(str(path))
+        sink = logger.add(LogFile(path))
         for index in range(2000):
             logger.info("record {index}", index=index)
         logger.remove(sink)
 
-        lines = path.read_text().splitlines()
-        assert len(lines) == 2000
-        assert lines[-1].endswith("record 1999")
+        written = list(entries(path))
+        assert len(written) == 2000
+        assert written[0].message == "record 1999"
 
 
 def describe_without_sinks() -> None:
     def it_attaches_nothing_to_the_root_logger(tmp_path: Path) -> None:
-        sink = logger.add(str(tmp_path / "skyward.log"))
+        sink = logger.add(LogFile(tmp_path / "skyward.log"))
         logger.remove(sink)
 
         assert _skyward_handlers(logging.getLogger()) == []
@@ -77,7 +78,7 @@ def describe_without_sinks() -> None:
 
     def it_leaves_no_thread_writing(tmp_path: Path) -> None:
         before = set(threading.enumerate())
-        sink = logger.add(str(tmp_path / "skyward.log"))
+        sink = logger.add(LogFile(tmp_path / "skyward.log"))
         logger.remove(sink)
 
         assert set(threading.enumerate()) - before == set()
@@ -102,6 +103,7 @@ def describe_spawn() -> None:
                 os.waitpid(process, 0)
 
         assert "GET /v1/health/live" not in (tmp_path / "server.log").read_text(), "a line per request is noise in a file nothing rotates"
+        assert (tmp_path / "logs" / "skyward.log").exists(), "the log file lives beside the database it is the log of"
 
 
 def _answered(url: str) -> bool:

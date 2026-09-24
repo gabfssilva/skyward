@@ -26,6 +26,7 @@ from skyward.server.application.runtimes import THREADS, Files, Forward, Runtime
 from skyward.server.http.controllers.blobs import BlobController
 from skyward.server.http.controllers.computes import ComputeController
 from skyward.server.http.controllers.console import console
+from skyward.server.http.controllers.daemon import DaemonLogController
 from skyward.server.http.controllers.events import EventController
 from skyward.server.http.controllers.files import FileController
 from skyward.server.http.controllers.forward import ForwardController
@@ -43,6 +44,7 @@ from skyward.server.http.listeners import build_listeners
 from skyward.server.http.openapi import TAGS, describe
 from skyward.server.http.references import identified
 from skyward.server.persistence.computes import ComputeStore, GenerationStore
+from skyward.server.persistence.daemonlog import DaemonLogStore
 from skyward.server.persistence.db import DEFAULT_PATH, connect
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore, FunctionStore
@@ -52,7 +54,7 @@ from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
-from skyward.shared.errors import SkywardError
+from skyward.shared.errors import NotFoundError, SkywardError
 from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import MetricSample, PhaseMark
@@ -94,6 +96,7 @@ class Services:
     forwarder: ports.Forwarder | None = None
     shell: ports.Shell | None = None
     files: ports.Files | None = None
+    log: ports.DaemonLog | None = None
 
 
 def mock_services() -> Services:
@@ -227,6 +230,12 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     svc = svc or mock_services()
     reader = Reader(svc.computes, svc.nodes, svc.tasks, svc.functions, svc.events, svc.metrics)
 
+    def kept() -> ports.DaemonLog:
+        """The daemon's own log, which only a daemon that owns its process writes."""
+        if svc.log is None:
+            raise NotFoundError("this daemon keeps no log: only a standalone daemon writes one")
+        return svc.log
+
     async def tick() -> None:
         """The clock, and the safety net that makes events optional for correctness.
 
@@ -299,6 +308,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             BlobController,
             TaskController,
             EventController,
+            DaemonLogController,
             MetricController,
             ProviderController,
             ProviderKindController,
@@ -331,6 +341,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             "reconciler": Provide(lambda: svc.reconciler, sync_to_thread=False),
             "dispatcher": Provide(lambda: svc.dispatcher, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),
+            "log": Provide(kept, sync_to_thread=False),
             **({"forwarder": Provide(lambda: svc.forwarder, sync_to_thread=False)} if svc.forwarder else {}),
             **({"shell": Provide(lambda: svc.shell, sync_to_thread=False)} if svc.shell else {}),
             **({"files": Provide(lambda: svc.files, sync_to_thread=False)} if svc.files else {}),
@@ -379,10 +390,19 @@ def daemon() -> Standalone:
     and a guest does not get to install sinks on the host application's behalf.
 
     The console sink is attached only on a terminal: a detached daemon's stdout is
-    ``server.log``, a file nothing rotates, and the rotating log file already has
-    every line the console would print.
+    ``server.log``, a file nothing rotates, and the log file already has every line
+    the console would print.
+
+    The log file lives beside the database, in ``logs/`` under the database's name,
+    because it is numbered: two daemons serving two databases would otherwise write
+    one file, and count it twice. The default database keeps it at
+    ``~/.skyward/logs/skyward.log``.
     """
-    setup_logging(LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL")), console=sys.stdout.isatty()))
     database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
+    installed = setup_logging(
+        LogConfig(level=level(os.environ.get("SKYWARD_LOG_LEVEL")), file=str(database.parent / "logs" / f"{database.stem}.log"), console=sys.stdout.isatty())
+    )
     svc = services()
+    if installed.file is not None:
+        svc = replace(svc, log=DaemonLogStore(installed.file))
     return Standalone(create_app(svc, database=database, console_at=CONSOLE if (CONSOLE / "index.html").is_file() else None), svc.tasks.close)

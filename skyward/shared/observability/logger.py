@@ -18,21 +18,27 @@ as ``extras``, out of reach of the reserved
 A record is not written on the thread that logs it: the logger holds a queue, and
 one background thread hands what arrives to the sinks, so a slow disk or a
 rollover never stalls the event loop that logged. With no sink attached the queue
-is detached too, and a record falls through to ``logging.lastResort``.
+is detached too, and a record falls through to ``logging.lastResort``. A record is
+settled before it is queued: its message formatted, and the exception it carries,
+if any, turned into a :class:`~skyward.shared.observability.logfile.Failure` and
+the traceback text a console prints.
+
+A library's logger can be made to speak through this one with ``capture``, from a
+level up: its records reach the same sinks, under the library's own name.
 """
 
 from __future__ import annotations
 
 import atexit
-import gzip
+import copy
 import logging
 import logging.handlers
-import os
 import queue
-import shutil
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import TextIO
+
+from skyward.shared.observability.logfile import failure
 
 TRACE = 5
 logging.addLevelName(TRACE, "TRACE")
@@ -125,39 +131,25 @@ class Logger:
         """Log at ``ERROR`` with the active exception attached."""
         self._log(logging.ERROR, message, args, {**kwargs, "exc_info": True})
 
-    def add(
-        self,
-        sink: str | TextIO,
-        *,
-        level: str = "DEBUG",
-        filter: str | None = None,
-        rotation: str | None = None,
-        retention: int | None = None,
-        compression: str | None = None,
-    ) -> int:
-        """Attach a sink — a path (rotating file) or a stream — and return its id.
+    def add(self, sink: TextIO | logging.Handler, *, level: str = "DEBUG", filter: str | None = None) -> int:
+        """Attach a sink — a stream, or a handler such as a log file — and return its id.
 
         Parameters
         ----------
         sink
-            A filesystem path, or an open text stream.
+            An open text stream, written as formatted lines, or a handler that writes
+            records its own way.
         level
             Minimum severity the sink accepts.
         filter
             Logger-name prefix the record must match.
-        rotation
-            Size at which a file sink rolls over, as ``"50 MB"``.
-        retention
-            How many rolled files to keep.
-        compression
-            Any truthy value gzips rolled files.
         """
         global _counter
 
         numeric = logging.getLevelNamesMapping().get(level.upper(), logging.DEBUG)
         match sink:
-            case str() as path:
-                handler = _file_handler(path, level=numeric, rotation=rotation, retention=retention, compression=compression)
+            case logging.Handler() as handler:
+                handler.setLevel(numeric)
             case stream:
                 handler = _stream_handler(stream, level=numeric)
 
@@ -177,6 +169,18 @@ class Logger:
             _handlers.pop(handler_id, None)
         _rewire()
 
+    def capture(self, name: str, level: str = "WARNING") -> None:
+        """Have the library logger ``name`` speak through this one, from ``level`` up."""
+        target = logging.getLogger(name)
+        if not any(isinstance(handler, _Bridge) for handler in target.handlers):
+            target.addHandler(_Bridge(logging.getLevelNamesMapping().get(level.upper(), logging.WARNING)))
+
+    def release(self, name: str) -> None:
+        """Undo ``capture``: the library logger goes back to whatever it did before."""
+        target = logging.getLogger(name)
+        for handler in [handler for handler in target.handlers if isinstance(handler, _Bridge)]:
+            target.removeHandler(handler)
+
     def enable(self, name: str = NAME) -> None:
         """Re-enable a logger silenced by ``disable``."""
         target = logging.getLogger(name)
@@ -193,11 +197,40 @@ class Logger:
         _patcher = patcher
 
 
+class _Front(logging.handlers.QueueHandler):
+    """The queue's end on the logging thread, which settles a record before handing it over.
+
+    ``QueueHandler`` would fold the traceback into the message and drop the exception;
+    this keeps the message as it was said and the exception as a value, and leaves
+    the traceback text where a formatter prints it.
+    """
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        settled = copy.copy(record)
+        settled.message = settled.msg = record.getMessage()
+        settled.args = None
+        settled.exc_info = None
+        settled.exc_text = None
+        settled.stack_info = None
+        if record.exc_info and (exc := record.exc_info[1]) is not None:
+            failed = failure(exc)
+            settled.__dict__["failure"] = failed
+            settled.exc_text = failed.traceback
+        return settled
+
+
+class _Bridge(logging.Handler):
+    """Hands a library's record to this logger, whose filters and sinks take it from there."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        _root.handle(record)
+
+
 _counter = 0
 _handlers: dict[int, logging.Handler] = {}
 _patcher: Patcher | None = None
 _queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
-_front = logging.handlers.QueueHandler(_queue)
+_front = _Front(_queue)
 _listener: logging.handlers.QueueListener | None = None
 
 
@@ -227,47 +260,8 @@ class _PatcherFilter(logging.Filter):
         return True
 
 
-def _namer(name: str) -> str:
-    return f"{name}.gz"
-
-
-def _rotator(source: str, dest: str) -> None:
-    with open(source, "rb") as raw, gzip.open(dest, "wb", compresslevel=6) as compressed:
-        shutil.copyfileobj(raw, compressed)
-    os.remove(source)
-
-
-def _rotation_bytes(rotation: str) -> int:
-    match rotation.strip().split():
-        case [size, unit] if unit.upper() == "MB":
-            return int(size) * 1024 * 1024
-        case _:
-            return 50 * 1024 * 1024
-
-
 def _formatter() -> logging.Formatter:
     return logging.Formatter(_FORMAT, datefmt=_DATE_FORMAT)
-
-
-def _file_handler(
-    path: str,
-    *,
-    level: int,
-    rotation: str | None,
-    retention: int | None,
-    compression: str | None,
-) -> logging.Handler:
-    handler = logging.handlers.RotatingFileHandler(
-        path,
-        maxBytes=_rotation_bytes(rotation) if rotation else 50 * 1024 * 1024,
-        backupCount=retention if retention is not None else 10,
-    )
-    if compression:
-        handler.namer = _namer
-        handler.rotator = _rotator
-    handler.setLevel(level)
-    handler.setFormatter(_formatter())
-    return handler
 
 
 def _stream_handler(stream: TextIO, *, level: int) -> logging.Handler:
