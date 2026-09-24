@@ -22,6 +22,13 @@ type Filter = tuple[str | None, str | None, tuple[str, ...] | None]
 
 BACKLOG = 1024
 
+HEARTBEAT = 15.0
+"""How long a feed stays quiet before it hands over an empty run.
+
+A reader across a network cannot tell a stream with nothing to say from a
+connection that died without closing, unless the stream says something.
+"""
+
 PAGE = 500
 """Rows one replay query reads: a long backlog is paged, not loaded whole."""
 
@@ -72,6 +79,9 @@ class EventStore:
     A slow consumer is disconnected, not waited for: its queue fills, its feed is
     closed, and it comes back with the sequence it got to. The alternative is a
     commit that blocks because somebody's browser tab is busy.
+
+    A feed with nothing to hand over for :data:`HEARTBEAT` seconds hands over an
+    empty run, which is the stream saying it is still there.
     """
 
     def __init__(self) -> None:
@@ -151,7 +161,12 @@ class EventStore:
 
             closed = False
             while not closed:
-                held, closed = await _held(feed)
+                try:
+                    async with asyncio.timeout(HEARTBEAT):
+                        held, closed = await _held(feed)
+                except TimeoutError:
+                    yield ()
+                    continue
                 run: list[Record] = []
                 for live in held:
                     if live.sequence is None:

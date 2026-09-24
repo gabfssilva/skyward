@@ -379,13 +379,13 @@ async def _plane(database: Path) -> _Plane:
     events = EventStore()
     computes, compute = await given(database, events=events)
     nodes, blobs = NodeStore(), BlobStore()
-    tasks = TaskStore(computes, nodes, blobs)
+    tasks = TaskStore(computes, nodes, blobs, events)
 
     async def quiet(*_: object) -> None:
         pass
 
     runtimes = Runtimes(listener=lambda *_: None, output=quiet, sample=quiet, phase=quiet)
-    plane = _Plane(tasks, nodes, blobs, events, Dispatcher(computes, tasks, nodes, blobs, events, runtimes, Wakeup()), runtimes, compute.id)
+    plane = _Plane(tasks, nodes, blobs, events, Dispatcher(computes, tasks, nodes, blobs, runtimes, Wakeup()), runtimes, compute.id)
 
     ids = []
     for index in range(2):
@@ -410,7 +410,7 @@ def describe_the_daemon() -> None:
             task = await plane.tasks.get(task.id)
             assert task.state == "queued", "back in the queue, never indeterminate in between"
             assert [(e.ordinal, e.state, e.retry_of) for e in task.executions] == [(1, "indeterminate", None), (2, "created", first.id)]
-            assert await plane.said(task.id) == [("retrying", 2)]
+            assert await plane.said(task.id) == [("started", 1), ("retrying", 2)]
             assert await plane.tasks.result(task.id, wait_seconds=0) is None, "a caller waiting on it keeps waiting"
 
         async def once_the_decision_says_no_it_is_indeterminate(tmp_path: Path) -> None:
@@ -425,7 +425,7 @@ def describe_the_daemon() -> None:
 
             task = await plane.tasks.get(task.id)
             assert task.state == "indeterminate"
-            assert await plane.said(task.id) == [("retrying", 2), ("indeterminate", 2)]
+            assert await plane.said(task.id) == [("started", 1), ("retrying", 2), ("started", 2), ("indeterminate", 2)]
             with pytest.raises(TaskIndeterminateError):
                 await plane.tasks.result(task.id, wait_seconds=0)
 
@@ -436,7 +436,7 @@ def describe_the_daemon() -> None:
             await plane.dispatcher._lost(task, task.executions[0], RuntimeError("gone"), retry.Lost("node_gone", plane.node_ids[0]))
 
             assert (await plane.tasks.get(task.id)).state == "indeterminate"
-            assert await plane.said(task.id) == [("indeterminate", 1)]
+            assert await plane.said(task.id) == [("started", 1), ("indeterminate", 1)]
 
         async def a_decision_that_raises_counts_as_no(tmp_path: Path) -> None:
             plane = await _plane(tmp_path / "skyward.sqlite")
@@ -456,7 +456,7 @@ def describe_the_daemon() -> None:
 
             task = await plane.tasks.get(task.id)
             assert [(e.ordinal, e.state) for e in task.executions] == [(1, "started")], "the node is ready, and its worker still owes the outcome"
-            assert await plane.said(task.id) == []
+            assert await plane.said(task.id) == [("started", 1)], "nothing past its start"
 
         async def it_waits_for_a_node_it_is_taking_hold_of_again(tmp_path: Path) -> None:
             plane = await _plane(tmp_path / "skyward.sqlite")
@@ -469,7 +469,7 @@ def describe_the_daemon() -> None:
 
             task = await plane.tasks.get(task.id)
             assert [(e.ordinal, e.state) for e in task.executions] == [(1, "started")], "a node coming back after a restart has not gone away"
-            assert await plane.said(task.id) == []
+            assert await plane.said(task.id) == [("started", 1)], "nothing past its start"
 
         async def it_calls_the_attempt_lost_once_the_node_is(tmp_path: Path) -> None:
             plane = await _plane(tmp_path / "skyward.sqlite")
@@ -481,7 +481,7 @@ def describe_the_daemon() -> None:
 
             task = await plane.tasks.get(task.id)
             assert [(e.ordinal, e.state) for e in task.executions] == [(1, "indeterminate"), (2, "created")]
-            assert await plane.said(task.id) == [("retrying", 2)]
+            assert await plane.said(task.id) == [("started", 1), ("retrying", 2)]
 
     def describe_when_the_function_raised() -> None:
         async def the_worker_s_answer_is_what_counts(tmp_path: Path) -> None:
@@ -495,7 +495,7 @@ def describe_the_daemon() -> None:
             assert task.state == "queued"
             assert [(e.ordinal, e.state) for e in task.executions] == [(1, "failed"), (2, "created")]
             assert task.executions[0].error == Error(code="task_failed", message="no", retryable=False, details={"traceback": "Traceback"})
-            assert await plane.said(task.id) == [("retrying", 2)]
+            assert await plane.said(task.id) == [("started", 1), ("retrying", 2)]
 
         async def and_by_default_it_is_no(tmp_path: Path) -> None:
             plane = await _plane(tmp_path / "skyward.sqlite")
@@ -504,7 +504,7 @@ def describe_the_daemon() -> None:
             await plane.dispatcher._settle(task, task.executions[0], Failed(error="no", traceback="Traceback"), plane.node_ids[0])
 
             assert (await plane.tasks.get(task.id)).state == "failed"
-            assert await plane.said(task.id) == [("failed", 1)]
+            assert await plane.said(task.id) == [("started", 1), ("failed", 1)]
 
     def describe_placing_the_next_attempt() -> None:
         async def it_prefers_a_node_other_than_the_one_that_lost_it(tmp_path: Path) -> None:
@@ -600,7 +600,7 @@ def describe_a_file_written_under_the_old_vocabulary() -> None:
             old.execute("INSERT INTO tasks (id, compute_id, dispatch, state, retry) VALUES ('tsk_old', 'cmp_old', 'one', 'succeeded', '{}')")
 
         computes, compute = await given(path)
-        tasks = TaskStore(computes, NodeStore(), BlobStore())
+        tasks = TaskStore(computes, NodeStore(), BlobStore(), EventStore())
         fresh, _ = await tasks.submit(TaskCreate(compute=compute.id, function="f" * 64, dispatch="one", args_inline=b"args"), idempotency_key="k")
 
         assert (await tasks.get("tsk_old")).retry is None, "an old row has no decision, and says so"

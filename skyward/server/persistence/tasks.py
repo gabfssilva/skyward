@@ -7,7 +7,7 @@ from collections.abc import Collection, Sequence
 from datetime import datetime, timedelta
 from itertools import batched
 from statistics import fmean
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, assert_never
 
 import msgspec
 from msgspec import UNSET
@@ -17,6 +17,7 @@ from piccolo.querystring import QueryString
 from skyward.server.application.ports import Held, Pace
 from skyward.server.persistence.computes import LIVE, ComputeStore
 from skyward.server.persistence.db import POSITIONS
+from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import ident, now, once, packed, unpacked
@@ -28,6 +29,7 @@ from skyward.shared.errors import (
     TaskFailedError,
     TaskIndeterminateError,
 )
+from skyward.shared.events import TaskEvent
 from skyward.shared.schemas import (
     ComputeState,
     Dispatch,
@@ -38,6 +40,7 @@ from skyward.shared.schemas import (
     Page,
     Task,
     TaskCreate,
+    TaskEventState,
     TaskOrder,
     TaskState,
 )
@@ -51,6 +54,9 @@ UNPLACED: tuple[ExecutionState, ...] = ("created", "assigned")
 
 BATCH = 500
 """How many tasks' attempts one query reads."""
+
+STRIPES = 64
+"""How many locks the settling of tasks is spread over: each task settles alone, and different tasks side by side."""
 
 
 class Pressure(NamedTuple):
@@ -80,11 +86,13 @@ class TaskStore:
     scanned like one.
     """
 
-    def __init__(self, computes: ComputeStore, nodes: NodeStore, blobs: BlobStore) -> None:
+    def __init__(self, computes: ComputeStore, nodes: NodeStore, blobs: BlobStore, events: EventStore) -> None:
         self._computes = computes
         self._nodes = nodes
         self._blobs = blobs
+        self._events = events
         self._settled: dict[str, asyncio.Event] = defaultdict(asyncio.Event)
+        self._settling = tuple(asyncio.Lock() for _ in range(STRIPES))
 
     async def submit(self, body: TaskCreate, idempotency_key: str) -> tuple[Task, bool]:
         """Persist the task and its attempts, before anything is dispatched.
@@ -274,6 +282,10 @@ class TaskStore:
 
         Starting is when the run's clock starts: the deadline stops being the wait's
         and becomes the run's, counted from here rather than from the submission.
+
+        An attempt that lands says so on the stream — that it began, how it ended, or
+        that the next one is written down — and says it once the task is settled, so a
+        reader told of an ending finds the verdict it leads to already written.
         """
         row = await ExecutionRow.objects().where(ExecutionRow.id == execution_id).first()
         if row is None:
@@ -307,7 +319,10 @@ class TaskStore:
         if again:
             await self.attempt(row.task_id, row.rank, row.ordinal + 1, retry_of=row.id)
 
-        await self.settle(row.task_id)
+        settled = await self.settle(row.task_id)
+        if (said := _said(state, again)) is not None:
+            attempt = row.ordinal + 1 if again else row.ordinal
+            await self._events.record(TaskEvent(compute=settled.compute_id, task=row.task_id, state=said, attempt=attempt))
         return True
 
     async def release(self, execution_id: str) -> None:
@@ -316,27 +331,34 @@ class TaskStore:
             (ExecutionRow.id == execution_id) & ExecutionRow.stopping.eq(True),
         ).run()
 
-    async def settle(self, task_id: str) -> None:
+    async def settle(self, task_id: str) -> TaskRow:
         """Recompute the task from its attempts. The only writer of ``TaskRow.state``.
 
         Only the latest attempt of each rank counts: a retry supersedes what it
         retried, and a task whose second attempt succeeded is a task that
         succeeded — the failed first attempt stays in the history and out of the
         verdict.
-        """
-        row = await self._row(task_id)
-        latest = _latest(await self.attempts(task_id))
-        state = _verdict(latest)
 
-        row.state = state
-        if state == "succeeded":
-            row.result_sha256 = next((e.result_sha256 for e in latest if e.result_sha256), None)
-        if state not in ("queued", "running") and row.finished_at is None:
-            row.finished_at = now()
-        await row.save().run()
+        One task settles at a time. The attempts of a broadcast end together, and a
+        settling that read them before the last one landed could otherwise write after
+        the one that read them all: a task whose every attempt has ended, left
+        ``running`` with nothing to settle it again.
+        """
+        async with self._settling[hash(task_id) % STRIPES]:
+            row = await self._row(task_id)
+            latest = _latest(await self.attempts(task_id))
+            state = _verdict(latest)
+
+            row.state = state
+            if state == "succeeded":
+                row.result_sha256 = next((e.result_sha256 for e in latest if e.result_sha256), None)
+            if state not in ("queued", "running") and row.finished_at is None:
+                row.finished_at = now()
+            await row.save().run()
 
         if state not in ("queued", "running"):
             self._settled[task_id].set()
+        return row
 
     async def _ranks(self, compute: str, body: TaskCreate) -> tuple[int, ...]:
         """Which nodes this task is for, decided once, at admission.
@@ -647,6 +669,21 @@ def _verdict(attempts: list[ExecutionRow]) -> TaskState:
             return msgspec.convert(outcome, TaskState)
 
     return "succeeded"
+
+
+def _said(state: ExecutionState, again: bool) -> TaskEventState | None:
+    """What the stream says of an attempt reaching ``state``, if anything: that it began, how it ended, or that it is tried again."""
+    match state:
+        case "created" | "assigned" | "dispatching" | "accepted" | "cancel_requested":
+            return None
+        case "started":
+            return "started"
+        case "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate" if again:
+            return "retrying"
+        case "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate":
+            return state
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _reason(task: Task) -> str:

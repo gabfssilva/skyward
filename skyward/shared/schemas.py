@@ -1087,13 +1087,15 @@ class Readiness(Struct, frozen=True):
 type PhaseMark = Literal["started", "completed", "failed"]
 """Whether a bootstrap phase opened, closed, or broke."""
 
-type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "timed_out", "indeterminate"]
-"""What the stream says about a task: that it began, that it is being tried again, or how it ended.
+type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "cancelled", "timed_out", "indeterminate"]
+"""What the stream says about an attempt at a task: that it began, that it is being tried again, or how it ended.
 
-Narrower than :data:`TaskState`, which is the task resource's own vocabulary. A
-task that was never placed has a state and no event, and ``started`` is a moment
+Not :data:`TaskState`, which is the task resource's own vocabulary: ``queued`` and
+``running`` are states with no moment of their own, and ``started`` is a moment
 rather than a state — the two are not the same alphabet and are not merged.
 ``retrying`` is the moment an attempt ended and another was written down in its
-place; the task is queued again, and nothing terminal has been said.
+place; the task is queued again, and nothing terminal has been said. An ending is
+one attempt's, so a broadcast says one per node, and the task has ended once the
+last of them has.
 """
 

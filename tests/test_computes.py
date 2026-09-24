@@ -33,7 +33,7 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
-from skyward.server.persistence.tables import ComputeRow, EventRow, FunctionRow, NodeRow, TaskRow
+from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow, FunctionRow, NodeRow, TaskRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import ComputeNotConnectedError, NameTakenError, NotFoundError
 from skyward.shared.events import ComputeAbandoned, ComputeDeleted
@@ -239,7 +239,7 @@ def describe_what_a_compute_has_run() -> None:
     async def a_live_one_counts_every_task_by_its_state_not_a_page_of_them(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="busy")
-        tasks = TaskStore(store, NodeStore(), BlobStore())
+        tasks = TaskStore(store, NodeStore(), BlobStore(), EventStore())
         for state in ("queued", "queued", "running", "succeeded", "succeeded", "failed", "timed_out", "indeterminate"):
             task = await _submit(tasks, compute.id)
             await TaskRow.update({TaskRow.state: state}).where(TaskRow.id == task.id).run()
@@ -251,7 +251,7 @@ def describe_what_a_compute_has_run() -> None:
     async def a_deleted_one_keeps_the_count_of_how_its_tasks_turned_out(tmp_path: Path) -> None:
         store = await _store(tmp_path)
         compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="done")
-        tasks = TaskStore(store, NodeStore(), BlobStore())
+        tasks = TaskStore(store, NodeStore(), BlobStore(), EventStore())
         for state in ("succeeded", "cancelled"):
             task = await _submit(tasks, compute.id)
             await TaskRow.update({TaskRow.state: state}).where(TaskRow.id == task.id).run()
@@ -263,7 +263,7 @@ def describe_what_a_compute_has_run() -> None:
 
     async def each_compute_on_a_page_counts_only_its_own(tmp_path: Path) -> None:
         store = await _store(tmp_path)
-        tasks = TaskStore(store, NodeStore(), BlobStore())
+        tasks = TaskStore(store, NodeStore(), BlobStore(), EventStore())
         busy, _ = await store.create(ComputeCreate(spec=SPEC, name="busy"), idempotency_key="k1")
         await store.create(ComputeCreate(spec=SPEC, name="idle"), idempotency_key="k2")
         await _submit(tasks, busy.id)
@@ -354,6 +354,59 @@ def describe_a_compute_that_has_ended() -> None:
         ended = (await ComputeStore(EventStore(), NodeStore()).get(compute.id)).ended
         assert said is not None and ended is not None
         assert (ended.at, ended.cause) == (said["created_at"], "abandoned")
+
+
+def describe_how_a_task_ends() -> None:
+    async def the_attempts_of_a_broadcast_ending_together_end_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each ending settles the task from the attempts it reads, and one that read before the last attempt landed is not the one that writes last."""
+        tasks, compute = await _tasks(tmp_path)
+        task = await _fanned(tasks, compute, ranks=10)
+        first, *rest = task.executions
+        read = tasks.attempts
+        lagging = asyncio.Event()
+
+        async def slow(task_id: str) -> list[ExecutionRow]:
+            attempts = await read(task_id)
+            if not lagging.is_set():
+                lagging.set()
+                await asyncio.sleep(0.05)
+            return attempts
+
+        monkeypatch.setattr(tasks, "attempts", slow)
+        ending = asyncio.create_task(tasks.observe(first.id, "succeeded"))
+        await lagging.wait()
+        await asyncio.gather(*(tasks.observe(execution.id, "succeeded") for execution in rest))
+        await ending
+
+        assert (await tasks.get(task.id)).state == "succeeded"
+
+    async def one_cancelled_before_it_started_says_so(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        task = await _submit(tasks, compute)
+
+        await tasks.cancel(task.id, idempotency_key="cancel")
+
+        rows = await EventRow.select(EventRow.type).where(EventRow.task_id == task.id)
+        assert [row["type"] for row in rows] == ["task.cancelled"]
+
+    async def an_ending_is_told_once_the_verdict_it_leads_to_is_written(tmp_path: Path) -> None:
+        """A reader that hears an attempt ended and reads the task finds it ended, never still running."""
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+        events = EventStore()
+        tasks = TaskStore(store, NodeStore(), BlobStore(), events)
+        task = await _submit(tasks, compute.id)
+
+        async def hear() -> str:
+            async for _ in events.stream(None, compute.id, task.id, ("task.succeeded",)):
+                return (await tasks.get(task.id)).state
+            raise AssertionError("the stream ended without the ending")
+
+        heard = asyncio.create_task(hear())
+        await asyncio.sleep(0)
+        await tasks.observe(task.executions[0].id, "succeeded")
+
+        assert await asyncio.wait_for(heard, 5) == "succeeded"
 
 
 def describe_listing_a_computes_tasks() -> None:
@@ -731,12 +784,20 @@ async def _tasks(tmp_path: Path) -> tuple[TaskStore, str]:
     """A task store, and a compute of its own to submit to."""
     store = await _store(tmp_path)
     compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
-    return TaskStore(store, NodeStore(), BlobStore()), compute.id
+    return TaskStore(store, NodeStore(), BlobStore(), EventStore()), compute.id
 
 
 async def _submit(tasks: TaskStore, compute: str, function: str = "f" * 64) -> Task:
     task, _ = await tasks.submit(TaskCreate(compute=compute, function=function, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
     return task
+
+
+async def _fanned(tasks: TaskStore, compute: str, ranks: int) -> Task:
+    """A task with an attempt on each of ``ranks`` nodes, the way a broadcast is admitted."""
+    task = await _submit(tasks, compute)
+    for rank in range(1, ranks):
+        await tasks.attempt(task.id, rank, ordinal=1, retry_of=None)
+    return await tasks.get(task.id)
 
 
 async def _board(tasks: TaskStore, compute: str) -> dict[str, str]:

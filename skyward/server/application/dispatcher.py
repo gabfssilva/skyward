@@ -18,13 +18,11 @@ from skyward.server.application.connector import HELD
 from skyward.server.application.runtimes import Runtime, Runtimes
 from skyward.server.application.ssh import SshUnavailableError
 from skyward.server.persistence.computes import ComputeStore
-from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.tasks import PENDING, TaskStore
 from skyward.shared import codec, retry
 from skyward.shared.errors import ComputeNotAcceptingError
-from skyward.shared.events import TaskEvent
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Lost, Outcome, Pending, Step, Stopped, Unknown
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Error, Execution, ExecutionState, Task
@@ -83,7 +81,6 @@ class Dispatcher:
         tasks: TaskStore,
         nodes: NodeStore,
         blobs: BlobStore,
-        events: EventStore,
         runtimes: Runtimes,
         wake: Wake,
     ) -> None:
@@ -91,7 +88,6 @@ class Dispatcher:
         self._tasks = tasks
         self._nodes = nodes
         self._blobs = blobs
-        self._events = events
         self._runtimes = runtimes
         self._wake = wake
         self._locks: dict[str, asyncio.Lock] = {}
@@ -196,7 +192,6 @@ class Dispatcher:
         """
         expired = await self._tasks.expire()
         for attempt in expired:
-            await self._events.record(TaskEvent(compute=attempt.compute, task=attempt.task, state="timed_out", attempt=attempt.ordinal))
             self._wake("task.changed", task_id=attempt.task)
         await asyncio.gather(*(self._stop(attempt.compute, attempt.node, attempt.execution) for attempt in expired if attempt.node))
         if expired:
@@ -226,8 +221,7 @@ class Dispatcher:
                         await self._tasks.observe(execution.id, "cancelled", error=Error(code="compute_not_accepting", message=unplaced, retryable=False))
                     case state if state in PENDING:
                         held = f"compute {compute_id} was deleted while a machine held the task"
-                        if await self._tasks.observe(execution.id, "indeterminate", error=Error(code="task_indeterminate", message=held, retryable=False)):
-                            await self._events.record(TaskEvent(compute=compute_id, task=task_id, state="indeterminate", attempt=execution.ordinal))
+                        await self._tasks.observe(execution.id, "indeterminate", error=Error(code="task_indeterminate", message=held, retryable=False))
                     case _:
                         pass
 
@@ -270,8 +264,7 @@ class Dispatcher:
 
         logger.bind(compute_id=task.compute_id, node_id=node_id).info("streaming execution {} of task {}", execution.id, task.id)
         runtime.dispatched.add(execution.id)
-        if started := await self._tasks.observe(execution.id, "started", node_id=node_id):
-            await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="started"))
+        started = await self._tasks.observe(execution.id, "started", node_id=node_id)
 
         failure: Error | None = None
         try:
@@ -301,10 +294,9 @@ class Dispatcher:
             await asyncio.shield(self._tasks.release(execution.id))
 
         if failure:
-            if await self._tasks.observe(execution.id, "failed", error=failure):
-                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="failed"))
-        elif await self._tasks.observe(execution.id, "succeeded"):
-            await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="succeeded"))
+            await self._tasks.observe(execution.id, "failed", error=failure)
+        else:
+            await self._tasks.observe(execution.id, "succeeded")
 
     async def _free(self, compute_id: str, runtime: Runtime) -> tuple[str, ...]:
         """Nodes with a slot going spare, in rank order.
@@ -404,7 +396,6 @@ class Dispatcher:
             if not await self._tasks.observe(execution.id, "started", node_id=node_id):
                 await self._tasks.release(execution.id)
                 return
-            await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="started", attempt=execution.ordinal))
             started = True
 
             recorded = tuple(runtime.recorded.pop(node_id, ()))
@@ -533,22 +524,20 @@ class Dispatcher:
             match outcome:
                 case Done(value=value):
                     log.info("execution {} succeeded", execution.id)
-                    if await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value)):
-                        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="succeeded", attempt=execution.ordinal))
+                    await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
                 case Failed(error=error, traceback=trace, retry=again):
                     log.info("execution {} failed: {}", execution.id, error)
                     failure = Error(code="task_failed", message=error, retryable=False, details={"traceback": trace})
                     if again:
                         await self._again(task, execution, "failed", failure)
-                    elif await self._tasks.observe(execution.id, "failed", error=failure):
-                        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="failed", attempt=execution.ordinal))
+                    else:
+                        await self._tasks.observe(execution.id, "failed", error=failure)
                 case Lost(error=error):
                     await self._lost(task, execution, RuntimeError(error), retry.Lost("process_died", node_id))
                 case Stopped():
                     log.info("execution {} stopped", execution.id)
                     stopped = Error(code="task_failed", message="stopped: it ran past its time", retryable=False, details={"timeout": "run"})
-                    if await self._tasks.observe(execution.id, "timed_out", error=stopped):
-                        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="timed_out", attempt=execution.ordinal))
+                    await self._tasks.observe(execution.id, "timed_out", error=stopped)
         finally:
             await self._tasks.release(execution.id)
 
@@ -573,8 +562,8 @@ class Dispatcher:
                 return
             if await self._retry(task, loss, execution.ordinal):
                 await self._again(task, execution, "indeterminate", failure)
-            elif await self._tasks.observe(execution.id, "indeterminate", error=failure):
-                await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="indeterminate", attempt=execution.ordinal))
+            else:
+                await self._tasks.observe(execution.id, "indeterminate", error=failure)
         finally:
             await self._tasks.release(execution.id)
 
@@ -598,10 +587,8 @@ class Dispatcher:
         logger.bind(compute_id=task.compute_id).info(
             "execution {} {}; attempt {} of task {} is written down", execution.id, state, execution.ordinal + 1, task.id
         )
-        if not await self._tasks.observe(execution.id, state, error=error, again=True):
-            return
-        await self._events.record(TaskEvent(compute=task.compute_id, task=task.id, state="retrying", attempt=execution.ordinal + 1))
-        self._wake("compute.dispatch", compute_id=task.compute_id)
+        if await self._tasks.observe(execution.id, state, error=error, again=True):
+            self._wake("compute.dispatch", compute_id=task.compute_id)
 
     async def _stop(self, compute_id: str, node_id: str, execution_id: str) -> None:
         """Ask a worker to stop an attempt. One not delivered is asked again by the next sweep."""

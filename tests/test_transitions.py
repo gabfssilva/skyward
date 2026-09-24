@@ -310,5 +310,5 @@ async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
         raise RuntimeError("the cloud is down")
 
     monkeypatch.setattr(machines, "resolve", down)
-    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, Wakeup())
+    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, Wakeup())
     return computes, compute, reconciler

@@ -212,7 +212,10 @@ class Events(Protocol):
         task: str | None,
         types: tuple[str, ...] | None,
     ) -> AsyncIterator[tuple[tuple[int, str, bytes], ...]]:
-        """Yields (sequence, event_type, payload) after last_event_id, in runs of what was ready together."""
+        """Yields (sequence, event_type, payload) after last_event_id, in runs of what was ready together.
+
+        An empty run is a quiet feed saying it is still there.
+        """
         ...
 
     async def log(

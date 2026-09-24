@@ -100,7 +100,8 @@ def describe_a_deleted_compute() -> None:
 
         assert (await daemon.tasks.get(queued.id)).state == "cancelled", "it never left the daemon, so it never ran"
         assert (await daemon.tasks.get(running.id)).state == "indeterminate", "it was on a machine, and what it did there is not known"
-        assert await daemon.said(running.id) == ["task.indeterminate"]
+        assert await daemon.said(running.id) == ["task.started", "task.indeterminate"]
+        assert await daemon.said(queued.id) == ["task.cancelled"], "a caller waiting on the stream hears of it too"
         assert await daemon.reconciler.unsettled() == ((), ()), "answered for once, and never offered again"
 
     async def the_tick_offers_its_tasks_to_nobody(tmp_path: Path) -> None:
@@ -182,7 +183,7 @@ async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
         return None
 
     monkeypatch.setattr(machines, "resolve", nothing)
-    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, Wakeup())
+    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, Wakeup())
     return computes, compute.id, nodes, reconciler
 
 
@@ -240,7 +241,7 @@ async def _daemon(tmp_path: Path) -> _Daemon:
     events = EventStore()
     computes, compute = await given(tmp_path / "skyward.sqlite", events=events)
     nodes, blobs = NodeStore(), BlobStore()
-    tasks = TaskStore(computes, nodes, blobs)
+    tasks = TaskStore(computes, nodes, blobs, events)
     machines = Machines(computes, nodes, ProviderStore(), OfferCache(ProviderStore()), blobs, events)
 
     async def quiet(*_: object) -> None:
@@ -249,7 +250,7 @@ async def _daemon(tmp_path: Path) -> _Daemon:
     runtimes = Runtimes(listener=lambda *_: None, output=quiet, sample=quiet, phase=quiet)
     wake = Wakeup()
     reconciler = Reconciler(computes, GenerationStore(computes), nodes, tasks, machines, events, wake)
-    dispatcher = Dispatcher(computes, tasks, nodes, blobs, events, runtimes, wake)
+    dispatcher = Dispatcher(computes, tasks, nodes, blobs, runtimes, wake)
     bus = ReconcilingEventEmitter(build_listeners(reconciler, dispatcher, machines, Connector(computes, nodes, runtimes, blobs)))
     wake.bind(bus.emit)
     return _Daemon(computes, tasks, runtimes, reconciler, bus, compute.id)

@@ -1,4 +1,4 @@
-"""The event log's tail: replays handed over a page at a time, filtered feeds, cursors on published frames, batched records, hang-ups."""
+"""The event log's tail: replays handed over a page at a time, filtered feeds, cursors on published frames, batched records, hang-ups, quiet feeds."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -7,6 +7,7 @@ from pathlib import Path
 import msgspec
 import pytest
 
+from skyward.server.persistence import events as log
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import BACKLOG, PAGE, EventStore, Live, Record
 from skyward.server.persistence.store import now
@@ -223,6 +224,18 @@ def describe_a_feed_hung_up_on() -> None:
             await stream.aclose()
 
         assert [sequence for sequence, _, _ in held] == list(range(1, BACKLOG + 1))
+
+
+def describe_a_quiet_feed() -> None:
+    async def it_says_it_is_still_there_and_then_hands_over_what_comes(events: EventStore, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(log, "HEARTBEAT", 0.05)
+        stream = events.stream(None, "a", None, None)
+        try:
+            assert await run(stream) == (), "nothing to say, and it says so"
+            await events.record(line("a", "after the quiet"))
+            assert [content(payload) for _, _, payload in await take(stream, 1)] == ["after the quiet"]
+        finally:
+            await stream.aclose()
 
 
 def describe_reading_the_log() -> None:

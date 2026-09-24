@@ -21,6 +21,9 @@ here rather than by ``ServerSentEvent``, which sends every message on its own: t
 hands over runs of events, and a run goes out as one write of one message per event.
 """
 
+PING = b": ping\r\n\r\n"
+"""What a quiet stream says: a comment, which a Server-Sent Events reader skips and a reader across a network takes as the connection being alive."""
+
 
 class EventController(Controller):
     path = "/events"
@@ -36,6 +39,8 @@ class EventController(Controller):
             "There is no automatic event GC, so any valid cursor stays resumable.\n\n"
             "A slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and "
             "the client reconnects from its last id.\n\n"
+            "A stream with nothing to say for 15 seconds sends a comment line, `: ping`, so a reader can tell a quiet "
+            "stream from a connection that died without closing.\n\n"
             "Task stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second "
             "source of truth.\n\n"
             "The schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the "
@@ -53,7 +58,7 @@ class EventController(Controller):
             "| `node.console` | `node.console` |\n"
             "| `node.phase` | `node.phase` |\n"
             "| `node.metrics` | `node.metrics` |\n"
-            "| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n"
+            "| `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |\n\n"
             "`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live "
             "feed, carry the last sequence seen rather than one of their own, and never replay."
         ),
@@ -76,7 +81,7 @@ class EventController(Controller):
     ) -> Stream:
         async def messages() -> AsyncGenerator[bytes, None]:
             async for run in events.stream(last_event_id, compute_id, task, tuple(types) if types else None):
-                yield b"".join(MESSAGE % (sequence, event_type.encode(), payload) for sequence, event_type, payload in run)
+                yield b"".join(MESSAGE % (sequence, event_type.encode(), payload) for sequence, event_type, payload in run) if run else PING
 
         return Stream(
             messages(),

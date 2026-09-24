@@ -48,7 +48,7 @@ type Executor = Literal["thread", "process", "loky"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 type Architecture = Literal["x86_64", "arm64"]
 type PhaseState = Literal["started", "completed", "failed"]
-type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "timed_out", "indeterminate"]
+type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "cancelled", "timed_out", "indeterminate"]
 type DependencyState = Literal["ok", "unreachable"]
 type OfferSort = Literal["price", "vram", "available"]
 type Aggregate = Literal["avg", "min", "max", "last"]
@@ -824,7 +824,7 @@ class NodeMetricsEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag=
 
 
 class TaskStateEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="task.state"):
-    """A task started, is being retried, or ended. Its stream frame is named ``task.{state}``."""
+    """An attempt at a task started, is being retried, or ended. Its stream frame is named ``task.{state}``."""
 
     compute: str
     task: str

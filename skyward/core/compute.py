@@ -24,11 +24,12 @@ import httpx
 import msgspec
 from msgspec import UNSET, UnsetType
 
-from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, ProviderResource, TaskResource
+from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, LogEntryResource, Page, ProviderResource, TaskResource
 from skyward.core import context, usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
 from skyward.core.console import Observer, Watcher, watcher
+from skyward.core.endings import Endings
 from skyward.core.errors import SkywardError, TaskFailedError
 from skyward.core.excerpt import defined, excerpt
 from skyward.core.forward import TcpProxy
@@ -76,7 +77,6 @@ DEFAULT_IMAGE = Image()
 DEFAULT_EXECUTOR = Executor()
 DEFAULT_OPTIONS = Options()
 INLINE = 256 * 1024
-POLL = 30
 WRITE_ATTEMPTS = 5
 LEASE_SECONDS = 60
 """How long the compute stays owned after the last renewal.
@@ -259,6 +259,8 @@ class Compute:
         self._client: Client | None = None
         self._watching: Future[None] | None = None
         self._leasing: Future[None] | None = None
+        self._endings: Endings | None = None
+        self._following: Future[None] | None = None
         self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
         self._active_token: Token[context.Pool | None] | None = None
@@ -461,6 +463,8 @@ class Compute:
 
         await self._claim()
         self._leasing = self.loop.start(self._renew())
+        self._endings = Endings(self.client, self._id)
+        self._following = self.loop.start(self._endings.follow(await self._head()))
 
         watchers: tuple[Watcher, ...] = ()
         if self._console:
@@ -629,6 +633,8 @@ class Compute:
                 self._leasing.cancel()
             if self._watching:
                 self._watching.cancel()
+            if self._following:
+                self._following.cancel()
             try:
                 if self._id:
                     self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease", urgent=True))
@@ -638,6 +644,7 @@ class Compute:
                 finally:
                     self.loop.close()
                     self._loop, self._client, self._watching, self._leasing = None, None, None, None
+                    self._endings, self._following = None, None
 
     async def _destroy(self) -> None:
         """Delete the compute, and wait until the provider says the machines are gone.
@@ -805,14 +812,25 @@ class Compute:
     async def _settled(self, task_id: str) -> bytes:
         """Wait for the outcome, however long the function takes.
 
-        The server holds the request until the task settles and answers 204 when
-        the window closes, so this loop is a long poll and not a poll: each turn
-        costs one request, not one per second. A failure arrives as an exception
-        from the client, which is why nothing here checks for one.
+        Nothing is held open while the function runs: the compute's endings are
+        heard on one stream (:class:`~skyward.core.endings.Endings`), and the result
+        is asked for once an attempt at this task has ended, when it answers at once.
+        A 204 then is a broadcast with nodes still to finish, and the wait goes on
+        until the next ending. A failure arrives as an exception from the client,
+        which is why nothing here checks for one.
         """
-        while (blob := await self.client.blob(f"/v1/tasks/{task_id}/result", wait=POLL)) is None:
-            continue
-        return blob
+        if self._endings is None:
+            raise RuntimeError("the pool is only usable inside its `with` block")
+        async with self._endings.watching(task_id) as ended:
+            while True:
+                await ended()
+                if (blob := await self.client.blob(f"/v1/tasks/{task_id}/result")) is not None:
+                    return blob
+
+    async def _head(self) -> int | None:
+        """The newest event the compute has, which its endings are followed from rather than replayed up to."""
+        page = await self.client.call("GET", "/v1/events/log", Page[LogEntryResource], compute=self._id, limit=1)
+        return page.items[0].sequence if page.items else None
 
 
 async def _next[T](source: AsyncIterator[T]) -> T | None:

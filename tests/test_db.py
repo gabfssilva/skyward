@@ -218,6 +218,6 @@ def describe_tasks_written_before_the_rank_column() -> None:
         await connect(path)
 
         nodes = NodeStore()
-        tasks = TaskStore(ComputeStore(EventStore(), nodes), nodes, BlobStore())
+        tasks = TaskStore(ComputeStore(EventStore(), nodes), nodes, BlobStore(), EventStore())
 
         assert (await tasks.get("tsk_a")).rank is None

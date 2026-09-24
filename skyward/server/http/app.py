@@ -136,7 +136,7 @@ def services() -> Services:
     computes = ComputeStore(events, nodes)
     blobs = BlobStore()
     providers = ProviderStore()
-    tasks = TaskStore(computes, nodes, blobs)
+    tasks = TaskStore(computes, nodes, blobs, events)
 
     async def console(compute: str, node: str, lines: tuple[Console, ...]) -> None:
         """A node names the execution it was running; the line is recorded under that execution's task too."""
@@ -198,7 +198,6 @@ def services() -> Services:
             tasks=tasks,
             nodes=nodes,
             blobs=blobs,
-            events=events,
             runtimes=runtimes,
             wake=wake,
         ),

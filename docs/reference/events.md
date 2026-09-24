@@ -8,7 +8,7 @@ Everything observable about a compute is an event in one log. Node stdout, boots
 GET /v1/events
 ```
 
-Server-Sent Events. Each message carries the event name as its `event:` field, a JSON object as `data:`, and the log's **global sequence** as `id:`.
+Server-Sent Events. Each message carries the event name as its `event:` field, a JSON object as `data:`, and the log's **global sequence** as `id:`. A stream with nothing to say for 15 seconds sends a comment line, `: ping`, which SSE readers skip; a reader across a network can take a longer silence for a connection that died without closing.
 
 Query parameters, all optional and all AND-ed:
 
@@ -42,7 +42,7 @@ Two kinds of event ride the same feed.
 
 Every payload is a flat JSON object carrying a `type` tag. All of them carry `compute`; the ones about a node carry `node`, and the ones about a task carry `task`.
 
-For a compute the `event:` name and the `type` tag are the same word, one per fact. For a node or a task the tag is coarser than the name — ten node states share one payload shape, and so do four task outcomes:
+For a compute the `event:` name and the `type` tag are the same word, one per fact. For a node or a task the tag is coarser than the name — ten node states share one payload shape, and so do the seven moments of a task's attempts:
 
 | `event:` | `type` |
 |---|---|
@@ -51,7 +51,7 @@ For a compute the `event:` name and the `type` tag are the same word, one per fa
 | `node.console` | `node.console` |
 | `node.phase` | `node.phase` |
 | `node.metrics` | `node.metrics` |
-| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |
+| `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |
 
 Filter on the name; decode on the tag. The name is what `types` matches, and the tag is what makes a payload readable once it is out of the frame that carried it — written to a file, replayed by `sky log export`, or handed to a client that never saw the SSE envelope.
 
@@ -98,12 +98,15 @@ Console output goes straight to the log rather than through the daemon's interna
 
 | Event | When |
 |-------|------|
-| `task.started` | The task was placed on a node and began |
+| `task.started` | An attempt was placed on a node and began |
+| `task.retrying` | An attempt ended and the next one was written down in its place |
 | `task.succeeded` | It returned |
-| `task.failed` | It raised, timed out, or its node went away |
+| `task.failed` | It raised |
+| `task.cancelled` | It was cancelled before it started, or its compute was deleted before it reached a machine |
+| `task.timed_out` | It waited or ran past the time it was given |
 | `task.indeterminate` | Its outcome cannot be established — the node is gone and the result never arrived, or the process running the function died under it |
 
-Each carries `compute`, `task`, and the `state` its name says.
+Each carries `compute`, `task`, the `state` its name says, and `attempt`, which counts the task's executions from one. They are an attempt's, not the task's: a broadcast ends once per node, and the task has ended once the last of them has. An ending is recorded after the task's verdict is written, so a reader that hears one and reads the task finds the verdict it led to.
 
 ## Reading it
 

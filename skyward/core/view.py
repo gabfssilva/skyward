@@ -316,7 +316,7 @@ def _tasked(view: ComputeView, task_id: str, state: TaskEventState) -> ComputeVi
             landed = "running"
         case "retrying":
             landed = "queued"
-        case "succeeded" | "failed" | "timed_out" | "indeterminate":
+        case "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate":
             landed = state
         case _ as unreachable:
             assert_never(unreachable)

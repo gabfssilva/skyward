@@ -465,6 +465,8 @@ export interface paths {
          *
          *     A slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.
          *
+         *     A stream with nothing to say for 15 seconds sends a comment line, `: ping`, so a reader can tell a quiet stream from a connection that died without closing.
+         *
          *     Task stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.
          *
          *     The schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.deletion_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:
@@ -476,7 +478,7 @@ export interface paths {
          *     | `node.console` | `node.console` |
          *     | `node.phase` | `node.phase` |
          *     | `node.metrics` | `node.metrics` |
-         *     | `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |
+         *     | `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |
          *
          *     `compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.
          */
@@ -1920,14 +1922,14 @@ export interface components {
         };
         /**
          * TaskStateEvent
-         * @description A task started, is being retried, or ended. Its stream frame is named ``task.{state}``.
+         * @description An attempt at a task started, is being retried, or ended. Its stream frame is named ``task.{state}``.
          */
         TaskStateEvent: {
             /** @default 1 */
             attempt: number;
             compute: string;
             /** @enum {string} */
-            state: "started" | "retrying" | "succeeded" | "failed" | "timed_out" | "indeterminate";
+            state: "started" | "retrying" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
             task: string;
             /**
              * @description discriminator enum property added by openapi-typescript

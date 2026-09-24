@@ -125,7 +125,7 @@ def describe_a_compute_that_asks_for_many_machines() -> None:
         requested: list[str] = []
         wake = Wakeup()
         wake.bind(lambda event, **payload: requested.append(payload["node_id"]) if event == "node.requested" else None)
-        reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, wake)
+        reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, wake)
 
         spec = ComputeSpec(
             specs=(Spec(provider=ProviderRef(kind="gated"), accelerator="a100", accelerator_count=1),),
@@ -426,7 +426,7 @@ async def refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Refused:
     requested: list[str] = []
     wake = Wakeup()
     wake.bind(lambda event, **payload: requested.append(payload["node_id"]) if event == "node.requested" else None)
-    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs), machines, events, wake)
+    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, wake)
 
     spec = ComputeSpec(
         specs=(Spec(provider=ProviderRef(kind="refusing"), accelerator="a100", accelerator_count=1),),

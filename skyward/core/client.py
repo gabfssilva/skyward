@@ -65,6 +65,15 @@ listening and answering in a shape of its own — each one means the same thing,
 which is that there is no daemon of ours there to talk to.
 """
 
+SILENCE_SECONDS = 45.0
+"""How long a stream may go without a line before it is taken for dead.
+
+The daemon says something on every stream at least every fifteen seconds — an
+event, or a ``: ping`` when there is none — so three times that without a word
+is a connection that died without closing: a daemon across a network that went
+away, and a read that would otherwise wait on it forever.
+"""
+
 CONTROL_CONNECTIONS = 2
 """The connections a remote client keeps for its lease, apart from everything else.
 
@@ -205,7 +214,7 @@ class Client:
                     yield bytes(buffer[4 : 4 + size])
                     del buffer[: 4 + size]
 
-    async def events(self, compute: str | None = None, *, types: tuple[str, ...] = ()) -> AsyncGenerator[tuple[str, bytes]]:
+    async def events(self, compute: str | None = None, *, types: tuple[str, ...] = (), after: int | None = None) -> AsyncGenerator[tuple[str, bytes]]:
         """One compute's event log, replayed and then followed, across reconnects.
 
         Without a compute it is the daemon's whole log, which is only reasonable
@@ -214,46 +223,51 @@ class Client:
         The replay is what makes subscribing late harmless: the log is in the store,
         and the stream starts at the beginning of it. Nothing said before anybody was
         listening is lost — which is the only reason the pool can print a bootstrap
-        it did not subscribe to in time.
+        it did not subscribe to in time. ``after`` starts it past a sequence instead,
+        for a reader that wants what happens next and not the history of a compute
+        that has been running for a week.
 
         The connection is one, and it is nursed: every frame's ``id:`` is the global
         sequence, so when the transport drops — a daemon bounce, a flaky network —
         the stream reconnects with ``Last-Event-ID`` and resumes after the last event
         it delivered, never repeating one. What it cannot resume are the published
         gauges (cost, metrics, progress) that fell in the gap, which is what they are
-        for. A daemon that stays silent past ``RETRY_SECONDS`` is a different thing,
-        and past that the error is the answer.
+        for. A stream that goes :data:`SILENCE_SECONDS` without a line is taken for
+        dropped too. One the daemon has not answered for ``RETRY_SECONDS`` since it
+        broke is a different thing, and past that the error is the answer.
         """
-        cursor: str | None = None
-        deadline = time.monotonic() + RETRY_SECONDS
+        cursor = str(after) if after is not None else None
+        broken: float | None = None
         params: dict[str, str | tuple[str, ...]] = {**({"compute": compute} if compute else {}), **({"types": types} if types else {})}
         while True:
             headers = {"Last-Event-ID": cursor} if cursor is not None else {}
             try:
-                async with self._http.stream("GET", "/v1/events", params=params, headers=headers) as response:
+                silence = httpx.Timeout(None, read=SILENCE_SECONDS)
+                async with self._http.stream("GET", "/v1/events", params=params, headers=headers, timeout=silence) as response:
                     if response.status_code >= 400:
                         await response.aread()
                         raise refused(response.status_code, response.content)
                     event = ""
                     async for line in response.aiter_lines():
+                        broken = None
                         match line.split(": ", 1):
                             case ["id", sequence]:
                                 cursor = sequence
                             case ["event", name]:
                                 event = name
                             case ["data", payload]:
-                                deadline = time.monotonic() + RETRY_SECONDS
                                 yield event, payload.encode()
                             case _:
                                 continue
             except (httpx.HTTPError, OSError):
-                if time.monotonic() >= deadline:
+                broken = time.monotonic() if broken is None else broken
+                if time.monotonic() - broken >= RETRY_SECONDS:
                     raise
-                await asyncio.sleep(1)
             else:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(f"the event stream for {compute or 'the daemon'} closed after {RETRY_SECONDS:.0f}s without an event")
-                await asyncio.sleep(1)
+                broken = time.monotonic() if broken is None else broken
+                if time.monotonic() - broken >= RETRY_SECONDS:
+                    raise RuntimeError(f"the event stream for {compute or 'the daemon'} kept closing for {RETRY_SECONDS:.0f}s without a word")
+            await asyncio.sleep(1)
 
     async def forward_up(self, compute: str, cid: str, port: int, route: str, chunks: AsyncIterator[bytes]) -> None:
         """Send one connection's bytes up to a node, as a streaming request body.

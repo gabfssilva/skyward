@@ -216,7 +216,7 @@ def describe_the_dispatcher_hearing_an_attempt_was_stopped() -> None:
 
         assert settled.state == "timed_out"
         assert len(settled.executions) == 1
-        assert await plane.said(task.id) == [("timed_out", 1)]
+        assert await plane.said(task.id) == [("started", 1), ("timed_out", 1)]
 
 
 @pytest.fixture

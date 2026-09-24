@@ -12,7 +12,7 @@ import os
 import signal
 import socket
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,7 @@ import pytest
 
 import skyward as sky
 from skyward.api.v1 import ComputeResource, ComputeSpec, ComputeStatus, LeaseResource, NodeBounds, Page, ProviderResource, TaskCounts
+from skyward.core import client as transport
 from skyward.core.client import Client, connect
 from skyward.core.compute import MOVES
 from skyward.core.errors import DaemonError
@@ -261,6 +262,81 @@ def describe_an_urgent_call() -> None:
         assert answer == {}, "an urgent call must not queue behind requests holding every ordinary connection"
 
 
+type Script = Callable[[asyncio.StreamWriter], Awaitable[None]]
+
+ENDED = b'id: 7\r\nevent: task.succeeded\r\ndata: {"type":"task.state","compute":"cmp_a","task":"tsk_a","state":"succeeded"}\r\n\r\n'
+
+
+async def _silent(writer: asyncio.StreamWriter) -> None:
+    await asyncio.Event().wait()
+
+
+async def _ended(writer: asyncio.StreamWriter) -> None:
+    writer.write(ENDED)
+    await writer.drain()
+    await asyncio.Event().wait()
+
+
+async def _pinging(writer: asyncio.StreamWriter) -> None:
+    for _ in range(12):
+        writer.write(b": ping\r\n\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.05)
+
+
+async def _streaming_server(scripts: Sequence[Script]) -> tuple[asyncio.Server, str, list[str | None], list[asyncio.StreamWriter]]:
+    """A daemon whose event stream plays one script per connection, remembering the ``Last-Event-ID`` each one asked from."""
+    asked: list[str | None] = []
+    held: list[asyncio.StreamWriter] = []
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+        request = (await reader.readuntil(b"\r\n\r\n")).decode()
+        headers = {name.lower(): value for name, _, value in (line.partition(": ") for line in request.split("\r\n")[1:]) if value}
+        asked.append(headers.get("last-event-id"))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        await scripts[len(asked) - 1](writer)
+        writer.close()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    return server, f"http://127.0.0.1:{port}", asked, held
+
+
+async def _first_event(scripts: Sequence[Script], after: int | None) -> tuple[tuple[str, bytes], list[str | None]]:
+    server, url, asked, held = await _streaming_server(scripts)
+    client = await Client.remote(url)
+    events = client.events("cmp_a", after=after)
+    try:
+        return await asyncio.wait_for(anext(events), timeout=10), asked
+    finally:
+        await events.aclose()
+        await client.close()
+        for writer in held:
+            writer.close()
+        server.close()
+
+
+def describe_following_the_event_stream() -> None:
+    def it_starts_past_the_sequence_it_was_given_and_drops_a_connection_that_went_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(transport, "SILENCE_SECONDS", 0.2)
+
+        (event, _), asked = asyncio.run(_first_event((_silent, _ended), after=5))
+
+        assert event == "task.succeeded"
+        assert asked == ["5", "5"], "the first connection asked from where it was told, and the second from where the first got to"
+
+    def it_keeps_through_a_quiet_spell_longer_than_it_would_wait_for_a_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ping is the daemon speaking: a stream that heard one a moment ago and then closed is reconnected, not given up on."""
+        monkeypatch.setattr(transport, "RETRY_SECONDS", 0.3)
+
+        (event, _), asked = asyncio.run(_first_event((_pinging, _ended), after=None))
+
+        assert event == "task.succeeded"
+        assert asked == [None, None]
+
+
 def describe_the_lease_of_a_pool() -> None:
     def it_is_renewed_and_released_over_the_control_connections(monkeypatch: pytest.MonkeyPatch) -> None:
         ordinary, control = _held(monkeypatch, seconds=0.8)
@@ -313,6 +389,10 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
     def main(request: httpx.Request) -> httpx.Response:
         ordinary.append((request.method, request.url.path))
         match request.url.path:
+            case "/v1/events/log":
+                return httpx.Response(200, content=msgspec.json.encode(Page(items=(), next_cursor=None, total=None)))
+            case "/v1/events" if "task.succeeded" in request.url.params.get_list("types"):
+                return httpx.Response(200, text="")
             case "/v1/events":
                 return httpx.Response(200, text=f"id: 1\nevent: {MOVES[0]}\ndata: {{}}\n\n")
             case "/v1/computes/c1":
