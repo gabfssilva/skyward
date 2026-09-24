@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, MutableMapping
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 from urllib.parse import urlsplit
@@ -74,13 +74,29 @@ is a connection that died without closing: a daemon across a network that went
 away, and a read that would otherwise wait on it forever.
 """
 
+SENDS = 50
+"""The requests a client has in flight at once, and the connections a remote one keeps for them.
+
+httpcore looks over every request queued on its pool, against every connection it
+holds, whenever a request comes or goes. Two thousand submissions queued there cost
+some forty seconds of this process's CPU, and a compute of two hundred slots was fed
+at a seventh of what it could run. So a request waits for its turn here, where
+waiting costs nothing, and reaches the pool with a connection free for it. The pool
+keeps every one of them when idle: with its default of twenty kept, it closes any
+connection that goes idle while it holds more than twenty.
+
+Fifty, because a daemon on this machine takes no more submissions a second past
+twenty-five in flight, and the more it is handed at once the slower it places the
+tasks it already has; fifty is what keeps one a hundred milliseconds away as busy.
+"""
+
 CONTROL_CONNECTIONS = 2
 """The connections a remote client keeps for its lease, apart from everything else.
 
-Every pending future holds a long poll and every port forward holds a
-connection for its lifetime, so a shared pool can be full for longer than a
-lease lives. A renewal that waits behind them is a compute the reconciler
-deletes as abandoned while its owner is busy using it.
+A burst of submissions waits its turn behind :data:`SENDS` and every port
+forward holds a connection for its lifetime, so the shared connections can be
+taken for longer than a lease lives. A renewal that waits behind them is a
+compute the reconciler deletes as abandoned while its owner is busy using it.
 """
 
 type Message = MutableMapping[str, Any]
@@ -95,6 +111,7 @@ class Client:
         self._http = http
         self._control = control
         self._stack = stack
+        self._sending = asyncio.Semaphore(SENDS)
 
     @classmethod
     async def embedded(cls, database: Path) -> Self:
@@ -123,7 +140,9 @@ class Client:
     @classmethod
     async def remote(cls, url: str) -> Self:
         stack = AsyncExitStack()
-        http = await stack.enter_async_context(httpx.AsyncClient(base_url=url, timeout=None))
+        http = await stack.enter_async_context(
+            httpx.AsyncClient(base_url=url, timeout=None, limits=httpx.Limits(max_connections=SENDS, max_keepalive_connections=SENDS))
+        )
         control = await stack.enter_async_context(
             httpx.AsyncClient(base_url=url, timeout=None, limits=httpx.Limits(max_connections=CONTROL_CONNECTIONS))
         )
@@ -364,15 +383,17 @@ class Client:
         """
         deadline = asyncio.get_running_loop().time() + patience
         delay = POLL_SECONDS
+        http, turn = (self._control, nullcontext()) if urgent else (self._http, self._sending)
         while True:
             try:
-                response = await (self._control if urgent else self._http).request(
-                    method,
-                    path,
-                    content=body,
-                    params={key: str(value) for key, value in query.items() if value is not None},
-                    headers={"Content-Type": content_type, **(headers or {})},
-                )
+                async with turn:
+                    response = await http.request(
+                        method,
+                        path,
+                        content=body,
+                        params={key: str(value) for key, value in query.items() if value is not None},
+                        headers={"Content-Type": content_type, **(headers or {})},
+                    )
             except httpx.TransportError:
                 if asyncio.get_running_loop().time() >= deadline:
                     raise

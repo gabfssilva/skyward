@@ -205,6 +205,36 @@ def _mocked(handler: Callable[[httpx.Request], httpx.Response]) -> Client:
     return Client(http, http, AsyncExitStack())
 
 
+def describe_a_burst_of_requests() -> None:
+    def it_waits_in_the_client_for_a_connection_and_not_on_the_pool() -> None:
+        """httpcore looks over every request queued on its pool whenever one comes or goes: a burst queued there costs the square of its size."""
+
+        async def burst() -> int:
+            answered = asyncio.Event()
+            in_flight = most = 0
+
+            async def held(request: httpx.Request) -> httpx.Response:
+                nonlocal in_flight, most
+                in_flight += 1
+                most = max(most, in_flight)
+                await answered.wait()
+                in_flight -= 1
+                return httpx.Response(200, content=b"{}")
+
+            http = httpx.AsyncClient(transport=httpx.MockTransport(held), base_url="http://skyward")
+            client = Client(http, http, AsyncExitStack())
+            calls = [asyncio.create_task(client.call("POST", "/v1/tasks", dict)) for _ in range(2 * transport.SENDS)]
+            try:
+                await asyncio.sleep(0.1)
+                answered.set()
+                await asyncio.gather(*calls)
+                return most
+            finally:
+                await client.close()
+
+        assert asyncio.run(burst()) == transport.SENDS
+
+
 def describe_leaving_a_pool_that_borrowed_a_daemon() -> None:
     def it_does_not_take_the_daemon_with_it(alone: str, monkeypatch: pytest.MonkeyPatch) -> None:
         _local(monkeypatch, alone)
@@ -238,7 +268,7 @@ def describe_an_urgent_call() -> None:
         async def through_a_full_pool() -> tuple[bool, dict[str, object]]:
             server, url, held = await _hanging_server()
             client = await Client.remote(url)
-            hangers = [asyncio.create_task(client.call("GET", f"/hang/{index}", dict)) for index in range(100)]
+            hangers = [asyncio.create_task(client.call("GET", f"/hang/{index}", dict)) for index in range(transport.SENDS)]
             try:
                 await asyncio.sleep(0.3)
                 ordinary = asyncio.create_task(client.call("GET", "/v1/ordinary", dict))
