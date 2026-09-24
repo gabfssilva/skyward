@@ -52,8 +52,7 @@ SEED_TIMEOUT = 180.0
 """How long joining the compute's cluster may take before the worker gives up, and is started again by its supervisor.
 
 casty keeps dialling the seeds until one answers, so the wait is for a machine that is still installing its
-dependencies. Giving up ends the process rather than trying again inside it: a join cut short keeps its port bound
-for as long as the process lives.
+dependencies. Giving up ends the process, which says so in the journal, and the supervisor starts it again.
 """
 MAX_MESSAGE_BYTES = 1024 * 1024 * 1024
 """The largest message or answer the compute's cluster carries; a task's arguments and its result each travel inside one."""
