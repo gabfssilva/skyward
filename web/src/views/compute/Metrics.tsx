@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import type { Node } from '../../api/client'
-import { AGGS, clock, figure, GAUGES, holdersOf, lineValue, reduce } from '../../state/model'
+import { AGGS, clock, figure, GAUGES, holdersOf, lineValue, measuredOf, reduce } from '../../state/model'
 import type { Agg, Gauge, Line } from '../../state/model'
 import { WINDOWS, acrossNodes, axisOf, customMetric, customNames, newest, onNode, parseDuration, spanOver, useMetrics, useSpan, valueAt } from '../../state/metrics'
 import type { Feed, Marks, Window } from '../../state/metrics'
@@ -88,10 +88,11 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
   const span = over ? spanOver(over[0], over[1]) : sliding
   const feed = useMetrics(computeId, span)
   const axis = axisOf(feed)
-  /* a compute that has ended has no ready node: what it measured is what its machines measured while they were up */
-  const ready = nodes.filter((n) => n.state === 'ready')
-  const peers = ready.length ? ready : holdersOf(nodes)
+  /* a compute that has ended has no node measuring: what it measured is what its machines measured while they were up */
+  const measured = measuredOf(nodes)
+  const peers = measured.length ? measured : holdersOf(nodes)
   const reported = node ? [node] : peers
+  const booting = peers.filter((n) => n.state === 'bootstrapping').length
   const custom = customNames(feed)
 
   /** A gauge nothing reports is not drawn: a machine with no accelerator has no accelerator chart, rather than four flat lines. */
@@ -160,7 +161,11 @@ export function Metrics({ computeId, name, nodes, created, over, node }: { compu
     <section className="card">
       <div className="mhead">
         <span className="h">Metrics</span>
-        <span className="sub">{node ? `this node, with the ${agg} of ${name} dashed` : `${agg} across ${reported.length} node${reported.length === 1 ? '' : 's'}, with the band from the lowest to the highest`}</span>
+        <span className="sub">
+          {node
+            ? `this node, with the ${agg} of ${name} dashed`
+            : `${agg} across ${reported.length} node${reported.length === 1 ? '' : 's'}${booting ? `, ${booting} still bootstrapping` : ''}, with the band from the lowest to the highest`}
+        </span>
         <div className="pick">
           {AGGS.map(([key, label]) => (
             <button key={key} aria-selected={agg === key} onClick={() => setAgg(key)}>

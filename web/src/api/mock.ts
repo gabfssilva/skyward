@@ -300,6 +300,21 @@ const mkNode = (computeId: string, rank: number, o: FleetOptions, q: Quirk): Nod
       toks: 1.38e6 + rnd() * 8e4,
     })
   }
+  /* a machine still bootstrapping measures itself too: a resolve on the CPU, wheels on the wire, no card in use and nothing of the user's yet */
+  if (state === 'bootstrapping') {
+    live.set(`${computeId}/${rank}`, {
+      gpu: 0,
+      vram: 0,
+      cpu: jitter(72, 18),
+      temp: 36 + rnd() * 6,
+      rx: 300 + rnd() * 400,
+      tx: rnd() * 4,
+      ram: jitter(18, 6),
+      disk: 12 + rnd() * 8,
+      loss: 0,
+      toks: 0,
+    })
+  }
   return node
 }
 
@@ -569,7 +584,7 @@ const readingsOf = (computeId: string, m: Live): Record<string, number> => {
     net_rx_kbps: Math.round(m.rx * 8000),
     net_tx_kbps: Math.round(m.tx * 8000),
     disk_used_pct: Math.round(m.disk),
-    ...(CUSTOM[computeId] ? { loss: Math.round(m.loss * 1e4) / 1e4, tokens_per_s: Math.round(m.toks) } : {}),
+    ...(CUSTOM[computeId] && m.toks > 0 ? { loss: Math.round(m.loss * 1e4) / 1e4, tokens_per_s: Math.round(m.toks) } : {}),
   }
 }
 

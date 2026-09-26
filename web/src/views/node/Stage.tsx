@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { Compute, Node, Task } from '../../api/client'
 import { useStore, computeById, isLive, useLogs } from '../../state/store'
-import { dur, execsOf, holderOf, holdersOf, hiveSize, machineOf, money, ms, nodeHeld, slotsOf } from '../../state/model'
+import { dur, execsOf, holderOf, holdersOf, hiveSize, machineOf, money, ms, nodeHeld, nodeMeasured, slotsOf } from '../../state/model'
 import type { ExecRow } from '../../state/model'
 import { Fn, Pill, TableScroll } from '../../ui/primitives'
 import { Hive, Slots } from '../../ui/comb'
@@ -138,7 +138,7 @@ export function Stage() {
         )}
       </section>
 
-      {ready ? <Metrics computeId={c.id} name={c.name ?? c.id} nodes={nodes} created={ms(c.created_at)} node={n} /> : null}
+      {nodeMeasured(n) ? <Metrics computeId={c.id} name={c.name ?? c.id} nodes={nodes} created={ms(c.created_at)} node={n} /> : null}
 
       <section className="card">
         <Tabs<Tab>

@@ -237,6 +237,17 @@ export const holdersOf = (nodes: readonly Node[]): Node[] => {
 
 export const holderOf = (nodes: readonly Node[], rank: number): Node | undefined => holdersOf(nodes).find((n) => n.rank === rank)
 export const readyOf = (nodes: readonly Node[]): Node[] => nodes.filter((n) => n.state === 'ready')
+
+/**
+ * Whether the machine is measuring itself.
+ *
+ * The collector is the first thing the bootstrap starts, before apt or a single wheel, so a node
+ * still bootstrapping reads like any other: a resolve pinning the CPU, a download on the wire, a
+ * disk filling with packages. Ready is when it takes work, not when it starts reporting.
+ */
+export const nodeMeasured = (n: Node): boolean => ['bootstrapping', 'ready'].includes(n.state)
+/** The nodes holding a rank and measuring themselves. */
+export const measuredOf = (nodes: readonly Node[]): Node[] => holdersOf(nodes).filter(nodeMeasured)
 export const rateOf = (nodes: readonly Node[]): number => nodes.filter(nodeLive).reduce((s, n) => s + (n.price_per_hour ?? 0), 0)
 /**
  * The range a compute is held within, read the way the reconciler reads it.
