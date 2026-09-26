@@ -22,7 +22,7 @@ from skyward.shared.schemas import ProviderCreate
 from . import providers_app
 from ._client import call
 from ._output import Output, render
-from .compute import FACTORIES
+from .compute import FACTORIES, pairs
 
 if TYPE_CHECKING:
     from skyward.core.client import Client
@@ -142,7 +142,7 @@ def set_provider(
         raise SystemExit(f"unknown provider '{kind}'; known: {', '.join(sorted(FACTORIES))}")
 
     try:
-        written = msgspec.convert(_settings(config or []), FACTORIES[kind]().__class__, strict=False)
+        written = msgspec.convert(pairs(config or [], "--config"), FACTORIES[kind]().__class__, strict=False)
     except msgspec.ValidationError as refused:
         raise SystemExit(f"{kind}: {refused}") from None
 
@@ -151,17 +151,6 @@ def set_provider(
     registered = call(lambda client: _upsert(client, body), url=url)
 
     render(REGISTERED, [(registered.name, registered.kind, registered.id, registered.offers_count, registered.offers_fetched_at)], output=output)
-
-
-def _settings(pairs: list[str]) -> dict[str, str]:
-    """``key=value`` as a mapping, refusing anything that is not one."""
-    written: dict[str, str] = {}
-    for pair in pairs:
-        key, sep, value = pair.partition("=")
-        if not sep or not key:
-            raise SystemExit(f"--config takes key=value, not {pair!r}")
-        written[key] = value
-    return written
 
 
 async def _upsert(client: Client, body: ProviderCreate) -> ProviderResource:

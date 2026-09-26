@@ -69,6 +69,7 @@ sky server status --url http://host:17590
 sky compute create --provider aws
 sky compute create --provider aws --accelerator A100 --nodes 4 --region us-east-1
 sky compute create --provider runpod --accelerator RTX_4090 --name research
+sky compute create --provider runpod --accelerator RTX_4090 --pip "tilelang[nvcc]" --apt build-essential --plugin torch
 ```
 
 The supported provider kinds are:
@@ -77,7 +78,9 @@ The supported provider kinds are:
 
 A kind whose SDK extra is not installed is not registered, so it will not appear. `sky providers list --kinds` shows what this installation can actually reach.
 
-The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--ttl`, `--url`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
+The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--ttl`, `--base`, `--python`, `--pip`, `--apt`, `--pip-index`, `--env`, `--plugin`, `--url`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
+
+`--base`, `--python`, `--pip`, `--apt`, `--pip-index` and `--env` are the image the nodes build, with the meaning `sky.Image` gives them in the SDK: the packages land in the interpreter `run` and `exec` use. `--pip`, `--apt`, `--pip-index`, `--env` and `--plugin` repeat for more than one; `--env` takes `KEY=VALUE`. `--plugin` names a plugin by its kind (`torch`, `jax`, `huggingface`, …), with parameters as `key=value` after a colon: `--plugin torch:backend=gloo,cuda=cu124`. The parameters are validated against the plugin's own fields before anything is sent, the way constructing `sky.plugins.Torch(...)` would, and a parameter left out is the plugin's default. `sky compute view` shows the image a compute was asked to build.
 
 `sky new` is an alias for `sky compute create`:
 

@@ -9,6 +9,7 @@ Nothing is patched — what is asserted is what would have been printed.
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 
 from skyward.server.application.mock import SPEC
@@ -73,6 +74,52 @@ def describe_looking_at_computes() -> None:
 
             assert ran.code != 0
             assert "unknown provider" in ran.err
+
+
+def describe_creating_a_compute() -> None:
+    def the_image_it_asked_for_is_the_one_the_daemon_keeps(alone: str) -> None:
+        created = rows(
+            "compute", "create", "--provider", "fake", "--name", "built",
+            "--python", "3.12", "--pip", "torch", "--pip", "tilelang[nvcc]", "--apt", "build-essential",
+            "--pip-index", "https://download.pytorch.org/whl/cu128", "--env", "HF_HOME=/data/hf",
+            "--plugin", "torch:backend=gloo", "--plugin", "huggingface",
+            "--url", alone,
+        )[0]
+        spec = httpx.get(f"{alone}/v1/computes/{created['id']}").json()["spec"]
+
+        assert spec["image"]["python"] == "3.12"
+        assert spec["image"]["pip"] == ["torch", "tilelang[nvcc]"]
+        assert spec["image"]["apt"] == ["build-essential"]
+        assert spec["image"]["pip_indexes"] == [{"url": "https://download.pytorch.org/whl/cu128", "packages": []}]
+        assert spec["image"]["env"] == {"HF_HOME": "/data/hf"}
+        assert [(ref["kind"], ref["params"].get("backend")) for ref in spec["plugins"]] == [("torch", "gloo"), ("huggingface", None)]
+        assert spec["plugins"][0]["params"]["cuda"] == "cu128", "a parameter not given is the plugin's own default, as in the SDK"
+
+    def viewing_it_shows_what_it_was_asked_to_be(alone: str) -> None:
+        rows("compute", "create", "--provider", "fake", "--name", "built", "--pip", "torch", "--apt", "git", "--plugin", "torch:backend=gloo", "--url", alone)
+        viewed = cli("compute", "view", "built", "--url", alone).out
+
+        assert "pip      torch" in viewed
+        assert "apt      git" in viewed
+        assert "plugins  torch:backend=gloo,cuda=cu128" in viewed
+
+    def describe_when_a_flag_says_something_that_does_not_exist() -> None:
+        @pytest.mark.parametrize(
+            ("flag", "value", "said"),
+            [
+                ("--plugin", "nowhere", "unknown plugin 'nowhere'"),
+                ("--plugin", "torch:backend=nowhere", "--plugin torch"),
+                ("--plugin", "torch:backend", "--plugin takes key=value"),
+                ("--env", "HF_HOME", "--env takes key=value"),
+            ],
+        )
+        def it_is_refused_before_anything_is_submitted(alone: str, flag: str, value: str, said: str) -> None:
+            ran = cli("compute", "create", "--provider", "fake", flag, value, "--url", alone)
+
+            assert ran.code != 0
+            assert said in ran.err
+            assert "Traceback" not in ran.err
+            assert rows("compute", "list", "--url", alone) == []
 
 
 def describe_asking_for_a_terminal() -> None:

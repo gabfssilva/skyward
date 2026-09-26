@@ -15,7 +15,7 @@ import asyncio
 import json
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import aclosing, suppress
 from pathlib import Path
 from typing import Annotated
@@ -23,6 +23,7 @@ from typing import Annotated
 import msgspec
 from cyclopts import Parameter
 
+from skyward import api
 from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call
@@ -40,15 +41,20 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     Dispatch,
     FunctionExcerpt,
+    Image,
     NodeBounds,
+    PipIndex,
+    PluginRef,
     ProviderCreate,
     ProviderRef,
     Spec,
     TaskCreate,
 )
+from skyward.worker.plugins import PLUGINS
 
 COMPUTE_COLUMNS = ("id", "name", "state", "ready", "total", "generation", "created")
 NODE_COLUMNS = ("id", "rank", "state", "desired", "machine", "address", "accelerator", "$/h")
+IMAGE_COLUMNS = ("image", "value")
 RAN_COLUMNS = ("node", "exit", "error")
 WRITTEN_COLUMNS = ("node", "error")
 
@@ -81,6 +87,7 @@ class Result(msgspec.Struct, frozen=True):
 FACTORIES: dict[str, Callable[[], Provider]] = {
     "aws": factories.AWS,
     "container": factories.Container,
+    "fake": factories.Fake,
     "gcp": factories.GCP,
     "hyperstack": factories.Hyperstack,
     "jarvislabs": factories.JarvisLabs,
@@ -151,10 +158,24 @@ def create_compute(
     cpus: Annotated[int | None, Parameter(help="Least vCPUs per machine")] = None,
     memory: Annotated[int | None, Parameter(help="Least memory per machine, in GB")] = None,
     ttl: Annotated[int | None, Parameter(help="Seconds a machine may sit with nobody connected before it removes itself. 0 never does")] = None,
+    base: Annotated[str | None, Parameter(help="Docker image the machines start from")] = None,
+    python: Annotated[str | None, Parameter(help="Python version the nodes run (3.12, 3.13, …)")] = None,
+    pip: Annotated[list[str] | None, Parameter(help="A pip package to install, as pip spells it. Repeat for more than one")] = None,
+    apt: Annotated[list[str] | None, Parameter(help="An apt package to install. Repeat for more than one")] = None,
+    pip_index: Annotated[list[str] | None, Parameter(help="An extra package index URL. Repeat for more than one")] = None,
+    env: Annotated[list[str] | None, Parameter(help="An environment variable on the nodes, as KEY=VALUE. Repeat for more than one")] = None,
+    plugin: Annotated[list[str] | None, Parameter(help="A plugin, as NAME or NAME:key=value,… (torch, torch:backend=gloo). Repeat for more than one")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Create a compute and return without waiting for it to be ready.
+
+    ``--base``, ``--python``, ``--pip``, ``--apt``, ``--pip-index`` and ``--env`` are
+    the image the nodes build, with the meaning ``Image`` gives them in the SDK: the
+    packages land in the interpreter ``run`` and ``exec`` use. ``--plugin`` names a
+    plugin by its kind, with parameters as ``key=value`` after a colon, and is
+    validated here against the plugin's own fields, the way constructing one in
+    the SDK would.
 
     ``--ttl`` is the dead-man switch the providers that support one arm on each
     machine: with nobody connected for that long, the machine takes itself away
@@ -179,6 +200,15 @@ def create_compute(
             ),
         ),
         nodes=NodeBounds(initial=nodes),
+        image=Image(
+            base=base,
+            python=python,
+            pip=tuple(pip or ()),
+            apt=tuple(apt or ()),
+            pip_indexes=tuple(PipIndex(url=index) for index in pip_index or ()),
+            env=pairs(env or (), "--env"),
+        ),
+        plugins=tuple(_plugin(text) for text in plugin or ()),
     )
     if ttl is not None:
         spec = msgspec.structs.replace(spec, ttl=ttl)
@@ -247,6 +277,8 @@ def view_compute(
 
     compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}?include=nodes.replaced", ComputeResource), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute)], output=output)
+    if image := _image_rows(compute.spec):
+        render(IMAGE_COLUMNS, image, output=output)
     render(NODE_COLUMNS, [_node_row(node) for node in compute.nodes], output=output)
 
 
@@ -585,6 +617,49 @@ def _wrap(source: str, argv: tuple[str, ...]) -> Callable[[], int]:
     return execute
 
 
+def pairs(values: Sequence[str], flag: str) -> dict[str, str]:
+    """``key=value`` as a mapping, refusing anything that is not one."""
+    written: dict[str, str] = {}
+    for pair in values:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"{flag} takes key=value, not {pair!r}")
+        written[key] = value
+    return written
+
+
+def _plugin(text: str) -> PluginRef:
+    """``name`` or ``name:key=value,…`` as a reference, checked against the plugin it names."""
+    kind, _, given = text.partition(":")
+    if kind not in PLUGINS:
+        raise SystemExit(f"unknown plugin '{kind}'; known: {', '.join(sorted(PLUGINS))}")
+
+    try:
+        return msgspec.convert(pairs(given.split(",") if given else (), "--plugin"), PLUGINS[kind], strict=False).ref()
+    except msgspec.ValidationError as invalid:
+        raise SystemExit(f"--plugin {kind}: {invalid}") from None
+
+
+def _image_rows(spec: api.v1.ComputeSpec) -> list[tuple[str, str]]:
+    """The image a compute asked for, one row per field that says something."""
+    image = spec.image
+    listed = (
+        ("base", image.base),
+        ("python", image.python),
+        ("pip", " ".join(image.pip)),
+        ("apt", " ".join(image.apt)),
+        ("pip_indexes", " ".join(index.url for index in image.pip_indexes)),
+        ("env", " ".join(f"{key}={value}" for key, value in image.env.items())),
+        ("plugins", " ".join(_plugin_text(ref) for ref in spec.plugins)),
+    )
+    return [(field, value) for field, value in listed if value]
+
+
+def _plugin_text(ref: api.v1.PluginRef) -> str:
+    given = ",".join(f"{key}={value}" for key, value in ref.params.items() if value is not None)
+    return f"{ref.kind}:{given}" if given else ref.kind
+
+
 def _compute_row(compute: ComputeResource) -> tuple[object, ...]:
     ready = sum(node.state == "ready" for node in compute.nodes)
     return (compute.id, compute.name, compute.status.state, ready, len(compute.nodes), compute.generation, compute.created_at)
@@ -627,6 +702,7 @@ __all__ = [
     "get_compute",
     "list_computes",
     "list_path",
+    "pairs",
     "remove_path",
     "run_script",
     "upload_path",

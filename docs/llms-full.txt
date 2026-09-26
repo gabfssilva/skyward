@@ -220,6 +220,7 @@ See [Distributed collections](distributed-collections.md) and the
 pip install "skyward[cli,server]"
 sky server start
 sky compute create --provider aws --accelerator A100 --nodes 4
+sky compute create --provider runpod --accelerator RTX_4090 --pip "tilelang[nvcc]" --apt build-essential --plugin torch:backend=gloo
 sky compute list
 sky compute view <id-or-name>
 sky compute scale <id-or-name> --nodes 8
