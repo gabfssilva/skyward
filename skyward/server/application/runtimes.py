@@ -373,7 +373,7 @@ class Runtime:
             return
 
         logger.bind(compute_id=self.compute, node_id=node_id).debug("telling the worker the world is now {} nodes", len(peers))
-        await (await self.control(node_id)).ask(worker.Topology, peers)
+        await (await self.control(node_id)).ask(worker.Topology(peers))
         node.peers = peers
 
     async def execution(self, node_id: str, execution_id: str) -> casty.Ref[worker.ExecutionMessage]:

@@ -175,7 +175,7 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         worker.generators["exe_abandoned"] = stream
 
         async with hosting() as system, asyncio.timeout(5):
-            await execution(system, "exe_abandoned").ask(worker.Close)
+            await execution(system, "exe_abandoned").ask(worker.Close())
 
         assert cleaned.is_set(), "the cleanup reached the loop and came back, so it did not run on the loop"
         assert "exe_abandoned" not in worker.generators
@@ -203,7 +203,7 @@ def describe_the_worker_s_stream_lifecycle() -> None:
                 async with asyncio.timeout(5):
                     while "exe_mid_pull" not in worker.pulling:
                         await asyncio.sleep(0.01)
-                    await execution(system, "exe_mid_pull").ask(worker.Close)
+                    await execution(system, "exe_mid_pull").ask(worker.Close())
 
                 assert order == [], "a generator that is executing is not closed under the pull"
                 assert not stepping.done()
@@ -237,7 +237,7 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         target.setLevel(logging.WARNING)
         try:
             async with hosting() as system, asyncio.timeout(5):
-                await execution(system, "exe_broken_cleanup").ask(worker.Close)
+                await execution(system, "exe_broken_cleanup").ask(worker.Close())
         finally:
             target.removeHandler(records)
             target.setLevel(previous)
@@ -260,12 +260,12 @@ def describe_the_worker_s_stream_lifecycle() -> None:
         try:
             async with hosting() as system:
                 stream = execution(system, "exe_opened")
-                await stream.ask(worker.Open, codec.dumps(numbers), codec.dumps(((), {})))
-                stepping = asyncio.create_task(stream.ask(worker.Next))
+                await stream.ask(worker.Open(codec.dumps(numbers), codec.dumps(((), {}))))
+                stepping = asyncio.create_task(stream.ask(worker.Next()))
                 async with asyncio.timeout(5):
                     while not hook_entered.is_set():
                         await asyncio.sleep(0.01)
-                    node = await system.ref(worker.control, worker.CONTROL, at=system.node).ask(worker.Ping)
+                    node = await system.ref(worker.control, worker.CONTROL, at=system.node).ask(worker.Ping())
                 answered_while_blocked = not hook_returned.is_set()
 
                 hook_released.set()

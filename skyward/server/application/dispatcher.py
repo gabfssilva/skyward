@@ -270,9 +270,9 @@ class Dispatcher:
         try:
             if not started:
                 return
-            await attempt.ask(worker.Open, code, args)
+            await attempt.ask(worker.Open(code, args))
             while True:
-                frame = await attempt.ask(worker.Next)
+                frame = await attempt.ask(worker.Next())
                 match await _STEPS.decode(frame):
                     case Pending():
                         continue
@@ -290,7 +290,7 @@ class Dispatcher:
         finally:
             runtime.dispatched.discard(execution.id)
             if started:
-                await asyncio.shield(attempt.ask(worker.Close))
+                await asyncio.shield(attempt.ask(worker.Close()))
             await asyncio.shield(self._tasks.release(execution.id))
 
         if failure:
@@ -400,7 +400,7 @@ class Dispatcher:
 
             recorded = tuple(runtime.recorded.pop(node_id, ()))
             try:
-                await attempt.ask(worker.Run, code, args, decision, execution.ordinal, recorded)
+                await attempt.ask(worker.Run(code, args, decision, execution.ordinal, recorded))
             except LINK_ERRORS as exc:
                 logger.bind(compute_id=task.compute_id, node_id=node_id).warning(
                     "the link dropped handing execution {} over ({}); the worker will be asked for it when the link is back",
@@ -488,7 +488,7 @@ class Dispatcher:
                 try:
                     await runtime.linked(node_id)
                     attempt = await runtime.execution(node_id, execution.id)
-                    match await _LOOKUPS.decode(await attempt.ask(worker.Result)):
+                    match await _LOOKUPS.decode(await attempt.ask(worker.Result())):
                         case Pending():
                             pass
                         case settled:
@@ -597,7 +597,7 @@ class Dispatcher:
             return
         try:
             async with asyncio.timeout(STOP_SECONDS):
-                await (await runtime.execution(node_id, execution_id)).ask(worker.Stop)
+                await (await runtime.execution(node_id, execution_id)).ask(worker.Stop())
         except Exception as exc:
             logger.bind(compute_id=compute_id, node_id=node_id).warning("could not ask the worker to stop execution {}: {}", execution_id, exc)
 

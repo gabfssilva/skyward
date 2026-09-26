@@ -174,11 +174,11 @@ def describe_the_worker() -> None:
         try:
             async with hosting() as system:
                 waited = execution(system, "exe_waited_on")
-                await waited.ask(worker.Run, codec.dumps(unfinished), codec.dumps(((), {})))
+                await waited.ask(worker.Run(codec.dumps(unfinished), codec.dumps(((), {}))))
                 assert "exe_waited_on" in worker.outcomes, "the handing over is answered once the worker holds the attempt"
 
-                waiting = asyncio.create_task(waited.ask(worker.Result))
-                never = _lookup(await execution(system, "exe_never_sent").ask(worker.Result))
+                waiting = asyncio.create_task(waited.ask(worker.Result()))
+                never = _lookup(await execution(system, "exe_never_sent").ask(worker.Result()))
                 await asyncio.sleep(0.1)
 
                 assert never == Unknown(), "an attempt the worker never had is answered at once"
@@ -202,13 +202,13 @@ def describe_the_worker() -> None:
         try:
             async with hosting() as system:
                 held = execution(system, "exe_held")
-                await held.ask(worker.Run, codec.dumps(unfinished), codec.dumps(((), {})))
+                await held.ask(worker.Run(codec.dumps(unfinished), codec.dumps(((), {}))))
 
                 async with asyncio.timeout(5):
-                    first = _lookup(await held.ask(worker.Result))
+                    first = _lookup(await held.ask(worker.Result()))
                 finished.set()
                 async with asyncio.timeout(5):
-                    while isinstance(second := _lookup(await held.ask(worker.Result)), frames.Pending):
+                    while isinstance(second := _lookup(await held.ask(worker.Result())), frames.Pending):
                         pass
 
             assert first == frames.Pending()
@@ -228,10 +228,10 @@ def describe_the_worker() -> None:
 
         async with hosting() as system:
             twice = execution(system, "exe_twice")
-            await twice.ask(worker.Run, b"", b"")
-            await twice.ask(worker.Run, b"", b"")
+            await twice.ask(worker.Run(b"", b""))
+            await twice.ask(worker.Run(b"", b""))
             async with asyncio.timeout(5):
-                answered = _lookup(await twice.ask(worker.Result))
+                answered = _lookup(await twice.ask(worker.Result()))
 
         assert isinstance(answered, Done)
         assert ran == ["exe_twice"]
@@ -247,10 +247,10 @@ def describe_the_worker() -> None:
             async with hosting() as system:
                 holding = execution(system, "exe_holding_the_slot")
                 behind = execution(system, "exe_behind_it")
-                await holding.ask(worker.Run, codec.dumps(unfinished), arguments)
-                await behind.ask(worker.Run, codec.dumps(answer), arguments)
+                await holding.ask(worker.Run(codec.dumps(unfinished), arguments))
+                await behind.ask(worker.Run(codec.dumps(answer), arguments))
 
-                waiting = asyncio.create_task(behind.ask(worker.Result))
+                waiting = asyncio.create_task(behind.ask(worker.Result()))
                 await asyncio.sleep(0.1)
                 assert not waiting.done(), "an attempt waiting for a slot is not one the worker never had"
 
@@ -275,11 +275,11 @@ def describe_the_worker() -> None:
 
         async with hosting() as system:
             broken = execution(system, "exe_broken")
-            await broken.ask(worker.Run, b"", b"")
+            await broken.ask(worker.Run(b"", b""))
             async with asyncio.timeout(5):
                 await entered.wait()
 
-            waiting = asyncio.create_task(broken.ask(worker.Result))
+            waiting = asyncio.create_task(broken.ask(worker.Result()))
             await asyncio.sleep(0.1)
             assert not waiting.done(), "an attempt still running is not answered yet"
 
@@ -296,14 +296,14 @@ def describe_the_worker() -> None:
 
         async with hosting() as system:
             for id in ("exe_recorded", "exe_kept"):
-                await execution(system, id).ask(worker.Run, codec.dumps(answer), arguments)
-                assert isinstance(_lookup(await execution(system, id).ask(worker.Result)), Done)
+                await execution(system, id).ask(worker.Run(codec.dumps(answer), arguments))
+                assert isinstance(_lookup(await execution(system, id).ask(worker.Result())), Done)
 
-            await execution(system, "exe_next").ask(worker.Run, codec.dumps(answer), arguments, settled=("exe_recorded",))
+            await execution(system, "exe_next").ask(worker.Run(codec.dumps(answer), arguments, settled=("exe_recorded",)))
 
             assert "exe_recorded" not in worker.outcomes
             assert {"exe_kept", "exe_next"} <= worker.outcomes.keys(), "only what the daemon named is dropped"
-            assert _lookup(await execution(system, "exe_recorded").ask(worker.Result)) == Unknown()
+            assert _lookup(await execution(system, "exe_recorded").ask(worker.Result())) == Unknown()
 
     async def it_drops_an_outcome_nobody_acknowledged_after_keep_seconds(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
@@ -312,15 +312,15 @@ def describe_the_worker() -> None:
 
         async with hosting() as system:
             unacknowledged = execution(system, "exe_unacknowledged")
-            await unacknowledged.ask(worker.Run, codec.dumps(answer), codec.dumps(((), {})))
-            kept = _lookup(await unacknowledged.ask(worker.Result))
+            await unacknowledged.ask(worker.Run(codec.dumps(answer), codec.dumps(((), {}))))
+            kept = _lookup(await unacknowledged.ask(worker.Result()))
             assert isinstance(kept, Done), "within its time it is still answered"
 
             async with asyncio.timeout(5):
                 while "exe_unacknowledged" in worker.outcomes:
                     await asyncio.sleep(0.02)
 
-            assert _lookup(await unacknowledged.ask(worker.Result)) == Unknown()
+            assert _lookup(await unacknowledged.ask(worker.Result())) == Unknown()
 
     def it_asks_the_decision_off_the_event_loop_thread(on_a_node: None, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(worker, "MODE", "thread")
@@ -529,9 +529,9 @@ def describe_the_daemon() -> None:
                 def __init__(self, node_id: str, id: str) -> None:
                     self.node_id, self.id = node_id, id
 
-                async def ask(self, build: object, *fields: object, **named: object) -> bytes | None:
-                    match build, fields:
-                        case worker.Run, (_, _, _, _, tuple() as settled):
+                async def ask(self, message: worker.ExecutionMessage) -> bytes | None:
+                    match message:
+                        case worker.Run(settled=settled):
                             sent.append((self.node_id, self.id, tuple(sorted(str(id) for id in settled))))
                             return None
                         case _:

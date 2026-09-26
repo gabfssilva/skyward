@@ -235,7 +235,7 @@ def on_a_node(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 async def _stop(id: str) -> bool:
     async with hosting() as system:
-        return await execution(system, id).ask(worker.Stop)
+        return await execution(system, id).ask(worker.Stop())
 
 
 def describe_the_worker_asked_to_stop_an_attempt() -> None:

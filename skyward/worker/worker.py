@@ -246,7 +246,7 @@ def bind_distributed(system: casty.ActorSystem) -> None:
 
 
 @dataclass(frozen=True, slots=True)
-class Run:
+class Run(casty.Askable[None]):
     """Take on an attempt, and answer once it is held: the outcome is asked for with :class:`Result`.
 
     ``decision`` is the task's retry decision, pickled, and ``attempt`` which attempt this is — asked together if the
@@ -254,7 +254,6 @@ class Run:
     no longer needs to keep.
     """
 
-    reply_to: casty.Ref[None]
     code: bytes
     args: bytes
     decision: bytes = b""
@@ -263,57 +262,45 @@ class Run:
 
 
 @dataclass(frozen=True, slots=True)
-class Result:
+class Result(casty.Askable[bytes]):
     """The attempt's outcome, as an encoded :data:`~skyward.shared.frames.Lookup`. See :func:`answer`."""
 
-    reply_to: casty.Ref[bytes]
-
 
 @dataclass(frozen=True, slots=True)
-class Stop:
+class Stop(casty.Askable[bool]):
     """Stop an attempt that ran past its time, and say whether anything here was running it. See :func:`stop`."""
 
-    reply_to: casty.Ref[bool]
-
 
 @dataclass(frozen=True, slots=True)
-class Open:
+class Open(casty.Askable[None]):
     """Take on a stream: the generator's code and arguments, sent once and not with every item."""
 
-    reply_to: casty.Ref[None]
     code: bytes
     args: bytes
 
 
 @dataclass(frozen=True, slots=True)
-class Next:
+class Next(casty.Askable[bytes]):
     """A stream's next item, as an encoded :data:`~skyward.shared.frames.Step`. See :func:`pull`."""
-
-    reply_to: casty.Ref[bytes]
 
 
 @dataclass(frozen=True, slots=True)
-class Close:
+class Close(casty.Askable[None]):
     """Let go of a stream whose reader went away. See :func:`close`."""
-
-    reply_to: casty.Ref[None]
 
 
 type ExecutionMessage = Run | Result | Stop | Open | Next | Close
 
 
 @dataclass(frozen=True, slots=True)
-class Ping:
+class Ping(casty.Askable[str]):
     """Which node this is: the answer comes from the loop, so it says the loop is not held."""
-
-    reply_to: casty.Ref[str]
 
 
 @dataclass(frozen=True, slots=True)
-class Topology:
+class Topology(casty.Askable[None]):
     """Where the other nodes are, when that changes under a running worker. See :func:`control`."""
 
-    reply_to: casty.Ref[None]
     peers: tuple[str, ...]
 
 
@@ -334,19 +321,19 @@ async def execution(ctx: casty.Context[None, ExecutionMessage]) -> None:
     id = ctx.key.partition("/")[2]
     async for message in ctx.inbox:
         match message:
-            case Run(reply_to, code, args, decision, attempt, settled):
+            case Run(code, args, decision, attempt, settled, reply_to=reply_to):
                 admit(id, code, args, decision, attempt, settled)
                 reply_to.tell(None)
-            case Result(reply_to):
+            case Result(reply_to=reply_to):
                 _detach(answer(reply_to, id))
-            case Stop(reply_to):
+            case Stop(reply_to=reply_to):
                 _detach(_told(reply_to, stop(id)))
-            case Open(reply_to, code, args):
+            case Open(code, args, reply_to=reply_to):
                 streams[id] = (code, args)
                 reply_to.tell(None)
-            case Next(reply_to):
+            case Next(reply_to=reply_to):
                 _detach(pull(reply_to, id))
-            case Close(reply_to):
+            case Close(reply_to=reply_to):
                 _detach(_told(reply_to, close(id)))
             case _:
                 assert_never(message)
@@ -364,9 +351,9 @@ async def control(ctx: casty.Context[None, ControlMessage]) -> None:
     """
     async for message in ctx.inbox:
         match message:
-            case Ping(reply_to):
+            case Ping(reply_to=reply_to):
                 reply_to.tell(os.environ["SKYWARD_NODE"])
-            case Topology(reply_to, peers):
+            case Topology(peers, reply_to=reply_to):
                 os.environ["SKYWARD_PEERS"] = ",".join(peers)
                 reply_to.tell(None)
             case _:

@@ -357,22 +357,20 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.30.0"
-source = { editable = "../casty" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "griffelib", specifier = ">=2.3.0" },
-    { name = "mkdocs", specifier = ">=1.6.1,<2" },
-    { name = "mkdocs-material", specifier = ">=9.7.7" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
-    { name = "pyright", specifier = ">=1.1.414" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
-    { name = "pytest-describe", specifier = ">=3.2.0" },
-    { name = "ruff", specifier = ">=0.16.6" },
+version = "0.30.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/14/b3/ec9a20276fcf16f338125cbed3a2caf09944aa64564f16d76c77d07a989c/casty-0.30.1.tar.gz", hash = "sha256:14ad22aac56aaf5527b6cbe3967f487ce2ed4dba2da8a4fee80574dee48ed0d9", size = 372621, upload-time = "2026-09-26T02:18:11.95Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/f6/903bc10c27f0626922a55cb10377b3f88312ce96c8dfad80ea3f58f87bb4/casty-0.30.1-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:00a429c578e5ef5c30b13a0b55178e18db7d2dfd6b56226afb437baba9447438", size = 2692149, upload-time = "2026-09-26T02:17:55.748Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/5a/44f37eed8af7eb4afc64b9464a99be8884d930a8f9fb567a8b8a5611b0f6/casty-0.30.1-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:a489e61bbcad19a297748f528118a602c99e18207758848f17a53949479a68ca", size = 2458902, upload-time = "2026-09-26T02:17:57.587Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/2b/0d840a8b095885fbe4a7af9944dbadd42df170df367e20a787044dff2fe6/casty-0.30.1-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:14185ce23b835b8a4f393a4f9f9d67fcd3ad43fa30b35be4d45ac6819924b2a3", size = 2704547, upload-time = "2026-09-26T02:17:59.253Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/6e/f82ff8da72f302d614198b0a68a4eff226d0581e412559e5321853c7192a/casty-0.30.1-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2a9e21353f1e3e0c0d9f25d99254a91109c1103dc7c27ea44e4c214c48cd79d8", size = 2855757, upload-time = "2026-09-26T02:18:00.693Z" },
+    { url = "https://files.pythonhosted.org/packages/53/32/a42f4704db8d92c8c15a9cfaae8c727be483acfd28838b6225c24707c7e2/casty-0.30.1-cp312-abi3-win_amd64.whl", hash = "sha256:9746900f8b8117a2a74d0d1616d3ddd81c44a53f3b1a86557293e74d25815fe4", size = 2529796, upload-time = "2026-09-26T02:18:02.603Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/db/5771c270e30c9292441ffc8299cb8c2606b68e9448e8c758523e1ec2fc17/casty-0.30.1-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:be102bc23f57c0354f0cf9d188f78f445f695be3a724ba25d90be0bfd591eca1", size = 2688360, upload-time = "2026-09-26T02:18:04.297Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/c5/ef3286c8255f9d0cda9f5d6e92c4458fc198170df4eecfdd096237c50247/casty-0.30.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:88d12cdacb5c9a9fb448e3bd510495eb34a346df937cde05dabdf05c1145e097", size = 2455944, upload-time = "2026-09-26T02:18:05.759Z" },
+    { url = "https://files.pythonhosted.org/packages/61/17/194adc76811d6c6a3a608edf0ee78835d33c9bee153083018c7e246727df/casty-0.30.1-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:55e6264181b5b6a99aa3ab15e3dd00cdf759eb9e8a3a691622ce8b030ae88b82", size = 2700754, upload-time = "2026-09-26T02:18:07.409Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/c9/75c7e9ac1f622cc447664d0bbcdb8931e13cb46b2eb0ee56c8508a104c37/casty-0.30.1-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:be9794ca184ec3b3bee159fc770168ba49bafe735b5d906b476aaa0c0f3b0b67", size = 2852133, upload-time = "2026-09-26T02:18:08.939Z" },
+    { url = "https://files.pythonhosted.org/packages/00/43/9e9da2803c799d94c2fc66febee9ecfc00f7f5a0ef490326e9613f8d0bfb/casty-0.30.1-cp314-cp314t-win_amd64.whl", hash = "sha256:c1391939352d06c5470e95a0b54775619cc0b9b61368afcf9eeb13dad61c8433", size = 2526510, upload-time = "2026-09-26T02:18:10.385Z" },
 ]
 
 [[package]]
@@ -2908,7 +2906,7 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'storage'", specifier = ">=13.0.0" },
     { name = "asyncssh", marker = "extra == 'all'", specifier = ">=2.22.0" },
     { name = "asyncssh", marker = "extra == 'server'", specifier = ">=2.22.0" },
-    { name = "casty", editable = "../casty" },
+    { name = "casty", specifier = ">=0.30.1" },
     { name = "cloudpickle", specifier = ">=3.1" },
     { name = "cryptography", marker = "extra == 'all'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'gcp'", specifier = ">=42" },
