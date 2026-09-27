@@ -77,6 +77,8 @@ providers = [
 # business acquiring an argument parser to do it.
 cli = [
     "cyclopts>=3.0",
+    # `sky run` reads a script's requires-python, which is a PEP 440 specifier.
+    "packaging>=24",
 ]
 # A local Jupyter whose kernel runs on a compute (`skyward.notebook`). Client
 # side only: jupyter-client and traitlets are what the provisioner imports, and

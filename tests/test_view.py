@@ -228,7 +228,7 @@ class _Stream(Client):
         super().__init__(http, http, AsyncExitStack())
         self._script = events
 
-    async def events(self, compute: str) -> AsyncGenerator[tuple[str, bytes]]:
+    async def events(self, compute: str | None = None, *, types: tuple[str, ...] = (), after: int | None = None) -> AsyncGenerator[tuple[str, bytes]]:
         import msgspec
 
         for event in self._script:

@@ -72,14 +72,41 @@ def describe_running_a_script_on_the_machines() -> None:
         script = tmp_path / "speak.py"
         script.write_text("import skyward as sky\nprint(f'spoke from rank {sky.instance_info().rank}')\n")
 
-        ran = cli("compute", "run", pool.id, str(script), "--all", "--url", daemon)
+        ran = cli("compute", "run", pool.id, str(script), "--node", "all", "--url", daemon)
 
         assert ran.code == 0, ran.err
-        assert "spoke from rank 0" in ran.out, "the lines come back over the event log, and this is where they land"
-        assert "spoke from rank 1" in ran.out
+        assert "0 │ spoke from rank 0" in ran.out, "the lines come back over the event log, after the rank that wrote them"
+        assert "1 │ spoke from rank 1" in ran.out
+
+    def a_rank_runs_it_on_that_node_alone(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        script = tmp_path / "rank.py"
+        script.write_text("import skyward as sky\nprint(f'spoke from rank {sky.instance_info().rank}')\n")
+
+        ran = cli("compute", "run", pool.id, str(script), "--node", "1", "--url", daemon)
+
+        assert ran.code == 0, ran.err
+        assert ran.out.splitlines() == ["1 │ spoke from rank 1"]
+
+    def without_a_node_it_runs_once(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        script = tmp_path / "once.py"
+        script.write_text("print('once')\n")
+
+        ran = cli("compute", "run", pool.id, str(script), "--url", daemon)
+
+        assert ran.code == 0, ran.err
+        assert [line.split(" │ ", 1)[1] for line in ran.out.splitlines()] == ["once"]
+
+    def it_refuses_a_placement_that_is_not_one(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        script = tmp_path / "nowhere.py"
+        script.write_text("print('never')\n")
+
+        ran = cli("compute", "run", pool.id, str(script), "--node", "nowhere", "--url", daemon)
+
+        assert ran.code != 0
+        assert "--node takes all, any or a rank" in ran.err
 
     def it_keeps_the_script_as_the_text_of_its_function(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
-        """The script travels inside a closure of skyward's own, so the text is the only part of it worth reading."""
+        """The script travels as a function of skyward's own bound to its text, so the text is the only part of it worth reading."""
         script = tmp_path / "kept.py"
         script.write_text("import sys\n\nprint(sys.argv)\n")
 

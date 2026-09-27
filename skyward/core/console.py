@@ -37,6 +37,7 @@ from skyward.shared.events import (
     TaskEvent,
     progressed,
 )
+from skyward.shared.observability import notice
 
 type ConsoleMode = Literal["rich", "log"]
 
@@ -102,6 +103,12 @@ class Observer:
     the event; only what it cannot carry — a node's address, a task's timings, a
     compute's new bounds — asks for a read, and every ask made before the read
     goes out is the same read.
+
+    ``after`` starts the stream past a sequence rather than at the beginning of the
+    log. A pool attached to a compute that is already up is watched from then on:
+    its log is every run before this one, and replaying it would print yesterday's
+    output as if it were today's. The view loses nothing by it, because the first
+    thing :meth:`follow` does is read the compute as it is.
     """
 
     def __init__(
@@ -110,11 +117,13 @@ class Observer:
         compute: str,
         watchers: tuple[Watcher, ...] = (),
         callbacks: tuple[EventCallback, ...] = (),
+        after: int | None = None,
     ) -> None:
         self._client = client
         self._compute = compute
         self._watchers = watchers
         self._callbacks = callbacks
+        self._after = after
         self._view = ComputeView(id=compute)
         self._asked = asyncio.Event()
         self._overtaken: list[Event] | None = None
@@ -129,13 +138,13 @@ class Observer:
             async with asyncio.TaskGroup() as group:
                 reading = group.create_task(self._reread())
                 try:
-                    async for _, payload in self._client.events(self._compute):
+                    async for _, payload in self._client.events(self._compute, after=self._after):
                         if (event := decoded(payload)) is not None:
                             await self._fold(event)
                 finally:
                     reading.cancel()
         except* Exception as stopped:
-            print(f"skyward: the event stream stopped ({stopped.exceptions[0]})", file=sys.stderr, flush=True)
+            notice("WARNING", f"the event stream stopped ({stopped.exceptions[0]})")
         finally:
             await self._tell(self._close)
 
@@ -203,7 +212,7 @@ class Observer:
             try:
                 callback(event, view)
             except Exception as exc:
-                print(f"skyward: a callback raised ({exc})", file=sys.stderr, flush=True)
+                notice("WARNING", f"a callback raised ({exc})")
 
     def _refreshed(self, view: ComputeView) -> None:
         for one in self._watchers:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, MutableMapping
 from contextlib import AsyncExitStack, nullcontext
@@ -29,7 +28,7 @@ import msgspec
 
 from skyward.api.v1 import LivenessResource
 from skyward.core.errors import DaemonError, SkywardError, UnexpectedResponseError, refused
-from skyward.shared.observability import logger
+from skyward.shared.observability import logger, notice
 from skyward.shared.version import current
 
 if TYPE_CHECKING:
@@ -606,19 +605,19 @@ async def dial(url: str, *, start: bool, strict: bool) -> Client:
         if (live := await client.liveness()) is None:
             if not start:
                 raise DaemonError(f"no daemon answers at {url}")
-            print("skyward: no server is running, starting it now", file=sys.stderr, flush=True)
+            notice("INFO", "no server is running, starting it now")
             live = await started(client, url)
-            print(f"skyward: the daemon at {url} stays up after this run — `sky server stop` ends it", file=sys.stderr, flush=True)
+            notice("INFO", f"the daemon at {url} stays up after this run — `sky server stop` ends it")
 
         if live.version != (here := current()):
             theirs = f"skyward {live.version}" if live.version else "a skyward too old to say which"
             skew = f"the daemon at {url} runs {theirs}, this process runs skyward {here}"
             if strict:
                 raise DaemonError(f"{skew} — stop it with `sky server stop` and run again, or point at a daemon on this version")
-            print(
-                f"skyward: {skew}; going on — a type they disagree on fails where it is read, and `Options(strict_version=True)` refuses the daemon instead",
-                file=sys.stderr,
-                flush=True,
+            notice(
+                "WARNING",
+                f"the daemon runs on a different skyward version ({live.version or 'unknown'} vs {here}). "
+                "since it may affect usage, you may want to set Options(strict_version=True).",
             )
     except BaseException:
         await client.close()

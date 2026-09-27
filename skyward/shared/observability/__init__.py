@@ -15,6 +15,7 @@ deliberately not re-exported here — one name, one import path.
 from skyward.shared.observability.logfile import Entry, Failure, Group, LogFile, Query, Severity, Summary, Volume, entries, summarize
 from skyward.shared.observability.logger import NAME, Logger, logger
 from skyward.shared.observability.logging import Installed, LogConfig, LogLevel, level, setup_logging, teardown_logging
+from skyward.shared.observability.notice import notice
 
 __all__ = [
     "NAME",
@@ -33,6 +34,7 @@ __all__ = [
     "entries",
     "level",
     "logger",
+    "notice",
     "setup_logging",
     "summarize",
     "teardown_logging",

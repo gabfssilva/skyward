@@ -7,6 +7,10 @@ lives in the daemon; the flags only say which one, and creating one is a
 Credentials are the exception, and only because they have to be: the daemon
 never reads the environment, so the provider row is registered from this
 process — the same thing the SDK does before it creates a pool.
+
+``sky run`` is the other exception. It holds the compute its script declares for
+as long as the script runs, through the same ``Compute`` a script written against
+the SDK would open.
 """
 
 from __future__ import annotations
@@ -17,8 +21,9 @@ import sys
 import uuid
 from collections.abc import Callable, Sequence
 from contextlib import aclosing, suppress
+from functools import partial
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import msgspec
 from cyclopts import Parameter
@@ -26,15 +31,21 @@ from cyclopts import Parameter
 from skyward import api
 from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource
 from skyward.cli import compute_app
-from skyward.cli._client import Work, call
+from skyward.cli._client import Work, call, resolve
 from skyward.cli._output import Output, dump, render
+from skyward.cli.script import Script, read
+from skyward.core import console
 from skyward.core import provider as factories
 from skyward.core.client import Client
+from skyward.core.compute import Compute
 from skyward.core.errors import SkywardError
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import bounds
+from skyward.core.view import ComputeView
 from skyward.shared import codec
+from skyward.shared.events import ConsoleEvent, Event
+from skyward.shared.observability import notice
 from skyward.shared.schemas import (
     ComputeCreate,
     ComputeSpec,
@@ -51,6 +62,10 @@ from skyward.shared.schemas import (
     TaskCreate,
 )
 from skyward.worker.plugins import PLUGINS
+from skyward.worker.script import run as execute
+
+type Where = Literal["all", "any"] | int
+"""Where a script runs: every node, one with a slot going spare, or the one at a rank."""
 
 COMPUTE_COLUMNS = ("id", "name", "state", "ready", "total", "generation", "created")
 NODE_COLUMNS = ("id", "rank", "state", "desired", "machine", "address", "accelerator", "$/h")
@@ -60,6 +75,7 @@ WRITTEN_COLUMNS = ("node", "error")
 
 BYTES = "application/octet-stream"
 NODE_HELP = "Which nodes to reach: all, or a rank"
+WHERE_HELP = "Where to run it: all, any (one node with a slot free), or a rank"
 WAIT = 30
 """Seconds the daemon holds a result request open before answering nothing yet."""
 IDLE = 1.0
@@ -413,7 +429,7 @@ def run_script(
     script: Path,
     args: Annotated[list[str] | None, Parameter(help="Forwarded to the script as sys.argv")] = None,
     *,
-    every: Annotated[bool, Parameter(name="--all", help="Run it on every node rather than one")] = False,
+    node: Annotated[str, Parameter(name="--node", help=WHERE_HELP)] = "any",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
 ) -> None:
     """Run a local Python script on the compute.
@@ -428,9 +444,72 @@ def run_script(
     if not script.is_file():
         raise SystemExit(f"no such script: {script}")
 
+    where = _where(node)
     source = script.read_text()
     argv = (str(script), *(args or ()))
-    if status := _call(lambda client: _remotely(client, ref, source, argv, "all" if every else "one"), url=url):
+    if status := _call(lambda client: _remotely(client, ref, source, argv, where), url=url):
+        raise SystemExit(status)
+
+
+def run_declared(
+    script: Path,
+    args: Annotated[list[str] | None, Parameter(help="Forwarded to the script as sys.argv")] = None,
+    *,
+    node: Annotated[str, Parameter(name="--node", help=WHERE_HELP)] = "any",
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+) -> None:
+    """Run a local Python script on the compute its own header declares.
+
+    The header is PEP 723's, the block ``uv run`` reads: ``requires-python`` and
+    ``dependencies`` become the image, and ``[tool.skyward]`` is the rest of the
+    compute. The compute is named after the file and what the header asks for, so
+    a second run of the same header lands on the same machines while they are up,
+    and a header whose ``nodes`` changed resizes them rather than buying others.
+    Whether they are still up after a run is the header's ``delete_on_exit``.
+
+    Exits with the worst node's status.
+    """
+    if not script.is_file():
+        raise SystemExit(f"no such script: {script}")
+
+    declared = read(script)
+    if declared.provider not in FACTORIES:
+        raise SystemExit(f"unknown provider '{declared.provider}'; known: {', '.join(sorted(FACTORIES))}")
+
+    where = _where(node)
+    argv = (str(script), *(args or ()))
+    daemon = resolve(url)
+    standing = _call(lambda client: _standing(client, declared), url=daemon)
+    pool = (
+        Compute.attached(declared.name, url=daemon, console=False, callbacks=(_progress,), delete_on_exit=declared.delete_on_exit)
+        if standing
+        else Compute(
+            provider=FACTORIES[declared.provider](),
+            accelerator=declared.accelerator,
+            cpus=declared.cpus,
+            memory_gb=declared.memory_gb,
+            region=declared.region,
+            nodes=declared.nodes,
+            allocation=declared.allocation,
+            image=declared.image,
+            plugins=declared.plugins,
+            name=declared.name,
+            url=daemon,
+            delete_on_exit=declared.delete_on_exit,
+            console=False,
+            callbacks=(_progress,),
+        )
+    )
+
+    try:
+        with pool:
+            status = pool.loop.run(_remotely(pool.client, pool.id, declared.source, argv, where))
+    except SkywardError as error:
+        raise SystemExit(f"{error.code}: {error.message}") from None
+
+    if not declared.delete_on_exit:
+        notice("WARNING", f"{declared.name} is still up")
+    if status:
         raise SystemExit(status)
 
 
@@ -499,7 +578,44 @@ def _spoke(ran: dict[str, Result], output: Output) -> None:
                 sys.stdout.write(f"{name}\n{(result.stdout + result.stderr).rstrip()}\n")
 
 
-async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...], dispatch: Dispatch) -> int:
+async def _standing(client: Client, script: Script) -> bool:
+    """Whether the compute the script declares is up, sized to what its header asks for now.
+
+    A deleted compute is not standing, and its name is free again. One still being
+    deleted is refused rather than waited on: its machines are on their way out,
+    and the name is not free until they are gone.
+    """
+    try:
+        found = await client.call("GET", f"/v1/computes/{script.name}", ComputeResource)
+    except SkywardError as error:
+        if error.code != "not_found":
+            raise
+        return False
+
+    match found.status.state:
+        case "deleted":
+            return False
+        case "deleting":
+            raise SystemExit(f"compute {script.name} is being deleted; run again once it is gone")
+        case _:
+            wanted = script.nodes
+            if (found.spec.nodes.initial, found.spec.nodes.min, found.spec.nodes.max) != (wanted.initial, wanted.min, wanted.max):
+                await _conditional(client, found.id, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted)))
+            return True
+
+
+def _where(node: str) -> Where:
+    """``--node`` as a placement, refused here rather than by a task that waits for a rank forever."""
+    match node:
+        case "all" | "any":
+            return node
+        case rank if rank.isdigit():
+            return int(rank)
+        case _:
+            raise SystemExit(f"--node takes all, any or a rank, not {node!r}")
+
+
+async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...], where: Where) -> int:
     """Submit the script, print what it prints, and answer with its status.
 
     The compute is read first for its id: a task takes a reference, and the event
@@ -512,7 +628,7 @@ async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...]
     is told the task is done and left to drain until the log goes quiet.
     """
     compute = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
-    task = await _submit(client, compute.id, source, argv, dispatch)
+    task = await _submit(client, compute.id, source, argv, where)
 
     settled = asyncio.Event()
     printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled))
@@ -531,11 +647,25 @@ async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...]
     return await _status(client, task.id)
 
 
-async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ...], dispatch: Dispatch) -> TaskResource:
-    blob = await codec.payload.encode(_wrap(source, argv))
+async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ...], where: Where) -> TaskResource:
+    """The script as a task, sent as :func:`skyward.worker.script.run` bound to its text.
+
+    The text is also the function's excerpt, so the console shows the script that
+    ran rather than the few lines that ran it.
+    """
+    blob = await codec.payload.encode(partial(execute, source, argv))
     function = await codec.digest(blob)
     await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": Path(argv[0]).name})
     await client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=source)))
+
+    dispatch: Dispatch
+    match where:
+        case "all":
+            dispatch, rank = "all", None
+        case "any":
+            dispatch, rank = "one", None
+        case int(rank):
+            dispatch = "one"
 
     return await client.call(
         "POST",
@@ -547,10 +677,26 @@ async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ..
                 function=function,
                 dispatch=dispatch,
                 args_inline=await codec.payload.encode(((), {})),
+                rank=rank,
             ),
         ),
         headers={"Idempotency-Key": uuid.uuid4().hex},
     )
+
+
+def _progress(event: Event, _: ComputeView) -> None:
+    """What the machines are doing, on stderr, while ``sky run`` holds them.
+
+    A line a script printed is left out: those are the task's, and they go to
+    stdout from the task itself, drained after it settles — the pool's own stream
+    is cancelled the moment the block ends, and would drop the last of them.
+    """
+    match event:
+        case ConsoleEvent(task=str()):
+            return
+        case _:
+            if line := console.render(event, sys.stderr.isatty()):
+                print(line, file=sys.stderr, flush=True)
 
 
 async def _console(client: Client, compute: str, task: str, settled: asyncio.Event) -> None:
@@ -562,7 +708,14 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
     A line carries the task it belongs to — the daemon resolves it from the attempt
     the machine was handed — so a compute running more than one is filtered on the
     line itself rather than by reading the task back per attempt.
+
+    Every line is printed after the rank of the node that wrote it. A script's
+    output and this command's own sentences share a terminal, and the lines of a
+    broadcast arrive interleaved; without it neither can be told apart. The ranks
+    are read off the compute, and read again for a node they do not know yet — one
+    a resize brought in after the first read.
     """
+    ranks: dict[str, int] = {}
     async with aclosing(client.events(compute, types=("node.console",))) as stream:
         feed = stream.__aiter__()
         while True:
@@ -573,9 +726,14 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
                 return
 
             line = json.loads(payload)
-            if line.get("task") == task:
-                sys.stdout.write(line.get("content", "") + "\n")
-                sys.stdout.flush()
+            if line.get("task") != task:
+                continue
+            node = line.get("node", "")
+            if node not in ranks:
+                current = await client.call("GET", f"/v1/computes/{compute}", ComputeResource)
+                ranks = {known.id: known.rank for known in current.nodes}
+            sys.stdout.write(f"{ranks.get(node, node)} │ {line.get('content', '')}\n")
+            sys.stdout.flush()
 
 
 async def _status(client: Client, task_id: str) -> int:
@@ -587,34 +745,6 @@ async def _status(client: Client, task_id: str) -> int:
         if execution.result_sha256 and (blob := await client.blob(f"/v1/blobs/{execution.result_sha256}"))
     ]
     return max(codes, default=0)
-
-
-def _wrap(source: str, argv: tuple[str, ...]) -> Callable[[], int]:
-    """The script as a function a worker can be handed, and its status back.
-
-    A closure rather than a module-level function on purpose. Cloudpickle sends a
-    module-level one by reference, and this module imports ``cyclopts``, which a
-    node has no reason to have — the node would fail to unpickle it. Sent by
-    value it carries its own code, and needs nothing there but the interpreter.
-    """
-
-    def execute() -> int:
-        import sys
-        import traceback
-
-        held, sys.argv = sys.argv, list(argv)
-        try:
-            exec(compile(source, argv[0], "exec"), {"__name__": "__main__", "__file__": argv[0]})
-        except SystemExit as stop:
-            return stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
-        except BaseException:
-            traceback.print_exc()
-            return 1
-        finally:
-            sys.argv = held
-        return 0
-
-    return execute
 
 
 def pairs(values: Sequence[str], flag: str) -> dict[str, str]:
@@ -704,6 +834,7 @@ __all__ = [
     "list_path",
     "pairs",
     "remove_path",
+    "run_declared",
     "run_script",
     "upload_path",
     "view_compute",

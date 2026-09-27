@@ -128,10 +128,10 @@ sky compute upload research ./data.csv /data/data.csv
 sky compute download research /data/result.json ./result.json
 sky compute exec research --node 0 nvidia-smi
 sky compute run research train.py
-sky compute run research --all train.py
+sky compute run research train.py --node all
 ```
 
-`ls`, `rm`, and `upload` target every node by default where the command allows it. `download` reads one node and defaults to rank `0`. `exec` runs a shell command on the selected nodes. `run` sends a local Python script through the worker path; `--all` runs it on every node.
+`ls`, `rm`, and `upload` target every node by default where the command allows it. `download` reads one node and defaults to rank `0`. `exec` runs a shell command on the selected nodes. `run` sends a local Python script through the worker path; `--node` places it: `any` (the default, one node with a slot free), `all`, or a rank.
 
 ## `sky log`
 

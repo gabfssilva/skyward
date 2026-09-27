@@ -463,8 +463,9 @@ class Compute:
 
         await self._claim()
         self._leasing = self.loop.start(self._renew())
+        head = await self._head()
         self._endings = Endings(self.client, self._id)
-        self._following = self.loop.start(self._endings.follow(await self._head()))
+        self._following = self.loop.start(self._endings.follow(head))
 
         watchers: tuple[Watcher, ...] = ()
         if self._console:
@@ -472,7 +473,7 @@ class Compute:
             # for its background colour (OSC 11) and can wait ~250ms for the reply.
             watchers = (await asyncio.to_thread(watcher),)
         if watchers or self._callbacks:
-            observer = Observer(self.client, self._id, watchers=watchers, callbacks=self._callbacks)
+            observer = Observer(self.client, self._id, watchers=watchers, callbacks=self._callbacks, after=head if self._attach else None)
             self._watching = self.loop.start(observer.follow())
 
         async with asyncio.timeout(self._ready_timeout):
@@ -691,11 +692,16 @@ class Compute:
         frames that move the state, so every frame prompts a read — one read per change
         instead of a poll every half second — and the resource, not the event, is what
         says where the compute is: by the time the read lands it may be further on.
+
+        ``ready`` is ready as the compute is defined now. A resize moves the generation
+        on and leaves the state where it was until the reconciler has looked, so a pool
+        attached right after one would otherwise open on the size it had before.
         """
         async with aclosing(self.client.events(self._id, types=MOVES)) as events:
             async for _ in events:
                 current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
-                if current.status.state in states:
+                caught_up = current.status.state != "ready" or current.status.observed_generation == current.generation
+                if current.status.state in states and caught_up:
                     return current
         raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
 

@@ -127,7 +127,7 @@ A stock-out reads like `no market could place a runpod machine` wrapping the pro
 sky compute exec training nvidia-smi                  # every node's shell
 sky compute exec training --node 0 -- df -h           # one node, by rank
 sky compute exec training "nvidia-smi -L"             # quoting works too
-sky compute run training train.py --all               # a local Python script, on every node
+sky compute run training train.py --node all          # a local Python script, on every node
 sky compute run training train.py -- --epochs 10      # args forwarded as sys.argv
 ```
 

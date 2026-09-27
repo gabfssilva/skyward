@@ -11,7 +11,6 @@ same query, which is why a fetch can also filter.
 
 from __future__ import annotations
 
-import sys
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from math import inf
@@ -20,6 +19,7 @@ from skyward.api.v1 import OfferResource, Page, ProviderResource
 from skyward.cli import offers_app
 from skyward.cli._client import call
 from skyward.cli._output import EMPTY, Output, render
+from skyward.shared.observability import notice
 
 LIST_COLUMNS = ("PROVIDER", "KIND", "INSTANCE", "ACCELERATOR", "VRAM", "CPUS", "MEMORY", "REGION", "SPOT", "ON-DEMAND", "UNIT")
 SUMMARY_COLUMNS = ("ACCELERATOR", "PROVIDER", "OFFERS", "CHEAPEST", "AVERAGE", "DEAREST")
@@ -224,7 +224,7 @@ def _why_empty(url: str | None) -> None:
     """
     registered = call(lambda client: client.call("GET", "/v1/providers", Page[ProviderResource]), url=url)
     if not registered.items:
-        print("no accounts are registered, so there is nothing to quote: sky providers set <kind>", file=sys.stderr)
+        notice("WARNING", "no accounts are registered, so there is nothing to quote: sky providers set <kind>")
 
 
 __all__ = ["fetch_offers", "list_offers", "summary_offers"]

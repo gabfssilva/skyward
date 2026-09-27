@@ -117,11 +117,11 @@ sky compute delete REF
 
 ```
 sky compute exec REF COMMAND... [--node all]
-sky compute run  REF SCRIPT [ARGS...] [--all]
+sky compute run  REF SCRIPT [ARGS...] [--node any]
 ```
 
 - `exec` runs in the **machine's shell** — questions about the node, and it reaches a node whose worker is busy. Quote a command carrying flags, or put it after `--`: `sky compute exec training --node 0 -- df -h`.
-- `run` submits a **task**: the local script travels the path a `@sky.function` takes, landing in a worker with the image, plugins and runtime API around it. Its output streams back over the compute's event log as it prints. `--all` broadcasts; the default is one node.
+- `run` submits a **task**: the local script travels the path a `@sky.function` takes, landing in a worker with the image, plugins and runtime API around it. Its output streams back over the compute's event log as it prints. `--node all` broadcasts, `--node N` runs it on rank N; the default, `any`, is one node with a slot free.
 - Both exit with the worst node's status.
 
 ### Files
