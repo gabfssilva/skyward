@@ -1,4 +1,4 @@
-import type { EngineInterface, HttpResponse, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, HttpInit, HttpResponse, Register, RenderElement, Timer } from 'claude-code'
 
 const DAEMON = 'http://127.0.0.1:17590'
 const PANE_ID = 'skyward'
@@ -13,8 +13,10 @@ const IDLE_GPU_PCT = 5
 // Four buckets of 30s: a gap between two tasks is not idleness.
 const IDLE_BUCKETS = 4
 const NODE_STAGES = ['requested', 'provisioning', 'connecting', 'bootstrapping', 'ready', 'draining', 'lost', 'deleting', 'deleted', 'failed']
+// The states the daemon counts a node alive in; a node in any other is already on its way out.
+const DRAINABLE = new Set(['requested', 'provisioning', 'connecting', 'bootstrapping', 'ready'])
 const TASKS_PER_PAGE = 5
-const DELETE_ATTEMPTS = 5
+const WRITE_ATTEMPTS = 5
 const NAME_WIDTH = 16
 const MARQUEE_MS = 250
 const MARQUEE_PAUSE_FRAMES = 8
@@ -34,9 +36,13 @@ type Compute = {
   ended: boolean
   cost: number | null
   lastError: string | null
+  bounds: Bounds
   /** Each node's newest reading of each metric, keyed node/name — present when the read asked for it. */
   latest: Map<string, number>
 }
+
+// `spec.nodes`, with an unset `min` or `max` read as `initial`, as the reconciler reads it.
+type Bounds = { initial: number; min: number; max: number }
 
 type Node = {
   id: string
@@ -86,10 +92,13 @@ type Fleet = {
   idle: { since: number; capped: boolean } | null
 }
 
+// `listed` is `nodes` cut to `group`, and what `page` and `pageCount` count.
 type Detail = {
   compute: Compute
   fleet: Fleet
   nodes: Node[]
+  group: NodeGroup | null
+  listed: Node[]
   page: number
   pageCount: number
   latest: Map<string, number>
@@ -98,10 +107,20 @@ type Detail = {
   log: LogPage
 }
 
-type DetailView = { kind: 'detail'; id: string; page: number; expanded: ReadonlySet<string>; tasks: TaskQuery; log: LogFilter }
+type DetailView = { kind: 'detail'; id: string; page: number; group: NodeGroup | null; expanded: ReadonlySet<string>; tasks: TaskQuery; log: LogFilter }
 type View = { kind: 'list' } | DetailView
 
-type Removal = { id: string; step: 'confirm' } | { id: string; step: 'sending' } | { id: string; step: 'failed'; reason: string }
+type Step = { step: 'asking' } | { step: 'sending' } | { step: 'failed'; reason: string }
+// One confirmation or form is open at a time, so asking for one closes the other. A kill's `id` is the node's; a
+// scale's `min` and `max` are what was typed, empty for the bound it was opened on.
+type Action = ({ kind: 'delete'; id: string } | { kind: 'kill'; id: string } | { kind: 'scale'; id: string; min: string; max: string; invalid: boolean }) & Step
+
+// A write outlives the drawing that pressed it, so it goes through the command's engine rather than the render's.
+type Writes = {
+  remove: (id: string) => Promise<void>
+  scale: (c: Compute, min: number, max: number) => Promise<void>
+  drain: (compute: string, node: string) => Promise<void>
+}
 
 type Snapshot =
   | { kind: 'loading' }
@@ -188,6 +207,7 @@ function parseCompute(item: unknown): Compute | undefined {
     })
     .sort((a, b) => Number(a.terminatedAt !== null) - Number(b.terminatedAt !== null) || a.rank - b.rank)
   const alive = nodes.filter((node) => node.terminatedAt === null)
+  const initial = num(at(item, 'spec', 'nodes', 'initial')) ?? 0
   return {
     id,
     state,
@@ -203,6 +223,7 @@ function parseCompute(item: unknown): Compute | undefined {
     ended: time(at(item, 'ended', 'at')) !== null,
     cost: num(at(item, 'cost')) ?? null,
     lastError: str(at(item, 'status', 'last_error', 'message')) ?? null,
+    bounds: { initial, min: num(at(item, 'spec', 'nodes', 'min')) ?? initial, max: num(at(item, 'spec', 'nodes', 'max')) ?? initial },
     latest: new Map(
       list(at(item, 'nodes')).flatMap((node) => {
         const id = str(at(node, 'id'))
@@ -298,6 +319,30 @@ const money = (value: number | null): string => (value === null ? '—' : value.
 const gpu = (c: Compute): string =>
   c.accelerator === null ? '—' : c.acceleratorCount > 1 ? `${c.acceleratorCount}×${c.accelerator}` : c.accelerator
 const deletable = (c: Compute): boolean => !c.ended && c.state !== 'deleting' && c.state !== 'deleted'
+const NODE_GROUPS = ['active', 'bootstrapping', 'stopping', 'stopped', 'failed'] as const
+type NodeGroup = (typeof NODE_GROUPS)[number]
+// A node given up on keeps the error that condemned it through `deleting` and `deleted`, so on the way out the error,
+// not the state, tells a failure from a node that was drained or scaled away.
+const nodeGroup = (n: Node): NodeGroup => {
+  switch (n.state) {
+    case 'ready':
+      return 'active'
+    case 'requested':
+    case 'provisioning':
+    case 'connecting':
+    case 'bootstrapping':
+      return 'bootstrapping'
+    case 'lost':
+    case 'failed':
+      return 'failed'
+    default:
+      return n.lastError !== null ? 'failed' : n.state === 'deleted' ? 'stopped' : 'stopping'
+  }
+}
+const inGroup = (nodes: Node[], group: NodeGroup | null): Node[] => (group === null ? nodes : nodes.filter((n) => nodeGroup(n) === group))
+// The group filtered on is kept at zero, so the one way back to every node stays drawn.
+const nodeCounts = (nodes: Node[], filtered: NodeGroup | null): (readonly [NodeGroup, number])[] =>
+  NODE_GROUPS.map((group) => [group, inGroup(nodes, group).length] as const).filter(([group, count]) => count > 0 || group === filtered)
 const hourly = (c: Compute): number | null => (c.ended ? null : c.rate)
 const averaged = (f: Fleet): string => {
   const mean = (name: string): number | undefined => f.averages.get(name)
@@ -315,6 +360,12 @@ const averaged = (f: Fleet): string => {
   ]
     .filter((part) => part !== null)
     .join(' · ')
+}
+// An empty field keeps the bound the form was opened on.
+const count = (text: string, current: number): number | null => {
+  const typed = text.trim()
+  if (typed === '') return current
+  return /^\d+$/.test(typed) ? Number(typed) : null
 }
 const sum = (values: (number | null)[]): number | null =>
   values.reduce<number | null>((total, value) => (total === null || value === null ? null : total + value), 0)
@@ -444,11 +495,12 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
   const compute = parseCompute(computeBody)
   if (compute === undefined) throw new Error(`unexpected compute payload for ${id}`)
 
-  // The nodes are cut into pages here. The metrics are the whole compute's rather than the page's: the header
-  // averages them and reads idleness off the window, and a page's sparklines read the same two maps.
+  // The nodes are filtered and cut into pages here. The metrics are the whole compute's rather than the page's: the
+  // header averages them and reads idleness off the window, and a page's sparklines read the same two maps.
   const nodes = compute.nodes
+  const listed = inGroup(nodes, target.group)
   const latest = compute.latest
-  const pageCount = Math.max(1, Math.ceil(nodes.length / NODES_PER_PAGE))
+  const pageCount = Math.max(1, Math.ceil(listed.length / NODES_PER_PAGE))
   const page = Math.min(requestedPage, pageCount - 1)
   const seriesBody = nodes.length === 0 ? undefined : await getJson($, `${base}/metrics?since=${start}&step=${SPARK_STEP_MS}&agg=avg&name=cpu&name=gpu_util`)
 
@@ -500,22 +552,38 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
     idle,
   }
 
-  return { kind: 'detail', detail: { compute, fleet, nodes, page, pageCount, latest, sparks, tasks, log }, at: Date.now() }
+  return { kind: 'detail', detail: { compute, fleet, nodes, group: target.group, listed, page, pageCount, latest, sparks, tasks, log }, at: Date.now() }
 }
 
-// The reconciler's own writes also move the revision, so a refused If-Match is read again and sent again, under the same key.
-async function deleteCompute($: EngineInterface, id: string): Promise<void> {
-  const key = crypto.randomUUID()
+// The reconciler's own writes also move the revision, so a refused If-Match is read again and sent again, under the same
+// key when the write carries one.
+async function writeCompute($: EngineInterface, id: string, init: HttpInit): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     const revision = num(at(await getJson($, `/v1/computes/${id}`), 'revision'))
     if (revision === undefined) throw new Error(`unexpected compute payload for ${id}`)
-    const response = await $.http.fetch(`${DAEMON}/v1/computes/${id}`, {
-      method: 'DELETE',
-      headers: { 'If-Match': `"${revision}"`, 'Idempotency-Key': key },
-    })
+    const response = await $.http.fetch(`${DAEMON}/v1/computes/${id}`, { ...init, headers: { ...init.headers, 'If-Match': `"${revision}"` } })
     if (response.ok) return
-    if (response.status !== 412 || attempt === DELETE_ATTEMPTS) throw refusal(response)
+    if (response.status !== 412 || attempt === WRITE_ATTEMPTS) throw refusal(response)
   }
+}
+
+const deleteCompute = ($: EngineInterface, id: string): Promise<void> =>
+  writeCompute($, id, { method: 'DELETE', headers: { 'Idempotency-Key': crypto.randomUUID() } })
+
+// `initial` goes back as it was: it is the size the pool opened at, which only its creation decides.
+const scaleCompute = ($: EngineInterface, c: Compute, min: number, max: number): Promise<void> =>
+  writeCompute($, c.id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes: { initial: c.bounds.initial, min, max } }),
+  })
+
+async function drainNode($: EngineInterface, compute: string, node: string): Promise<void> {
+  const response = await $.http.fetch(`${DAEMON}/v1/computes/${compute}/nodes/${node}`, {
+    method: 'DELETE',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+  })
+  if (!response.ok) throw refusal(response)
 }
 
 export const register: Register = (on) => {
@@ -524,11 +592,11 @@ export const register: Register = (on) => {
   let loading: View | undefined
   let timers: Timer[] = []
   let refresh: (() => void) | undefined
-  let remove: ((id: string) => Promise<void>) | undefined
+  let writes: Writes | undefined
   let focusKey: string | undefined
   let notice: string | undefined
   let scrolling = false
-  let removal: Removal | undefined
+  let action: Action | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'sky', description: 'Skyward computes panel' })
@@ -555,7 +623,11 @@ export const register: Register = (on) => {
       $.ui.invalidate('ui.render')
     }
     refresh = () => void tick()
-    remove = (id) => deleteCompute($, id)
+    writes = {
+      remove: (id) => deleteCompute($, id),
+      scale: (c, min, max) => scaleCompute($, c, min, max),
+      drain: (compute, node) => drainNode($, compute, node),
+    }
     timers = [
       $.clock.every(REFRESH_MS, refresh),
       $.clock.every(MARQUEE_MS, () => {
@@ -571,10 +643,10 @@ export const register: Register = (on) => {
     timers.forEach((timer) => timer.cancel())
     timers = []
     refresh = undefined
-    remove = undefined
+    writes = undefined
     view = { kind: 'list' }
     snapshot = { kind: 'loading' }
-    removal = undefined
+    action = undefined
     return result
   })
 
@@ -587,7 +659,7 @@ export const register: Register = (on) => {
       snapshot = { kind: 'loading' }
       focusKey = focus
       notice = undefined
-      removal = undefined
+      action = undefined
       refresh?.()
       $.ui.invalidate('ui.render')
     }
@@ -599,11 +671,19 @@ export const register: Register = (on) => {
       refresh?.()
     }
 
-    const filterLog = (log: LogFilter, page?: number) => {
+    const filterLog = (log: LogFilter, at?: { page: number; group: NodeGroup | null }) => {
       if (view.kind !== 'detail') return
-      if (page !== undefined && page !== view.page) focusKey = 'log-node'
-      view = { ...view, log, page: page ?? view.page }
+      if (at !== undefined && (at.page !== view.page || at.group !== view.group)) focusKey = 'log-node'
+      view = { ...view, log, ...at }
       notice = undefined
+      refresh?.()
+      $.ui.invalidate('ui.render')
+    }
+
+    // Like a page turn, the list changes when the next read arrives, and the buttons pressed stay drawn meanwhile.
+    const filterNodes = (group: NodeGroup) => {
+      if (view.kind !== 'detail') return
+      view = { ...view, group: view.group === group ? null : group, page: 0 }
       refresh?.()
       $.ui.invalidate('ui.render')
     }
@@ -634,19 +714,26 @@ export const register: Register = (on) => {
       $.ui.invalidate('ui.render')
     }
 
-    const setRemoval = (next: Removal | undefined, focus: string) => {
-      removal = next
-      focusKey = focus
+    const setAction = (next: Action | undefined, focus?: string) => {
+      action = next
+      if (focus !== undefined) focusKey = focus
       $.ui.invalidate('ui.render')
     }
 
-    const confirmRemoval = (id: string) => {
-      setRemoval({ id, step: 'sending' }, 'back')
-      remove?.(id).then(
-        () => refresh?.(),
+    // A deleted compute and a drained node lose their controls once the next read shows it, so those stay in
+    // `sending` until then; a scaled compute keeps its controls and is let go at once.
+    const perform = (sending: Action, focus: string, write: (daemon: Writes) => Promise<void>) => {
+      const daemon = writes
+      if (daemon === undefined) return
+      setAction(sending, focus)
+      write(daemon).then(
+        () => {
+          if (action === sending && sending.kind === 'scale') action = undefined
+          refresh?.()
+        },
         (error: unknown) => {
-          if (removal?.id !== id) return
-          removal = { id, step: 'failed', reason: error instanceof Error ? error.message : String(error) }
+          if (action !== sending) return
+          action = { ...sending, step: 'failed', reason: error instanceof Error ? error.message : String(error) }
           $.ui.invalidate('ui.render')
         },
       )
@@ -655,18 +742,56 @@ export const register: Register = (on) => {
     // The first press only asks, with the ring on cancel, so a second Enter does not delete.
     const removeControls = (c: Compute): RenderElement | null => {
       if (!deletable(c)) return null
-      const pending = removal?.id === c.id ? removal : undefined
-      if (pending?.step === 'confirm') {
+      const pending = action?.kind === 'delete' && action.id === c.id ? action : undefined
+      if (pending?.step === 'asking') {
         return (
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Text color="red">delete this compute?</Text>
-            <Button key="delete-confirm" label="yes, delete" onPress={() => confirmRemoval(c.id)} />
-            <Button key="delete-cancel" label="cancel" onPress={() => setRemoval(undefined, 'delete')} />
+            <Button key="delete-confirm" label="yes, delete" onPress={() => perform({ kind: 'delete', id: c.id, step: 'sending' }, 'back', (daemon) => daemon.remove(c.id))} />
+            <Button key="delete-cancel" label="cancel" onPress={() => setAction(undefined, 'delete')} />
           </Box>
         )
       }
       if (pending?.step === 'sending') return <Text dimColor>deleting…</Text>
-      return <Button key="delete" label="delete" onPress={() => setRemoval({ id: c.id, step: 'confirm' }, 'delete-cancel')} />
+      return <Button key="delete" label="delete" onPress={() => setAction({ kind: 'delete', id: c.id, step: 'asking' }, 'delete-cancel')} />
+    }
+
+    // Reads the drafts from `action` as it is now, not as it was drawn: two fields typed into between draws would
+    // otherwise each write back the other's stale text.
+    const draftScale = (typed: { min?: string; max?: string }) => {
+      if (action?.kind !== 'scale' || action.step !== 'asking') return
+      action = { ...action, ...typed }
+    }
+
+    const applyScale = (c: Compute, typed: { min?: string; max?: string }) => {
+      if (action?.kind !== 'scale' || action.id !== c.id || action.step !== 'asking') return
+      const asked = { ...action, ...typed }
+      const min = count(asked.min, c.bounds.min)
+      const max = count(asked.max, c.bounds.max)
+      if (min === null || max === null || min > max) return setAction({ ...asked, invalid: true })
+      if (min === c.bounds.min && max === c.bounds.max) return setAction(undefined, 'scale')
+      perform({ ...asked, step: 'sending' }, 'back', (daemon) => daemon.scale(c, min, max))
+    }
+
+    // Mobile has no Input, so a compute is scaled there from the CLI or the web console. A field empties on Enter, so
+    // one holding text that was refused shows it back as its placeholder.
+    const scaleControls = (c: Compute): RenderElement | null => {
+      if (!deletable(c) || e.surface === 'mobile') return null
+      const pending = action?.kind === 'scale' && action.id === c.id ? action : undefined
+      if (pending?.step === 'sending') return <Text dimColor>scaling…</Text>
+      if (pending?.step !== 'asking') {
+        return <Button key="scale" label="scale" onPress={() => setAction({ kind: 'scale', id: c.id, min: '', max: '', invalid: false, step: 'asking' }, 'scale-min')} />
+      }
+      const { Input } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Input key="scale-min" label="min" placeholder={pending.min === '' ? String(c.bounds.min) : pending.min} submitLabel="scale" onInput={(text) => draftScale({ min: text })} onSubmit={(text) => applyScale(c, { min: text })} />
+          <Input key="scale-max" label="max" placeholder={pending.max === '' ? String(c.bounds.max) : pending.max} submitLabel="scale" onInput={(text) => draftScale({ max: text })} onSubmit={(text) => applyScale(c, { max: text })} />
+          <Button key="scale-apply" label="apply" onPress={() => applyScale(c, {})} />
+          <Button key="scale-cancel" label="cancel" onPress={() => setAction(undefined, 'scale')} />
+          {pending.invalid ? <Text color="red">whole numbers, min ≤ max</Text> : null}
+        </Box>
+      )
     }
 
     scrolling = false
@@ -694,7 +819,7 @@ export const register: Register = (on) => {
       return (
         <Box flexDirection="column">
           {tableRow(
-            <Button key={c.id} plain label={marquee(name, NAME_WIDTH, now)} dimColor={c.ended} onPress={() => show({ kind: 'detail', id: c.id, page: 0, expanded: new Set(), tasks: { order: 'state', fn: null, cursors: [] }, log: { node: null, task: null, term: '', cursors: [] } }, 'back')} />,
+            <Button key={c.id} plain label={marquee(name, NAME_WIDTH, now)} dimColor={c.ended} onPress={() => show({ kind: 'detail', id: c.id, page: 0, group: null, expanded: new Set(), tasks: { order: 'state', fn: null, cursors: [] }, log: { node: null, task: null, term: '', cursors: [] } }, 'back')} />,
             columns.map((column) => {
               const { text, color } = column.cell(c)
               return cell(column, text, { color: c.ended ? undefined : color, dim: c.ended })
@@ -804,6 +929,13 @@ export const register: Register = (on) => {
         .filter((part) => part !== null)
         .join(' ')
 
+      const killing = action?.kind === 'kill' && action.id === n.id ? action : undefined
+      const kill = terminated || !DRAINABLE.has(n.state) ? null : killing?.step === 'sending' ? (
+        <Text dimColor>killing…</Text>
+      ) : (
+        <Button key={`kill:${n.id}`} plain label="kill" dimColor={killing?.step !== 'asking'} onPress={() => setAction({ kind: 'kill', id: n.id, step: 'asking' }, `kill-cancel:${n.id}`)} />
+      )
+
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
@@ -817,7 +949,17 @@ export const register: Register = (on) => {
             <Box flexShrink={0} paddingLeft={1}>
               <Button key={`logs:${n.id}`} plain label="logs" dimColor={!logging} onPress={() => toggleLogNode(n.id)} />
             </Box>
+            {kill === null ? null : <Box flexShrink={0} paddingLeft={1}>{kill}</Box>}
           </Box>
+          {killing?.step === 'asking' ? (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={1} paddingLeft={4}>
+              <Text color="red">{`kill #${n.rank}?`}</Text>
+              <Button key={`kill-confirm:${n.id}`} label="yes, kill" onPress={() => perform({ kind: 'kill', id: n.id, step: 'sending' }, `logs:${n.id}`, (daemon) => daemon.drain(d.compute.id, n.id))} />
+              <Button key={`kill-cancel:${n.id}`} label="cancel" onPress={() => setAction(undefined, `kill:${n.id}`)} />
+              <Text dimColor>it drains first, and a new node takes its rank if the compute still wants it</Text>
+            </Box>
+          ) : null}
+          {killing?.step === 'failed' ? <Text color="red">{`    kill failed: ${killing.reason}`}</Text> : null}
           {n.lastError !== null ? <Text color="red">{`    ${n.lastError}`}</Text> : null}
           {terminated
             ? null
@@ -868,7 +1010,8 @@ export const register: Register = (on) => {
           const d = snapshot.detail
           const ranks = new Map(d.nodes.map((n) => [n.id, n.rank]))
           const first = d.page * NODES_PER_PAGE
-          const pageNodes = d.nodes.slice(first, first + NODES_PER_PAGE)
+          const pageNodes = d.listed.slice(first, first + NODES_PER_PAGE)
+          const counts = nodeCounts(d.nodes, d.group)
           // Columns before any node on the page had a sample are blank for all of them, so they are dropped.
           const onPage = new Set(pageNodes.map((n) => n.id))
           const sparkStart = Math.min(
@@ -886,16 +1029,27 @@ export const register: Register = (on) => {
               </Box>
               <Box flexDirection="column">
                 <Box flexDirection="row" gap={2}>
-                  <Text bold>{`Nodes (${d.nodes.length})`}</Text>
+                  {counts.length === 0 ? (
+                    <Text bold>Nodes (0)</Text>
+                  ) : (
+                    <Box flexDirection="row" flexWrap="wrap">
+                      <Text bold>Nodes (</Text>
+                      {counts.map(([group, count], i) => [
+                        i === 0 ? null : <Text bold> · </Text>,
+                        <Button key={`nodes-group:${group}`} plain label={`${count} ${group}${d.group === group ? ' ✕' : ''}`} dimColor={d.group !== null && d.group !== group} onPress={() => filterNodes(group)} />,
+                      ])}
+                      <Text bold>)</Text>
+                    </Box>
+                  )}
                   {d.pageCount > 1 ? (
                     <Box flexDirection="row" gap={1}>
                       <Button key="nodes-prev" plain label="‹ prev" dimColor={d.page === 0} onPress={() => turnPage(d.page - 1, d.pageCount)} />
-                      <Text dimColor>{`${first + 1}–${first + pageNodes.length} of ${d.nodes.length}`}</Text>
+                      <Text dimColor>{`${first + 1}–${first + pageNodes.length} of ${d.listed.length}`}</Text>
                       <Button key="nodes-next" plain label="next ›" dimColor={d.page === d.pageCount - 1} onPress={() => turnPage(d.page + 1, d.pageCount)} />
                     </Box>
                   ) : null}
                 </Box>
-                {d.nodes.length === 0 ? <Text dimColor>no nodes</Text> : pageNodes.map((n) => nodeBlock(n, d, sparkStart, view.kind === 'detail' && view.expanded.has(n.id), view.kind === 'detail' && view.log.node === n.id))}
+                {d.listed.length === 0 ? <Text dimColor>{d.group === null ? 'no nodes' : `no ${d.group} nodes`}</Text> : pageNodes.map((n) => nodeBlock(n, d, sparkStart, view.kind === 'detail' && view.expanded.has(n.id), view.kind === 'detail' && view.log.node === n.id))}
               </Box>
               {view.kind === 'detail' ? tasksSection(d, view, ranks) : null}
               {view.kind === 'detail' ? logSection(d, view, ranks) : null}
@@ -1005,7 +1159,9 @@ export const register: Register = (on) => {
           $.ui.invalidate('ui.render')
           return
         }
-        filterLog({ ...filter, node: node.id, cursors: [] }, Math.floor(d.nodes.indexOf(node) / NODES_PER_PAGE))
+        // A node the state filter hides is shown by dropping the filter.
+        const group = target.group === null || nodeGroup(node) === target.group ? target.group : null
+        filterLog({ ...filter, node: node.id, cursors: [] }, { page: Math.floor(inGroup(d.nodes, group).indexOf(node) / NODES_PER_PAGE), group })
       }
       // Mobile has no Input; there each node's logs button is the node filter. A field empties on Enter and is only
       // refilled by a value that differs from the last one drawn, so the filter in force is shown as the placeholder.
@@ -1064,10 +1220,11 @@ export const register: Register = (on) => {
           <Box flexDirection="column">
             <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
               <Button key="back" label="← computes" onPress={() => show({ kind: 'list' }, current.id)} />
+              {shown === undefined ? null : scaleControls(shown)}
               {shown === undefined ? null : removeControls(shown)}
             </Box>
-            {shown !== undefined && deletable(shown) && removal?.step === 'failed' && removal.id === shown.id ? (
-              <Text color="red">{`delete failed: ${removal.reason}`}</Text>
+            {shown !== undefined && deletable(shown) && action?.kind !== 'kill' && action?.step === 'failed' && action.id === shown.id ? (
+              <Text color="red">{`${action.kind} failed: ${action.reason}`}</Text>
             ) : null}
           </Box>
           {body()}
@@ -1077,7 +1234,10 @@ export const register: Register = (on) => {
     // A pressed button missing from the new tree leaves the ring on the pane's close mark, and a page of nodes swapped
     // above the focused node field returns the keys to the prompt; either way the ring is handed back once that tree is drawn.
     const key = focusKey
-    const drawn = current.kind === 'list' ? snapshot.kind === 'list' : snapshot.kind !== 'detail' || snapshot.detail.page === current.page
+    const drawn =
+      current.kind === 'list'
+        ? snapshot.kind === 'list'
+        : snapshot.kind !== 'detail' || (snapshot.detail.page === current.page && snapshot.detail.group === current.group)
     if (key !== undefined && drawn) {
       focusKey = undefined
       if (e.props.isFocused) $.clock.after(0, () => void $.ui.focus({ requestId: PANE_ID, key }))
