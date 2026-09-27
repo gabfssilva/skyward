@@ -56,6 +56,9 @@ server = [
     # The daemon mints a certificate authority per compute and signs its members.
     # The node only reads the three files it is handed, so this stops here.
     "cryptography>=42",
+    # `sky server interface set` names an interface, and the daemon listens on the
+    # addresses it has when it starts; the standard library cannot list them.
+    "psutil>=5.9",
 ]
 # Three adapters need an sdk of their own; the other twelve speak plain HTTP
 # through httpx. An adapter whose sdk is absent is not registered, so `server`

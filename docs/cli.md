@@ -55,9 +55,12 @@ sky server stop
 sky server restart
 sky server status
 sky server status --url http://host:17590
+sky server interface set tailscale0
 ```
 
 `start` waits for `/v1/health/live`. The address it prints also serves the browser console, at `/`, when the package carries a built one (`task web:build` in a checkout). `--foreground` keeps the daemon attached to the terminal and does not create a PID file. `stop` only stops a process started by this CLI. `restart` is `stop` then `start`, and starts one even when there was nothing to stop; the machines are unaffected, since they belong to the daemon rather than to the process.
+
+`interface set` records, in `~/.skyward/server.interface`, a network interface every daemon started on this machine listens on beside its `--host`: a name (`en0`, `tailscale0`), one of this machine's IPv4 addresses, or `0.0.0.0` for all of them. A name is read for its IPv4 addresses each time a daemon starts. The loopback address stays, so local pools and commands need no `--url`. The daemon already running is not restarted; `sky server restart` applies the change. If the interface has no address when the daemon starts, the daemon listens on its host alone and `start` says so. The API has no authentication, so anything that reaches the interface can create computes and open shells on them.
 
 ## `sky compute`
 

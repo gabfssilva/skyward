@@ -13,6 +13,10 @@ them in that order, and skips the stop when there is nothing running.
 
 A pool starts a daemon the same way when it finds none (:func:`skyward.core.client.connect`),
 so what ``stop`` stops is not only what ``start`` started.
+
+``interface set`` writes down a network interface for every daemon started here to
+listen on beside its host. It restarts nothing: the daemon running holds live
+computes, and when it stops is its owner's call.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from cyclopts import Parameter
+from cyclopts import App, Parameter
 
 from skyward.api.v1 import LivenessResource
 from skyward.cli import server_app
@@ -33,9 +37,12 @@ from skyward.cli._client import HOST, PORT, call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
 from skyward.server import daemon
-from skyward.shared.observability import LogLevel
+from skyward.shared.observability import LogLevel, notice
 
 POLL_SECONDS = 0.2
+
+interface_app = App(name="interface", help="Choose the network interface the daemon listens on")
+server_app.command(interface_app)
 
 
 def endpoint(url: str | None, host: str, port: int) -> str:
@@ -133,6 +140,15 @@ def start(
 
     daemon.record(process)
     print(f"http://{host}:{port} (pid {process})")
+    for address in daemon.listening(host):
+        if address != host:
+            target = f"http://{address}:{port}"
+            if live(target):
+                print(target)
+            else:
+                notice("WARNING", f"nothing answers at {target} — see {daemon.LOG_FILE}")
+    if (name := daemon.interface()) and not daemon.addresses(name):
+        notice("WARNING", f"{name} has no IPv4 address, so the daemon listens on {host} alone")
     print(f"logs: {daemon.LOG_FILE}")
 
 
@@ -243,4 +259,37 @@ def status(
     )
 
 
-__all__ = ["endpoint", "live", "probe", "restart", "start", "status", "stop"]
+@interface_app.command(name="set")
+def set_interface(
+    interface: Annotated[str, Parameter(help="A network interface (en0, tailscale0), one of its IPv4 addresses, or 0.0.0.0 for all of them")],
+) -> None:
+    """Make the daemon listen on a network interface too, from its next start.
+
+    It goes on listening where it did, which is where this machine's pools and
+    commands look for it; the interface is where the rest of the network reaches
+    it. A name is read for its IPv4 addresses whenever a daemon starts, so one the
+    interface was given since is the one it listens on.
+
+    The daemon running now is left as it is, with every compute it holds:
+    ``sky server restart`` is what applies it.
+
+    Parameters
+    ----------
+    interface
+        The interface's name, an address this machine holds, or ``0.0.0.0``.
+    """
+    if not daemon.installed():
+        raise SystemExit(daemon.MISSING)
+
+    known = daemon.interfaces()
+    held = {address for addresses in known.values() for address in addresses}
+    if interface not in known and interface not in held and interface != daemon.WILDCARD:
+        named = ", ".join(sorted(name for name, addresses in known.items() if addresses))
+        raise SystemExit(f"this machine has no interface or address '{interface}'; the ones with an address: {named}")
+
+    daemon.choose(interface)
+    reached = daemon.addresses(interface)
+    print(f"{interface} ({', '.join(reached) or 'no IPv4 address yet'}), from the daemon's next start: sky server restart")
+
+
+__all__ = ["endpoint", "interface_app", "live", "probe", "restart", "set_interface", "start", "status", "stop"]

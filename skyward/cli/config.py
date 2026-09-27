@@ -1,9 +1,10 @@
 """sky config — what a command resolved before it dialled anything.
 
-There is no configuration file. A command is a daemon URL, resolved from the
-environment at the moment of the call, so configuration here is that resolution
-made visible: which daemon a call would reach, where one started here would keep
-its state, and whether it answers.
+A command is a daemon URL, resolved from the environment at the moment of the
+call, so configuration here is that resolution made visible: which daemon a call
+would reach, where one started here would keep its state, and whether it answers.
+The one setting written down is the network interface a daemon started here
+listens on beside its host (``sky server interface set``).
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ def config_show(
     output: Annotated[Output, Parameter(name="--output", help="table or json")] = "table",
 ) -> None:
     """Show the effective settings a command would run with."""
+    from skyward.server.daemon import interface
+
     target, source, path = _settings(url)
 
     render(
@@ -59,6 +62,7 @@ def config_show(
             ["source", source],
             ["database", path],
             ["database exists", str(Path(path).is_file()).lower()],
+            ["interface", interface() or "-"],
         ],
         output=output,
     )

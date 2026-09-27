@@ -28,6 +28,7 @@ sky server start [--host 127.0.0.1] [--port 17590] [--foreground] [--timeout 30.
 sky server stop  [--timeout 10.0]
 sky server restart [--host 127.0.0.1] [--port 17590] [--timeout 30.0] [--database PATH]
 sky server status [--url URL] [--host 127.0.0.1] [--port 17590] [-o table|json]
+sky server interface set INTERFACE
 ```
 
 - `start` detaches by default, records the pid in `~/.skyward/server.pid`, logs to `~/.skyward/server.log`, and waits up to `--timeout` for liveness before giving up.
@@ -37,6 +38,7 @@ sky server status [--url URL] [--host 127.0.0.1] [--port 17590] [-o table|json]
 - `stop` signals the recorded pid. There is no shutdown endpoint — anything that could reach the API could otherwise take the control plane down.
 - `stop` also ends a daemon the SDK started: a `sky.Compute` that names none starts one at the same address, recorded in the same pidfile.
 - `start` needs `uvicorn` (`skyward[server]`).
+- `interface set` records (`~/.skyward/server.interface`) a network interface — `en0`, `tailscale0`, one of the machine's IPv4 addresses, or `0.0.0.0` — that every daemon started here listens on beside `--host`. The loopback address stays, so local commands need no `--url`; the rest of the network uses `http://<interface address>:17590`. It takes effect at the next start (`sky server restart`), and does not restart the running daemon. The API has no authentication.
 
 ---
 
