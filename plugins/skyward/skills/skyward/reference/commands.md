@@ -11,11 +11,13 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 | Command | Does |
 |---|---|
 | `sky version` | Print the Skyward and Python versions |
+| `sky run FILE [COMMAND] [ARGS...] [--node any]` | Run a file on the compute it declares (PEP 723 header, or `sky.app` functions), creating or attaching to it; `sky run FILE --help` lists a `sky.app` file's commands, and `sky run` with no file prints its own help, since `--help` after it belongs to the file (`reference/script.md`) |
 | `sky new …` | Alias of `sky compute create` |
 | `sky status [REF]` | One compute, or all of them |
 | `sky sessions` | Every compute — `status` with no argument |
 | `sky stop REF` | Tear a compute down (alias of `compute delete`) |
 | `sky monitor REF [--mode rich\|log]` | Watch a live compute until interrupted |
+| `sky app` | Watch every live compute on one screen, until `q` |
 | `sky compute ssh REF [--node N] [--command CMD]` | Interactive shell on one machine, ready or still bootstrapping (`sky console` is the older name) |
 | `sky repl REF [--node N]` | Python REPL on the node's bootstrapped interpreter |
 
@@ -103,13 +105,15 @@ sky compute get REF
 sky compute view REF
 sky compute create --provider KIND [--name N] [--accelerator A] [--nodes 1]
                    [--region R] [--cpus N] [--memory GB] [--ttl SECONDS]
+                   [--base IMAGE] [--python 3.12] [--pip PKG]... [--apt PKG]...
+                   [--pip-index URL]... [--env KEY=VALUE]... [--plugin NAME[:key=value,...]]...
 sky compute scale REF --nodes N|MIN:MAX
 sky compute delete REF
 ```
 
 - `list`/`get` columns: id, name, state, ready, total, generation, created.
-- `view` adds the node table: id, rank, state, desired, machine, address, accelerator, $/h.
-- `create` returns immediately; the machines arrive afterwards. It registers the provider account from *this* process if the daemon has none, because the daemon never reads the environment.
+- `view` adds the image the compute asked for and the node table: id, rank, state, desired, machine, address, accelerator, $/h.
+- `create` returns immediately; the machines arrive afterwards. The image flags mean what `sky.Image`'s fields mean; `--plugin` is checked against the plugin's own fields before anything is sent. It registers the provider account from *this* process if the daemon has none, because the daemon never reads the environment.
 - `--ttl` is the dead-man switch a supporting provider arms on each machine: with nobody connected for that long, the machine removes itself. `0` never does. The default is the spec's, and it is short.
 - `scale --nodes N` fixes the size; `--nodes MIN:MAX` makes it elastic (`1 <= MIN <= MAX`). What comes back is a new `generation`, not a finished resize.
 - `delete` is accepted, not done — the compute stays `deleting` until the provider confirms the machines are gone.
@@ -123,7 +127,7 @@ sky compute run  REF SCRIPT [ARGS...] [--node any]
 ```
 
 - `exec` runs in the **machine's shell** — questions about the node, and it reaches a node whose worker is busy. Quote a command carrying flags, or put it after `--`: `sky compute exec training --node 0 -- df -h`.
-- `run` submits a **task**: the local script travels the path a `@sky.function` takes, landing in a worker with the image, plugins and runtime API around it. Its output streams back over the compute's event log as it prints. `--node all` broadcasts, `--node N` runs it on rank N; the default, `any`, is one node with a slot free.
+- `run` submits a **task**: the local script travels the path a `@sky.function` takes, landing in a worker with the image, plugins and runtime API around it. Its output streams back over the compute's event log as it prints. `--node all` broadcasts, `--node N` runs it on rank N; the default, `any`, is one node with a slot free. Each line is printed after the rank that wrote it (`0 │ ...`). A declaration in the file (a PEP 723 header, `sky.app`) is not read — that is `sky run`.
 - Both exit with the worst node's status.
 
 ### Files

@@ -1,11 +1,8 @@
----
-name: using-skyward-cli
-description: Use the `sky` command line to provision and drive Skyward GPU computes — start the daemon, register provider accounts, browse offers and prices, create/scale/delete computes, run scripts and shell commands on nodes, move files, open a shell or REPL on a machine, and read a compute's event log. Triggers on sky CLI, skyward CLI, sky compute, sky offers, sky providers, sky server, sky log, sky compute ssh, sky console, provision GPU, GPU pricing, spin up nodes.
----
-
 # Using the Skyward CLI
 
 `sky` is a thin client over the Skyward daemon's HTTP API. It decides nothing and stores nothing: every command turns a few flags into one or two HTTP calls and prints what came back. Everything that matters — computes, nodes, offers, provider accounts, event logs — lives in the daemon.
+
+This file covers the daemon, provider accounts, offers and the lifecycle of a compute. Work on the nodes of a compute that is up (`exec`, `compute run`, files, `ssh`, `repl`, notebook) is `reference/nodes.md`; `sky run` is `reference/script.md`.
 
 ## Where a command lands
 
@@ -101,6 +98,13 @@ sky compute scale training --nodes 2:8      # elastic range, MIN:MAX
 sky compute delete training
 ```
 
+`create` also takes the image the nodes build, with the meaning `sky.Image` gives the same fields: `--base`, `--python`, `--pip`, `--apt`, `--pip-index`, `--env KEY=VALUE` (each list flag repeats), and `--plugin NAME` or `--plugin NAME:key=value,...` (`--plugin torch:backend=gloo`), checked against the plugin's own fields before anything is sent. `sky compute view` shows the image a compute asked for.
+
+```bash
+sky compute create --provider runpod --accelerator H100 --name ft \
+  --python 3.12 --pip torch --pip transformers --apt build-essential --plugin torch
+```
+
 `sky new` is an alias for `sky compute create`. `sky status [ref]`, `sky sessions` and `sky stop <ref>` are the same commands under the names you reach for when the question is "what is running".
 
 Three things to expect:
@@ -122,56 +126,6 @@ sky log <id> -f                        # where the node's own progress is
 
 A stock-out reads like `no market could place a runpod machine` wrapping the provider's message. It is worth waiting through — retries do land.
 
-## Running work on a compute
-
-```bash
-sky compute exec training nvidia-smi                  # every node's shell
-sky compute exec training --node 0 -- df -h           # one node, by rank
-sky compute exec training "nvidia-smi -L"             # quoting works too
-sky compute run training train.py --node all          # a local Python script, on every node
-sky compute run training train.py -- --epochs 10      # args forwarded as sys.argv
-```
-
-A command carrying its own flags has to be quoted or put after `--`; otherwise the parser reads them as `sky`'s (`-h` prints help).
-
-`exec` runs in the **machine's shell** — the right tool for questions about the node (what the driver reports, what is on the disk), and it reaches a node whose worker is busy. `run` is a **task**: the script travels the same path a `@sky.function` takes, so it lands in a worker with the image, the plugins and the runtime API around it, and its output streams back over the compute's event log as it prints. Both exit with the worst node's status.
-
-Files:
-
-```bash
-sky compute ls training /workspace --node 0
-sky compute upload training ./data.csv /workspace/data.csv    # every node by default
-sky compute download training /workspace/model.pt ./model.pt --node 0
-sky compute rm training /workspace/scratch
-```
-
-`--node` takes `all` or a rank. `download` takes only a rank — four machines hold four files, and there is no answer to which one was meant.
-
-## On the node
-
-What `exec` and `run` land in:
-
-| | |
-|---|---|
-| working root | `/opt/skyward` |
-| interpreter | `/opt/skyward/.venv/bin/python` (skyward and the image's pip packages) |
-| `uv` | `/root/.local/bin/uv` — **not** on the `exec` shell's `PATH` |
-| event log the node writes | `/opt/skyward/events.jsonl` |
-
-`exec` gets a bare non-login shell: `PATH` is the system default, so anything the bootstrap installed under `~/.local/bin` has to be named in full. Adding packages after the fact is therefore:
-
-```bash
-sky compute exec <ref> "/root/.local/bin/uv pip install --python /opt/skyward/.venv/bin/python torch transformers"
-```
-
-The base image is minimal — no toolchain. PyTorch's inductor/triton shells out to a C compiler the first time it builds a CUDA kernel and dies with *"Failed to find C compiler"* if there is none:
-
-```bash
-sky compute exec <ref> "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential"
-```
-
-Doing this from the CLI is the fallback. The first-class way to shape a node is `sky.Image(pip=..., apt=...)` and `plugins=[sky.plugins.Torch()]` on the SDK's `Compute` — `sky compute create` has no flag for either.
-
 ## Watching a compute
 
 ```bash
@@ -185,27 +139,9 @@ sky log export training run.md      # .md or .jsonl
 
 The log replays from the beginning, so attaching late loses nothing. A non-following command stops once the replay goes quiet for `--idle` seconds (1.0 by default).
 
-## Interactive access
+`sky app` watches every live compute on one screen, until `q`.
 
-```bash
-sky compute ssh training                   # login shell on one of the machines
-sky compute ssh training --node 2          # --node is a rank
-sky compute ssh training --command "tail -f /var/log/syslog"
-sky repl training                          # Python REPL on the interpreter the node was bootstrapped with
-```
-
-The SSH connection belongs to the daemon; the CLI only copies bytes and puts the local tty in raw mode for the session. The same machine for the whole session, and no key on this side — the compute's key was generated by the daemon and never leaves it.
-
-A machine takes a session as soon as it answers SSH, so `ssh` reaches one that is still bootstrapping — which is how you watch a bootstrap that is going wrong — and waits for one that is still booting. Without `--node` it takes the lowest rank the daemon has a link to. `sky console` is the same command under its older top-level name.
-
-Jupyter:
-
-```bash
-sky notebook install training     # then pick "Skyward (training)" in Jupyter
-sky notebook remove training
-```
-
-## Scripting it
+## JSON output
 
 Every command that prints a table takes `--output json`:
 
@@ -225,5 +161,4 @@ sky offers list --accelerator H100 --output json --limit 0
 - No configuration file exists. `sky config show` shows what a call *resolved*, not what a file said.
 - `sky compute create` registers the provider account from *this* process if the daemon does not have one, because the daemon never reads the environment. The credentials must be exported where `sky` runs.
 - A `revision_conflict` on scale or delete is retried automatically (the compute is re-read and the write re-sent, five times) — a real conflict means two writers, not a stale read.
-- `exec` reaches a node whose worker is training: it is a separate SSH channel, not a queued task.
 - `sky log export` refuses any suffix but `.jsonl` and `.md`.

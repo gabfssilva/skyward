@@ -1,7 +1,7 @@
 {
   "name": "skyward",
   "version": "0.1.0",
-  "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, plus skills for the Python SDK and the `sky` CLI.",
+  "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, plus a skill for the Python SDK, the `sky` CLI and scripts run with `sky run`.",
   "author": {
     "name": "Gabriel Francisco",
     "email": "gabfssilva@gmail.com"

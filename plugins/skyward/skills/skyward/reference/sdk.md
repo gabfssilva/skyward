@@ -1,13 +1,3 @@
----
-name: skyward-sdk
-description: Write Python against the Skyward SDK — @sky.function, Compute/Spec, the
-  dispatch operators (>> @ & >), accelerators and providers, distributed training and
-  collections, plugins (torch/jax/keras/cuml), volumes, events, notebook kernel. The
-  reference is the docs site; fetch the page for the task instead of recalling the API.
-  Triggers on skyward, @sky.function, sky.Compute, sky.shard, skyward plugin,
-  skyward volume, distributed training on skyward.
----
-
 # Using Skyward (Python)
 
 Don't write Skyward code from memory — the API moves. Fetch the page for what you're
@@ -42,7 +32,7 @@ Base: `https://gabfssilva.github.io/skyward/`
 Nothing matches, or a URL 404s: `llms.txt` is the full index. `llms-full.txt` is the whole
 surface in one file (~11 KB) when you need breadth rather than a page.
 
-The `sky` command line is the other skill: `using-skyward-cli`.
+The `sky` command line is `reference/cli.md`; a file that declares its own compute (a PEP 723 header, or `sky.app`) and runs with `sky run` is `reference/script.md`.
 
 The site tracks `main`. If docs and installed package disagree, the package wins:
 `sky version`, then `python -c "import skyward as sky; help(sky.Compute)"`.

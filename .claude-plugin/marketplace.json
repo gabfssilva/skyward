@@ -10,7 +10,7 @@
     {
       "name": "skyward",
       "source": "./plugins/skyward",
-      "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, and a skill that drives the `sky` CLI.",
+      "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, and a skill for the Python SDK, the `sky` CLI and scripts run with `sky run`.",
       "category": "devops",
       "homepage": "https://github.com/gabfssilva/skyward"
     }
