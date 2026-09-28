@@ -36,10 +36,9 @@ from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
-from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
+from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds, canonical
 from skyward.core.view import EventCallback, decoded
 from skyward.shared import codec, lifecycle, retry
-from skyward.shared.accelerators import resolve
 from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
 from skyward.shared.schemas import (
@@ -874,7 +873,7 @@ def _options(options: Options) -> OptionsRef:
 
 
 def _wire(spec: Spec) -> SpecRef:
-    accelerator, count = _accelerator(spec.accelerator)
+    accelerator, count = canonical(spec.accelerator)
     return SpecRef(
         provider=ProviderRef(kind=spec.provider.kind, name=spec.provider.name or spec.provider.kind),
         accelerator=accelerator,
@@ -896,19 +895,4 @@ def _credential(value: Credential | None) -> str | None:
         case _:
             return None
 
-
-def _accelerator(wanted: str | Accelerator | None) -> tuple[str | None, int]:
-    """A raw name goes through the same normalization every offer went through.
-
-    Naming no accelerator is asking for none of them, so the count is zero and not
-    the one it used to be: there is no such thing as one accelerator of no
-    particular model, and the count is what the spec is read back by.
-    """
-    match wanted:
-        case Accelerator(name, count):
-            return name, count
-        case str(name):
-            return resolve(name, None)[0], 1
-        case None:
-            return None, 0
 

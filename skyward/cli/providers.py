@@ -22,7 +22,8 @@ from skyward.shared.schemas import ProviderCreate
 from . import providers_app
 from ._client import call
 from ._output import Output, render
-from .compute import FACTORIES, pairs
+from .compute import pairs
+from .script import FACTORIES
 
 if TYPE_CHECKING:
     from skyward.core.client import Client

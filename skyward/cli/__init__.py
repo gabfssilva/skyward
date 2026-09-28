@@ -58,7 +58,7 @@ from skyward.cli.notebook import notebook_app  # noqa: E402
 
 app.command(notebook_app)
 app.command(create_compute, name="new")
-app.command(run_declared, name="run")
+app.command(run_declared, name="run", help_flags=[])
 
 __all__ = [
     "app",

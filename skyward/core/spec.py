@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from skyward.core.accelerators import Accelerator
 from skyward.core.provider import Provider
+from skyward.shared.accelerators import resolve
 from skyward.shared.architectures import Architecture
 from skyward.shared.schemas import NodeBounds as Nodes
 
@@ -41,6 +42,25 @@ def bounds(nodes: NodeSpec) -> Nodes:
         case Nodes():
             return nodes
 
+
+
+def canonical(accelerator: str | Accelerator | None) -> tuple[str | None, int]:
+    """Which accelerator and how many, in the one shape the wire has for it.
+
+    A raw name goes through the same normalization every offer went through, so
+    ``"A100"``, ``"a100"`` and ``sky.accelerators.A100()`` are one request.
+
+    Naming no accelerator is asking for none of them, so the count is zero and not
+    the one it used to be: there is no such thing as one accelerator of no
+    particular model, and the count is what the spec is read back by.
+    """
+    match accelerator:
+        case Accelerator(name, count):
+            return name, count
+        case str(name):
+            return resolve(name, None)[0], 1
+        case None:
+            return None, 0
 
 @dataclass(frozen=True, slots=True)
 class HealthChecker:
@@ -288,4 +308,4 @@ class Volume:
             raise ValueError(f"{self.mount!r} is the machine's own, and mounting over it would take the node down")
 
 
-__all__ = ["Accelerator", "Architecture", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec", "Volume", "bounds"]
+__all__ = ["Accelerator", "Architecture", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec", "Volume", "bounds", "canonical"]

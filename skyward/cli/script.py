@@ -1,10 +1,11 @@
-"""The compute a script declares, in the header ``uv run`` already reads.
+"""The compute a file declares, and what ``sky run`` runs on it.
 
-PEP 723 puts a TOML block at the top of a file — ``requires-python`` and
-``dependencies`` — and leaves ``[tool]`` to whoever else reads it. ``sky run``
-reads the same block: the interpreter and the packages become the image the
-nodes build, and ``[tool.skyward]`` is the rest of the compute, under the names
-``sky.Compute`` gives the same things::
+A file declares its compute one of two ways. The first is the header ``uv run``
+already reads. PEP 723 puts a TOML block at the top of a file — ``requires-python``
+and ``dependencies`` — and leaves ``[tool]`` to whoever else reads it. ``sky run``
+reads the same block: the interpreter and the packages become the image the nodes
+build, ``[tool.skyward]`` is the rest of the compute, under the names
+``sky.Compute`` gives the same things, and the whole file runs on the node::
 
     # /// script
     # requires-python = ">=3.12"
@@ -22,23 +23,47 @@ nodes build, and ``[tool.skyward]`` is the rest of the compute, under the names
     # kind = "torch"
     # ///
 
-Where the script runs is not in the header. That is the command's to say, and it
-may say something different on every run of the same file.
+The second is ``sky.app``. The functions it decorates are the file's commands, and
+each runs on the compute its ``sky.app`` describes::
+
+    gpu = sky.app(provider=sky.AWS(), accelerator=sky.accelerators.A100())
+
+    @gpu
+    def train(epochs: int = 10) -> float: ...
+
+    $ sky run train.py --epochs 5          # the file's one function
+    $ sky run train.py train --epochs 5    # by name, as it has to be once there are two
+
+The file is imported here to find them, and the command line is parsed against the
+function's signature, so a value that does not fit is refused before a machine is
+bought. A header is read without running anything, so a file with a
+``[tool.skyward]`` table is a script whatever else it holds.
+
+Where the file runs is not in it. That is the command's to say, and it may say
+something different on every run of the same file.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
 import tomllib
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
+import cyclopts
 import msgspec
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
+from skyward.core import provider as factories
+from skyward.core.app import App, Entry
+from skyward.core.spec import canonical
+from skyward.shared.providers import Provider, split
 from skyward.shared.schemas import Allocation, Image, NodeBounds, PipIndex, SkywardSource
 from skyward.worker.plugins import PLUGINS, Plugin
+from skyward.worker.script import loaded
 
 PYTHONS = ("3.12", "3.13", "3.14")
 """The interpreters a node can be asked for, lowest first: ``requires-python`` gets the first it admits."""
@@ -46,68 +71,127 @@ PYTHONS = ("3.12", "3.13", "3.14")
 BLOCK = re.compile(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
 """PEP 723's own expression for a metadata block."""
 
+RESERVED = frozenset({"node", "url"})
+"""The flags ``sky run`` takes for itself, wherever they are on the line: a parameter by one of these names could never be given."""
+
+FACTORIES: dict[str, Callable[[], Provider]] = {
+    "aws": factories.AWS,
+    "container": factories.Container,
+    "fake": factories.Fake,
+    "gcp": factories.GCP,
+    "hyperstack": factories.Hyperstack,
+    "jarvislabs": factories.JarvisLabs,
+    "lambda": factories.Lambda,
+    "massed_compute": factories.MassedCompute,
+    "novita": factories.Novita,
+    "runpod": factories.RunPod,
+    "salad": factories.Salad,
+    "scaleway": factories.Scaleway,
+    "tensordock": factories.TensorDock,
+    "vastai": factories.VastAI,
+    "verda": factories.Verda,
+    "vultr": factories.Vultr,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Whole:
+    """The file itself, run as ``__main__`` with ``argv``."""
+
+    argv: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Call:
+    """One of the file's functions, by the name the file binds it to, and its arguments as msgpack."""
+
+    entry: str
+    arguments: bytes
+
+
+type Work = Whole | Call
+
 
 @dataclass(frozen=True, slots=True)
 class Script:
-    """A file, and the compute its header asks for."""
+    """A file, the compute it declares, and what runs on it."""
 
     path: Path
     source: str
-    provider: str
-    accelerator: str | None
-    cpus: int | None
-    memory_gb: int | None
-    region: str | None
-    allocation: Allocation
-    nodes: NodeBounds
-    image: Image
-    plugins: tuple[Plugin, ...]
-    delete_on_exit: bool
+    app: App
+    work: Work
 
     @property
     def name(self) -> str:
         """The compute's name: the file's, and a digest of everything that would take other machines.
 
-        Two runs of one header land on one compute, and a header asking for another
+        Two runs of one declaration land on one compute, and one asking for another
         machine, image or plugin lands on another, because none of that changes on
         machines already bought. ``nodes`` is left out — a size is the one thing a
         compute changes in place, so a new one resizes this compute rather than
         naming a second — and so is ``delete_on_exit``, which is what a run does on
         its way out rather than what the machines are.
+
+        A ``sky.app``'s accelerator counts by what it resolves to, so ``"A100"`` and
+        ``sky.accelerators.A100()`` are one compute. A header's counts as written, as
+        it has since headers first named computes: a name is only ever recomputed,
+        never stored, so a header whose name moved would lose the machines it left up
+        and buy others.
         """
+        app = self.app
+        match self.work:
+            case Whole():
+                accelerator = app.accelerator
+            case Call():
+                accelerator = canonical(app.accelerator)
         wanted = (
-            self.provider,
-            self.accelerator,
-            self.cpus,
-            self.memory_gb,
-            self.region,
-            self.allocation,
-            self.image,
-            [plugin.ref() for plugin in self.plugins],
+            _account(app.provider),
+            accelerator,
+            app.cpus,
+            app.memory_gb,
+            app.region,
+            app.allocation,
+            app.image,
+            [plugin.ref() for plugin in app.plugins],
         )
         digest = hashlib.sha256(msgspec.json.encode(wanted, order="sorted")).hexdigest()
         return f"{self.path.stem}-{digest[:8]}"
 
 
-def read(path: Path) -> Script:
-    """The script at ``path``, with the compute its header declares.
+def read(path: Path, tokens: Sequence[str] = ()) -> Script:
+    """What ``sky run path tokens...`` runs: the whole file if its header declares the compute, else one of its ``sky.app`` functions.
 
     Everything is checked here, before a daemon is asked for anything: a header
     that does not parse, names a field nobody has, or asks for a plugin that does
-    not exist is refused with a sentence rather than discovered on a machine that
-    is already billing.
+    not exist, and a command line the function cannot take, are refused with a
+    sentence rather than discovered on a machine that is already billing.
     """
     source = path.read_text()
     match _metadata(path, source):
         case _Metadata(tool=_Tool(skyward=_Skyward() as declared)) as metadata:
-            pass
+            return Script(path, source, _declared(metadata, declared), Whole((str(path), *tokens)))
         case _:
-            raise SystemExit(f"{path} declares no compute: sky run reads the [tool.skyward] table of a `# /// script` block")
+            return _called(path, source, tokens)
 
-    return Script(
-        path=path,
-        source=source,
-        provider=declared.provider,
+
+def _account(provider: Provider) -> str | tuple[str, Mapping[str, object]]:
+    """The provider as a compute's name counts it: its kind, and what was set apart from the kind's defaults.
+
+    A default is not part of it, so a release that changes one renames nothing —
+    a header names only a kind, and so its provider is only ever that. Nor is a
+    credential: a key rotated buys nothing new.
+    """
+    _, settings = split(provider)
+    _, defaults = split(type(provider)())
+    changed = {key: value for key, value in settings.items() if value != defaults.get(key)}
+    return (provider.kind, changed) if changed else provider.kind
+
+
+def _declared(metadata: _Metadata, declared: _Skyward) -> App:
+    if declared.provider not in FACTORIES:
+        raise SystemExit(f"unknown provider '{declared.provider}'; known: {', '.join(sorted(FACTORIES))}")
+    return App(
+        provider=FACTORIES[declared.provider](),
         accelerator=declared.accelerator,
         cpus=declared.cpus,
         memory_gb=declared.memory_gb,
@@ -126,6 +210,49 @@ def read(path: Path) -> Script:
         plugins=tuple(_plugin(table) for table in declared.plugins),
         delete_on_exit=declared.delete_on_exit,
     )
+
+
+def _called(path: Path, source: str, tokens: Sequence[str]) -> Script:
+    """The ``sky.app`` function ``tokens`` name, and the arguments they give it.
+
+    With one function in the file, naming it is optional; with more, the name is
+    the first token, and leaving it out is refused with the names there are. A
+    function the file imports is not one of its commands — it belongs to the file
+    that defined it. ``--help`` is the file's commands, or the one it names.
+    """
+    with loaded(source, str(path)) as module:
+        entries = {name: value for name, value in vars(module).items() if isinstance(value, Entry) and value.fn.__module__ == module.__name__}
+        if not entries:
+            raise SystemExit(f"{path} declares no compute: sky run reads the [tool.skyward] table of a `# /// script` block, or the functions of a sky.app")
+
+        parser = cyclopts.App(name=f"sky run {path.name}", version_flags=[])
+        for name, entry in entries.items():
+            if taken := sorted(RESERVED & inspect.signature(entry.fn).parameters.keys()):
+                raise SystemExit(f"{name} takes {', '.join(taken)}, which sky run keeps for its own --{', --'.join(taken)}; rename it")
+            parser.command(entry.fn, name=cyclopts.default_name_transform(name))
+        if len(entries) == 1:
+            (only,) = entries.values()
+            parser.default(only.fn)
+
+        chosen, bound, _ = parser.parse_args(list(tokens))
+        if (name := next((name for name, entry in entries.items() if entry.fn is chosen), None)) is None:
+            chosen(*bound.args, **bound.kwargs)
+            raise SystemExit(0)
+        return Script(path, source, entries[name].app, Call(name, _encoded(bound.arguments)))
+
+
+def _encoded(arguments: Mapping[str, object]) -> bytes:
+    """The parsed arguments as msgpack, a path as its text: :func:`skyward.worker.script.call` converts them back."""
+    try:
+        return msgspec.msgpack.encode(dict(arguments), enc_hook=_text)
+    except TypeError as unsupported:
+        raise SystemExit(f"an argument cannot travel to the node: {unsupported}") from None
+
+
+def _text(value: object) -> object:
+    if isinstance(value, PurePath):
+        return str(value)
+    raise NotImplementedError(type(value))
 
 
 class _Nodes(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -235,4 +362,4 @@ def _plugin(table: dict[str, object]) -> Plugin:
             raise SystemExit("every [[tool.skyward.plugins]] entry names its kind")
 
 
-__all__ = ["PYTHONS", "Script", "read"]
+__all__ = ["FACTORIES", "PYTHONS", "Call", "Script", "Whole", "Work", "read"]
