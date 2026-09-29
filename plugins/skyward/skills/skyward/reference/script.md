@@ -19,8 +19,30 @@ The header fits a file that is already a script: it reads `sys.argv`, prints, ex
 
 The file is sent as text and executed inside a worker on the node, as a task, the same way a `@sky.function` would be: the image, the plugins and the runtime API are around it. The code that runs there uses the node-side API (`sky.instance_info()`, `sky.shard`, `sky.is_head()`, `sky.dict`/`sky.barrier`/..., output policy) and never opens a `sky.Compute`. The docs site's `reference/runtime/` and `distributed-collections/` pages cover those (the site map is `reference/sdk.md`).
 
-- Only the file's text travels. A sibling module it imports, or a local path it opens, does not exist on the node. Data goes through `sky compute upload` (on a compute kept with `delete_on_exit` false), object storage, or a download inside the code.
+- The file's text travels, and with it what its image includes (below). Any other local module it imports, or a local path it opens, does not exist on the node. Data goes through `sky compute upload` (on a compute kept with `delete_on_exit` false), object storage, or a download inside the code.
 - The exit status: `sys.exit(n)` is `n`; finishing, or `sys.exit()`, is `0`; `sys.exit("message")` prints the message to stderr and is `1`; an uncaught exception prints its traceback and is `1`. `sky run` exits with the worst node's status.
+
+## Local code: the image's `includes`
+
+A local package the file imports, one not published anywhere, goes in the image's `includes`: `includes = [...]` under `[tool.skyward.image]` in a header, `image=sky.Image(includes=[...])` in a `sky.app`. `excludes` sits beside it.
+
+```python
+gpu = sky.app(provider=sky.AWS(), image=sky.Image(pip=["numpy"], includes=["src/classy_enc"]))
+
+
+@gpu
+def train(epochs: int = 10) -> None:
+    from classy_enc.train import main
+
+    main(epochs)
+```
+
+- A relative path counts from the file's directory, not from where `sky run` was typed; an absolute one is taken as it is.
+- Each path lands under its own name, in a directory that is first on the node's `sys.path` while the file runs: `src/classy_enc` is `import classy_enc`, `helpers.py` is `import helpers`. Being first, it wins over an installed package of the same name.
+- A directory is walked. `__pycache__`, `*.pyc`, `.git`, `.venv`, `node_modules`, `*.egg-info`, and whatever `excludes` names (glob patterns, matched against each component of a path) are left out.
+- It is packed on this machine and sent with **every run**, not installed when a machine is set up. A run that attaches to a compute kept up runs the code as it is now. The machines are built without it, so `sky compute run`, `exec` and `ssh` on that compute do not see it.
+- It is on the path of the process running the file, and of what that process forks; a new interpreter the code starts itself (`subprocess.run([sys.executable, ...])`) does not have it.
+- A path that is not there, or two paths that would land under one name (`a/utils` and `b/utils`), are refused before anything is bought.
 
 ## Validation happens before a machine is bought
 
@@ -30,7 +52,7 @@ For a first run without a bill, use the `container` provider: the nodes are loca
 
 ## The compute it runs on
 
-The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. `nodes` and `delete_on_exit` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
+The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. The image's `includes` and `excludes` count as the paths written, not as what the files hold: adding or renaming an include names another compute, editing an included file does not. `nodes` and `delete_on_exit` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
 
 - **header:** the provider by its kind, the accelerator as written. `"RTX_3090"` and `"rtx-3090"` are two computes.
 - **`sky.app`:** the provider by its kind plus whichever settings differ from that kind's defaults, so a default changed by a release renames nothing. The accelerator counts by what it resolves to: `"A100"`, `"a100"` and `sky.accelerators.A100()` are one compute, `sky.accelerators.A100(count=2)` another.

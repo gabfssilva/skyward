@@ -11,12 +11,21 @@ would kill the worker unpickling it.
 For the same reason the arguments of :func:`call` arrive as msgpack and its answer
 leaves as JSON: values the node rebuilds against the function's own annotations,
 not objects pickled on one interpreter for another.
+
+What the file's image includes arrives beside the text, as the tar.gz ``sky run``
+packed, and is unpacked for that run alone. It travels with every run rather than
+once with the machine, so a compute attached to runs the code as it is now, not as
+it was when the machine was set up.
 """
 
 from __future__ import annotations
 
 import inspect
+import io
+import os
 import sys
+import tarfile
+import tempfile
 import traceback
 from collections import OrderedDict
 from collections.abc import Iterator
@@ -45,7 +54,7 @@ class Exited:
 type Outcome = Returned | Exited
 
 
-def run(source: str, argv: tuple[str, ...]) -> int:
+def run(source: str, argv: tuple[str, ...], includes: bytes | None = None) -> int:
     """Execute ``source`` as ``__main__``, with ``argv`` as ``sys.argv``, and answer with its exit status.
 
     ``sys.exit`` is the script saying how it ended, so it is a status and not a
@@ -53,41 +62,47 @@ def run(source: str, argv: tuple[str, ...]) -> int:
     reads as ``1``. What is not an ``Exception`` is left to go through: the worker
     stops an attempt by raising one of those inside it, and a script that caught
     it would report a stopped run as one that failed on its own.
+
+    ``includes`` is importable while the file runs, and while its traceback is
+    printed, which reads the lines of the files it passes through.
     """
-    held, sys.argv = sys.argv, list(argv)
-    try:
-        exec(compile(source, argv[0], "exec"), {"__name__": "__main__", "__file__": argv[0]})
-    except SystemExit as stop:
-        return _status(stop)
-    except Exception:
-        traceback.print_exc()
-        return 1
-    finally:
-        sys.argv = held
-    return 0
+    with _unpacked(includes):
+        held, sys.argv = sys.argv, list(argv)
+        try:
+            exec(compile(source, argv[0], "exec"), {"__name__": "__main__", "__file__": argv[0]})
+        except SystemExit as stop:
+            return _status(stop)
+        except Exception:
+            traceback.print_exc()
+            return 1
+        finally:
+            sys.argv = held
+        return 0
 
 
-def call(source: str, path: str, entry: str, arguments: bytes) -> Outcome:
+def call(source: str, path: str, entry: str, arguments: bytes, includes: bytes | None = None) -> Outcome:
     """Load ``source`` as a module, call its function ``entry`` with ``arguments``, and answer with what it returned.
 
     The arguments are the ones the command line was parsed into, encoded as
     msgpack by name, and each is converted back to what its parameter is annotated
     with. The answer is JSON; a value JSON has no form for is written as its
     ``str``, since what reads it is a person or a pipe, not a Python. Exiting and
-    raising end the call as they end :func:`run`.
+    raising end the call as they end :func:`run`, and ``includes`` is there as it
+    is there for :func:`run`.
     """
-    try:
-        with loaded(source, path) as module:
-            function = vars(module)[entry]
-            signature = inspect.signature(function, eval_str=True)
-            given = msgspec.msgpack.decode(arguments, type=dict[str, object])
-            bound = inspect.BoundArguments(signature, OrderedDict((name, _argument(value, signature.parameters[name])) for name, value in given.items()))
-            return Returned(msgspec.json.encode(function(*bound.args, **bound.kwargs), enc_hook=str))
-    except SystemExit as stop:
-        return Exited(_status(stop))
-    except Exception:
-        traceback.print_exc()
-        return Exited(1)
+    with _unpacked(includes):
+        try:
+            with loaded(source, path) as module:
+                function = vars(module)[entry]
+                signature = inspect.signature(function, eval_str=True)
+                given = msgspec.msgpack.decode(arguments, type=dict[str, object])
+                bound = inspect.BoundArguments(signature, OrderedDict((name, _argument(value, signature.parameters[name])) for name, value in given.items()))
+                return Returned(msgspec.json.encode(function(*bound.args, **bound.kwargs), enc_hook=str))
+        except SystemExit as stop:
+            return Exited(_status(stop))
+        except Exception:
+            traceback.print_exc()
+            return Exited(1)
 
 
 @contextmanager
@@ -113,6 +128,37 @@ def loaded(source: str, path: str) -> Iterator[ModuleType]:
             del sys.modules[module.__name__]
         else:
             sys.modules[module.__name__] = held
+
+
+@contextmanager
+def _unpacked(includes: bytes | None) -> Iterator[None]:
+    """``includes`` unpacked into a directory of its own, first on ``sys.path`` for as long as the block lasts.
+
+    First, so the code shipped with the run wins over an installed package of the
+    same name. What was imported from it leaves ``sys.modules`` with it: the next
+    run's copy is another directory, and a module cached from this one would be
+    found before it.
+    """
+    if includes is None:
+        yield
+        return
+    with tempfile.TemporaryDirectory(prefix="skyward-includes-") as directory:
+        with tarfile.open(fileobj=io.BytesIO(includes), mode="r:gz") as archive:
+            archive.extractall(directory, filter="data")
+        sys.path.insert(0, directory)
+        try:
+            yield
+        finally:
+            sys.path.remove(directory)
+            sys.path_importer_cache.pop(directory, None)
+            for name in [name for name, module in list(sys.modules.items()) if _within(module, directory)]:
+                del sys.modules[name]
+
+
+def _within(module: object, directory: str) -> bool:
+    """Whether ``module`` was imported from ``directory``: its file, or for a namespace package, one of its paths."""
+    places = (getattr(module, "__file__", None), *(getattr(module, "__path__", None) or ()))
+    return any(isinstance(place, str) and place.startswith(directory + os.sep) for place in places)
 
 
 def _status(stop: SystemExit) -> int:

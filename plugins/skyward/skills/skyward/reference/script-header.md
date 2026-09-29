@@ -67,6 +67,8 @@ PEP 723's own keys:
 | `apt` | list of strings | apt packages |
 | `env` | table of strings | environment variables on the nodes |
 | `pip_indexes` | list of `{ url, packages }` | extra package indexes; `packages` scopes which names resolve from `url`, empty makes it an ordinary extra index |
+| `includes` | list of strings | local files and directories, counted from the file, sent with every run and importable by their own names (`reference/script.md`, "Local code") |
+| `excludes` | list of strings | glob patterns left out of `includes` |
 | `skyward` | string | where the node gets skyward from: `"auto"` (default), `"local"` (a wheel built from the checkout the daemon runs from), `"github"`, `"pypi"` |
 
 `python` and `pip` are not accepted here: they are `requires-python` and `dependencies`.
@@ -97,6 +99,6 @@ kind = "huggingface"
 
 What the plugins do is the SDK's `plugins/<kind>/` page.
 
-Anything else is refused as an unknown field, including what `sky.Compute` takes but the header does not: `name` (derived, see `reference/script.md`), `ttl`, `executor`, `options`, `ports`, `includes`, and where the script runs (that is `--node`, which may differ on every run of the same file). Provider settings (a RunPod `cloud_type`, an AWS `region` of the account) cannot be written here either; a file that needs them uses `sky.app`.
+Anything else is refused as an unknown field, including what `sky.Compute` takes but the header does not: `name` (derived, see `reference/script.md`), `ttl`, `executor`, `options`, `ports`, and where the script runs (that is `--node`, which may differ on every run of the same file). Provider settings (a RunPod `cloud_type`, an AWS `region` of the account) cannot be written here either; a file that needs them uses `sky.app`.
 
-The block is read without running the file: a TOML error, an unknown field, a plugin that does not exist or a field it does not have, bounds that disagree, a `requires-python` that admits none of 3.12–3.14, or an unknown provider kind is refused before anything else happens.
+The block is read without running the file: a TOML error, an unknown field, a plugin that does not exist or a field it does not have, bounds that disagree, a `requires-python` that admits none of 3.12–3.14, an unknown provider kind, or an include that is not there is refused before anything else happens.

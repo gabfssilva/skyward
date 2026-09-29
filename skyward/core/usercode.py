@@ -20,7 +20,8 @@ _DEFAULT_EXCLUDES = ("__pycache__", "*.pyc", "*.pyo", ".git", ".venv", "node_mod
 def tarball(includes: Sequence[str], excludes: Sequence[str] = ()) -> bytes:
     """A tar.gz of the given paths, resolved against the working directory.
 
-    Directories are walked; a path that does not exist is skipped. ``excludes`` and
+    A relative path keeps its whole spelling in the archive; an absolute one lands
+    under its own name. Directories are walked; a path that does not exist is skipped. ``excludes`` and
     a built-in set of noise patterns (``__pycache__``, ``.git``, ``.venv``, ...) drop
     any path whose components match, so a synced tree does not carry a virtualenv or
     a git history along with it.

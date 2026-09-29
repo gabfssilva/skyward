@@ -10,8 +10,10 @@ it, resize it and take it down.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
+import tarfile
 import textwrap
 from functools import partial
 from pathlib import Path
@@ -22,6 +24,7 @@ import msgspec
 import pytest
 
 from skyward.cli.script import Call, Script, Whole, read
+from skyward.core import usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.app import App
 from skyward.shared.providers import AWS
@@ -73,6 +76,25 @@ def header(tmp_path: Path, skyward: str, top: str = "", name: str = "train.py") 
     lines = [*top.strip().splitlines(), "[tool.skyward]", *skyward.strip().splitlines()]
     block = "\n".join(["# /// script", *(f"# {line}" if line else "#" for line in lines), "# ///"])
     return written(tmp_path, f"{block}\nprint('hello')\n", name)
+
+
+def shipped(root: Path, body: str = "VERSION = 1\n") -> Path:
+    """A package named ``shipped`` under ``root``, whose ``__init__`` holds ``body``; answers with that file."""
+    (root / "shipped").mkdir(parents=True, exist_ok=True)
+    init = root / "shipped" / "__init__.py"
+    init.write_text(body)
+    return init
+
+
+def archive(root: Path) -> bytes:
+    """The package under ``root``, packed as ``sky run`` sends it."""
+    return usercode.tarball([str(root / "shipped")])
+
+
+def members(script: Script) -> list[str]:
+    assert script.includes is not None
+    with tarfile.open(fileobj=io.BytesIO(script.includes)) as packed:
+        return sorted(packed.getnames())
 
 
 @pytest.mark.local
@@ -296,6 +318,50 @@ def describe_reading_a_module() -> None:
 
 
 @pytest.mark.local
+def describe_what_the_image_includes() -> None:
+    def it_counts_from_the_file_and_lands_under_its_own_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project = tmp_path / "project"
+        shipped(project / "src")
+        path = written(
+            project,
+            """
+            import skyward as sky
+
+
+            @sky.app(provider=sky.AWS(), image=sky.Image(includes=["src/shipped"]))
+            def version() -> int:
+                return 1
+            """,
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert members(read(path)) == ["shipped/__init__.py"]
+
+    def a_header_includes_under_its_image_table_and_leaves_out_what_it_excludes(tmp_path: Path) -> None:
+        shipped(tmp_path / "src")
+        (tmp_path / "src" / "shipped" / "rows.csv").write_text("1,2\n")
+
+        script = read(header(tmp_path, 'provider = "aws"\nimage = { includes = ["src/shipped"], excludes = ["*.csv"] }'))
+
+        assert (script.app.image.includes, script.app.image.excludes) == (("src/shipped",), ("*.csv",))
+        assert members(script) == ["shipped/__init__.py"]
+
+    def nothing_included_is_nothing_sent(tmp_path: Path) -> None:
+        assert read(header(tmp_path, 'provider = "aws"')).includes is None
+
+    def what_is_not_there_is_refused(tmp_path: Path) -> None:
+        with pytest.raises(SystemExit, match="includes what is not there: src/gone"):
+            read(header(tmp_path, 'provider = "aws"\nimage = { includes = ["src/gone"] }'))
+
+    def two_paths_that_would_land_under_one_name_are_refused(tmp_path: Path) -> None:
+        shipped(tmp_path / "a")
+        shipped(tmp_path / "b")
+
+        with pytest.raises(SystemExit, match="more than one path named shipped"):
+            read(header(tmp_path, 'provider = "aws"\nimage = { includes = ["a/shipped", "b/shipped"] }'))
+
+
+@pytest.mark.local
 def describe_the_compute_a_script_is_named_after() -> None:
     def it_is_the_file_and_a_digest(tmp_path: Path) -> None:
         name = read(header(tmp_path, 'provider = "aws"')).name
@@ -345,6 +411,16 @@ def describe_the_compute_a_script_is_named_after() -> None:
         top = 'requires-python = ">=3.13"\ndependencies = ["torch==2.14.0", "numpy"]'
 
         assert read(header(tmp_path, skyward, top, name="dp_perf.py")).name == name
+
+    def the_paths_the_image_includes_are_part_of_it_and_what_is_in_them_is_not(tmp_path: Path) -> None:
+        version = shipped(tmp_path)
+        bare = read(header(tmp_path, 'provider = "aws"', name="one.py")).name
+        including = read(header(tmp_path, 'provider = "aws"\nimage = { includes = ["shipped"] }', name="one.py")).name
+        version.write_text("VERSION = 2\n")
+        edited = read(header(tmp_path, 'provider = "aws"\nimage = { includes = ["shipped"] }', name="one.py")).name
+
+        assert bare != including
+        assert including == edited, "an edit travels with the next run, to the compute already up"
 
     def two_functions_under_one_app_are_one_compute(tmp_path: Path) -> None:
         path = written(tmp_path, MODULE + EVALUATE)
@@ -419,6 +495,32 @@ def describe_running_the_text_on_a_node() -> None:
         assert b"skyward.worker.script" in pickled
         assert b"CodeType" not in pickled, "a code object is bytecode, and bytecode is only good on the interpreter that compiled it"
 
+    def what_the_image_includes_imports_by_its_own_name_while_it_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        shipped(tmp_path)
+        held = list(sys.path)
+
+        assert run("from shipped import VERSION\nprint(VERSION)\n", ("train.py",), archive(tmp_path)) == 0
+        assert capsys.readouterr().out == "1\n"
+        assert sys.path == held
+        assert "shipped" not in sys.modules
+
+    def each_run_imports_the_copy_it_was_sent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        version = shipped(tmp_path)
+        first = archive(tmp_path)
+        version.write_text("VERSION = 2\n")
+        second = archive(tmp_path)
+
+        run("from shipped import VERSION\nprint(VERSION)\n", ("train.py",), first)
+        run("from shipped import VERSION\nprint(VERSION)\n", ("train.py",), second)
+
+        assert capsys.readouterr().out == "1\n2\n"
+
+    def a_traceback_through_what_it_includes_shows_the_lines(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        shipped(tmp_path, "def fail() -> None:\n    raise ValueError('from the package')\n")
+
+        assert run("from shipped import fail\nfail()\n", ("train.py",), archive(tmp_path)) == 1
+        assert "raise ValueError('from the package')" in capsys.readouterr().err
+
 
 @pytest.mark.local
 def describe_calling_a_function_on_a_node() -> None:
@@ -464,6 +566,13 @@ def describe_calling_a_function_on_a_node() -> None:
 
         assert b"skyward.worker.script" in pickled
         assert b"CodeType" not in pickled, "a code object is bytecode, and bytecode is only good on the interpreter that compiled it"
+
+    def what_the_image_includes_is_there_for_the_function(tmp_path: Path) -> None:
+        shipped(tmp_path)
+        source = entry("def version() -> int:\n    from shipped import VERSION\n    return VERSION")
+
+        assert call(source, "version.py", "version", msgspec.msgpack.encode({}), archive(tmp_path)) == Returned(b"1")
+        assert "shipped" not in sys.modules
 
 
 def entry(function: str, above: str = "") -> str:
@@ -526,6 +635,26 @@ def entries(nodes: int, delete_on_exit: bool) -> str:
     """).lstrip()
 
 
+def including(delete_on_exit: bool) -> str:
+    """A file on local containers whose function answers with what the package its image includes says."""
+    return textwrap.dedent(f"""
+        import skyward as sky
+
+
+        @sky.app(
+            provider=sky.Container(),
+            cpus=1,
+            memory_gb=1,
+            image=sky.Image(python="{PYTHON}", skyward="local", includes=["src/shipped"]),
+            delete_on_exit={delete_on_exit},
+        )
+        def version() -> int:
+            from shipped import VERSION
+
+            return VERSION
+    """).lstrip()
+
+
 @pytest.mark.compute
 @pytest.mark.xdist_group("script")
 def describe_sky_run() -> None:
@@ -582,6 +711,31 @@ def describe_sky_run() -> None:
             assert "ValueError: on purpose" in failed.out
             assert all(line.startswith("1 │") for line in failed.out.splitlines()), "a function that raised answers nothing"
             assert httpx.get(f"{daemon}/v1/computes/{name}").json()["status"]["state"] == "deleted"
+        finally:
+            if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
+                cli("compute", "delete", name, "--url", daemon)
+
+    def what_the_image_includes_goes_with_every_run(daemon: str, tmp_path: Path) -> None:
+        version = shipped(tmp_path / "src")
+        path = tmp_path / "versioned.py"
+        path.write_text(including(delete_on_exit=False))
+        name = read(path).name
+        try:
+            first = cli("run", "--url", daemon, str(path))
+
+            assert first.code == 0, first.err
+            assert first.out.splitlines() == ["1"]
+            kept = httpx.get(f"{daemon}/v1/computes/{name}").json()
+
+            version.write_text("VERSION = 2\n")
+            path.write_text(including(delete_on_exit=True))
+            second = cli("run", "--url", daemon, str(path))
+
+            assert second.code == 0, second.err
+            assert second.out.splitlines() == ["2"], "a compute attached to runs the code as it is now, not as it was when it came up"
+            attached = httpx.get(f"{daemon}/v1/computes/{name}").json()
+            assert attached["id"] == kept["id"]
+            assert attached["spec"]["image"]["includes"] == [], "the machines are built without what goes with every run"
         finally:
             if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
                 cli("compute", "delete", name, "--url", daemon)

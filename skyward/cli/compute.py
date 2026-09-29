@@ -453,6 +453,9 @@ def run_declared(
     ``nodes`` changed resizes them rather than buying others. Whether they are
     still up after a run is its ``delete_on_exit``.
 
+    What the image includes goes with each run, not with the machines: they are
+    built without it, so a node never holds a copy older than the one it runs.
+
     Exits with the worst node's status. Given no file, prints this.
     """
     if script is None:
@@ -477,7 +480,7 @@ def run_declared(
             region=app.region,
             nodes=app.nodes,
             allocation=app.allocation,
-            image=app.image,
+            image=msgspec.structs.replace(app.image, includes=(), excludes=()),
             plugins=app.plugins,
             name=declared.name,
             url=daemon,
@@ -605,10 +608,11 @@ async def _performed(client: Client, compute: str, script: Script, where: Where)
     """Run what the file declares, print what a function returned, and answer with the worst status."""
     match script.work:
         case Whole(argv):
-            statuses = await _remotely(client, compute, partial(execute, script.source, argv), script.source, script.path.name, where)
+            statuses = await _remotely(client, compute, partial(execute, script.source, argv, script.includes), script.source, script.path.name, where)
             return max(statuses, default=0)
         case Call(entry, arguments):
-            outcomes = await _remotely(client, compute, partial(invoke, script.source, str(script.path), entry, arguments), script.source, entry, where)
+            work = partial(invoke, script.source, str(script.path), entry, arguments, script.includes)
+            outcomes = await _remotely(client, compute, work, script.source, entry, where)
             _answered(outcomes, where)
             return max((_exit(outcome) for outcome in outcomes), default=0)
 

@@ -39,6 +39,10 @@ function's signature, so a value that does not fit is refused before a machine i
 bought. A header is read without running anything, so a file with a
 ``[tool.skyward]`` table is a script whatever else it holds.
 
+What the image includes is counted from the file, packed here, and sent with every
+run beside the text, rather than unpacked once when a machine is set up: a run that
+attaches to a compute left up gets the code as it is now.
+
 Where the file runs is not in it. That is the command's to say, and it may say
 something different on every run of the same file.
 """
@@ -58,6 +62,7 @@ import msgspec
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from skyward.core import provider as factories
+from skyward.core import usercode
 from skyward.core.app import App, Entry
 from skyward.core.spec import canonical
 from skyward.shared.providers import Provider, split
@@ -120,6 +125,8 @@ class Script:
     source: str
     app: App
     work: Work
+    includes: bytes | None = None
+    """What the image includes, packed the way the node unpacks it; ``None`` when it includes nothing."""
 
     @property
     def name(self) -> str:
@@ -163,15 +170,17 @@ def read(path: Path, tokens: Sequence[str] = ()) -> Script:
 
     Everything is checked here, before a daemon is asked for anything: a header
     that does not parse, names a field nobody has, or asks for a plugin that does
-    not exist, and a command line the function cannot take, are refused with a
-    sentence rather than discovered on a machine that is already billing.
+    not exist, a command line the function cannot take, and an include that is not
+    there, are refused with a sentence rather than discovered on a machine that is
+    already billing.
     """
     source = path.read_text()
     match _metadata(path, source):
         case _Metadata(tool=_Tool(skyward=_Skyward() as declared)) as metadata:
-            return Script(path, source, _declared(metadata, declared), Whole((str(path), *tokens)))
+            app, work = _declared(metadata, declared), Whole((str(path), *tokens))
         case _:
-            return _called(path, source, tokens)
+            app, work = _called(path, source, tokens)
+    return Script(path, source, app, work, _packed(path, app.image))
 
 
 def _account(provider: Provider) -> str | tuple[str, Mapping[str, object]]:
@@ -205,6 +214,8 @@ def _declared(metadata: _Metadata, declared: _Skyward) -> App:
             apt=declared.image.apt,
             pip_indexes=declared.image.pip_indexes,
             env=declared.image.env,
+            includes=declared.image.includes,
+            excludes=declared.image.excludes,
             skyward=declared.image.skyward,
         ),
         plugins=tuple(_plugin(table) for table in declared.plugins),
@@ -212,7 +223,7 @@ def _declared(metadata: _Metadata, declared: _Skyward) -> App:
     )
 
 
-def _called(path: Path, source: str, tokens: Sequence[str]) -> Script:
+def _called(path: Path, source: str, tokens: Sequence[str]) -> tuple[App, Call]:
     """The ``sky.app`` function ``tokens`` name, and the arguments they give it.
 
     With one function in the file, naming it is optional; with more, the name is
@@ -238,7 +249,27 @@ def _called(path: Path, source: str, tokens: Sequence[str]) -> Script:
         if (name := next((name for name, entry in entries.items() if entry.fn is chosen), None)) is None:
             chosen(*bound.args, **bound.kwargs)
             raise SystemExit(0)
-        return Script(path, source, entries[name].app, Call(name, _encoded(bound.arguments)))
+        return entries[name].app, Call(name, _encoded(bound.arguments))
+
+
+def _packed(path: Path, image: Image) -> bytes | None:
+    """What ``image`` includes, as the tar.gz the node unpacks onto ``sys.path``.
+
+    Each path counts from the file rather than from wherever ``sky run`` was typed,
+    so the file ships the same code from anywhere, and lands under its own name:
+    ``src/classy_enc`` is the package ``classy_enc``. Two paths landing under one
+    name would be merged into one directory, so they are refused, as is one that is
+    not there.
+    """
+    if not image.includes:
+        return None
+    found = [(path.parent / include).resolve() for include in image.includes]
+    if missing := [include for include, place in zip(image.includes, found, strict=True) if not place.exists()]:
+        raise SystemExit(f"{path} includes what is not there: {', '.join(missing)}")
+    names = [place.name for place in found]
+    if doubled := sorted({name for name in names if names.count(name) > 1}):
+        raise SystemExit(f"{path} includes more than one path named {', '.join(doubled)}")
+    return usercode.tarball([str(place) for place in found], image.excludes)
 
 
 def _encoded(arguments: Mapping[str, object]) -> bytes:
@@ -268,6 +299,8 @@ class _Image(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     apt: tuple[str, ...] = ()
     env: dict[str, str] = {}
     pip_indexes: tuple[PipIndex, ...] = ()
+    includes: tuple[str, ...] = ()
+    excludes: tuple[str, ...] = ()
     skyward: SkywardSource = "auto"
 
 
