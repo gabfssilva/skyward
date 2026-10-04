@@ -8,6 +8,7 @@ talk to the port that thing is listening on.
 import asyncio
 import os
 import pty
+import signal
 import subprocess
 import sys
 import time
@@ -211,6 +212,105 @@ def describe_putting_a_file_on_the_machines() -> None:
         assert cli("compute", "download", pool.id, "/tmp/payload.txt", str(back), "--url", daemon).code == 0
 
         assert back.read_text() == "carried by hand\n"
+
+
+def describe_mirroring_a_folder_off_a_machine() -> None:
+    def it_brings_the_tree_down_and_then_only_what_changed(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        _on(daemon, pool.id, "0", "rm -rf /tmp/mirrored && mkdir -p /tmp/mirrored/deep")
+        _on(daemon, pool.id, "0", "echo one > /tmp/mirrored/a.txt && echo two > /tmp/mirrored/deep/b.txt")
+        local = tmp_path / "mirror"
+
+        first = cli("compute", "sync", pool.id, "/tmp/mirrored", str(local), "--url", daemon)
+
+        assert first.code == 0, first.err
+        assert (local / "a.txt").read_text() == "one\n"
+        assert (local / "deep" / "b.txt").read_text() == "two\n"
+        assert "2 files" in first.out
+
+        _on(daemon, pool.id, "0", "echo three > /tmp/mirrored/deep/b.txt")
+        second = cli("compute", "sync", pool.id, "/tmp/mirrored", str(local), "--url", daemon)
+
+        assert "1 files" in second.out, "the file nobody touched stays where it is"
+        assert (local / "deep" / "b.txt").read_text() == "three\n"
+
+    def every_node_lands_in_a_folder_of_its_rank(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        _on(daemon, pool.id, "all", "rm -rf /tmp/ranked && mkdir -p /tmp/ranked && hostname > /tmp/ranked/who.txt")
+        local = tmp_path / "ranked"
+
+        assert cli("compute", "sync", pool.id, "/tmp/ranked", str(local), "--node", "all", "--url", daemon).code == 0
+
+        assert sorted(path.name for path in local.iterdir()) == ["0", "1"]
+        assert (local / "0" / "who.txt").read_text() != (local / "1" / "who.txt").read_text()
+
+    def a_folder_that_is_not_there_is_said_so(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        ran = cli("compute", "sync", pool.id, "/tmp/never-made", str(tmp_path / "nothing"), "--url", daemon)
+
+        assert ran.code != 0
+        assert "/tmp/never-made" in ran.err
+
+    def watching_brings_down_what_is_written_afterwards(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        _on(daemon, pool.id, "0", "rm -rf /tmp/watched && mkdir -p /tmp/watched")
+        local = tmp_path / "watched"
+        watching = subprocess.Popen(
+            [str(SKY), "compute", "sync", pool.id, "/tmp/watched", str(local), "--watch", "--interval", "1", "--url", daemon],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            _on(daemon, pool.id, "0", "echo late > /tmp/watched/late.txt")
+            deadline = time.monotonic() + 60
+            while not (local / "late.txt").exists() and time.monotonic() < deadline:
+                time.sleep(0.2)
+
+            assert (local / "late.txt").read_text() == "late\n"
+            assert watching.poll() is None, "one pass is not the end of a watch"
+        finally:
+            watching.terminate()
+            watching.wait(timeout=30)
+
+
+    def an_interrupted_watch_makes_one_last_pass(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        _on(daemon, pool.id, "0", "rm -rf /tmp/parting && mkdir -p /tmp/parting && echo first > /tmp/parting/first.txt")
+        local = tmp_path / "parting"
+        watching = subprocess.Popen(
+            [str(SKY), "compute", "sync", pool.id, "/tmp/parting", str(local), "--watch", "--interval", "600", "--url", daemon],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 60
+            while not (local / "first.txt").exists() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            _on(daemon, pool.id, "0", "echo last > /tmp/parting/last.txt")
+
+            watching.send_signal(signal.SIGINT)
+            watching.wait(timeout=60)
+        finally:
+            watching.kill()
+
+        assert (local / "last.txt").read_text() == "last\n", "written inside the interval, and still brought down"
+
+    def a_watch_ends_with_the_compute_it_was_watching(compute: Build, daemon: str, tmp_path: Path) -> None:
+        with compute() as pool:
+            _on(daemon, pool.id, "0", "mkdir -p /tmp/short-lived")
+            watching = subprocess.Popen(
+                [str(SKY), "compute", "sync", pool.id, "/tmp/short-lived", str(tmp_path / "gone"), "--watch", "--interval", "1", "--url", daemon],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        try:
+            _, said = watching.communicate(timeout=60)
+        finally:
+            watching.kill()
+
+        assert watching.returncode != 0
+        assert pool.id in said
+
+
+def _on(daemon: str, compute: str, node: str, command: str) -> None:
+    ran = cli("compute", "exec", compute, command, "--node", node, "--url", daemon)
+    assert ran.code == 0, ran.err
 
 
 async def _over_a_socket(daemon: str, compute: str) -> str:

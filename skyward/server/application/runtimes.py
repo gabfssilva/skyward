@@ -509,7 +509,7 @@ class Runtime:
         """
         ready = self.ready
         if not ready:
-            raise RuntimeError(f"compute {self.compute} has no ready node to reach")
+            raise ComputeNotConnectedError(f"compute {self.compute} has no ready node to reach", compute=self.compute)
 
         match target:
             case "all":
@@ -517,7 +517,7 @@ class Runtime:
             case rank:
                 chosen = tuple(node_id for node_id in ready if self.nodes[node_id]._rank == rank)
                 if not chosen:
-                    raise RuntimeError(f"compute {self.compute} has no ready node at rank {rank}")
+                    raise ComputeNotConnectedError(f"compute {self.compute} has no ready node at rank {rank}", compute=self.compute)
                 return chosen
 
     async def run(self, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
