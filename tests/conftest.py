@@ -21,9 +21,11 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -33,6 +35,8 @@ import msgspec
 import pytest
 
 import skyward as sky
+from skyward.api.v1 import ComputeResource, NodeResource
+from skyward.core.client import Client
 from skyward.server.application.mock import SPEC
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.db import connect
@@ -241,3 +245,42 @@ def logfile(path: Path, size: int = 1 << 20) -> Iterator[LogFile]:
     finally:
         logger.remove(sink)
         file.close()
+
+
+async def held(client: Client, name: str) -> ComputeResource:
+    """A compute the daemon holds under ``name``, on the mock spec: no account behind it, so no machine either."""
+    return await client.call(
+        "POST",
+        "/v1/computes",
+        ComputeResource,
+        body=msgspec.json.encode(ComputeCreate(spec=SPEC, name=name)),
+        headers={"Idempotency-Key": uuid.uuid4().hex},
+    )
+
+
+def machine(node_id: str, rank: int, now: datetime, state: str = "ready", **fields: object) -> NodeResource:
+    """One node as the API tells it, launched half an hour before ``now``; ``fields`` replace what it says."""
+    return msgspec.convert(
+        {
+            "id": node_id,
+            "rank": rank,
+            "generation": 1,
+            "created_at": now - timedelta(minutes=30),
+            "state": state,
+            "desired": "present",
+            "machine": None,
+            "address": None,
+            "ssh": None,
+            "accelerator": None,
+            "market": None,
+            "price_per_hour": None,
+            "billing_unit": None,
+            "launched_at": now - timedelta(minutes=30),
+            "terminated_at": None,
+            "last_error": None,
+            "progress": None,
+            "busy": 0,
+            **fields,
+        },
+        NodeResource,
+    )

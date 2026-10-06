@@ -123,6 +123,16 @@ def describe_checking_existence() -> None:
         assert response.status_code == 200
 
 
+def describe_uploading() -> None:
+    async def it_takes_a_body_past_litestars_default_limit(http: AsyncTestClient) -> None:
+        # what `sky run` includes travels inside the function's blob, and a corpus is easily past 10 MB
+        blob = os.urandom(12 * MIB)
+
+        uploaded = await http.put(f"/v1/functions/{sha(blob)}", content=blob, headers={"X-Skyward-Function-Name": "train"})
+
+        assert uploaded.status_code == 201
+
+
 def describe_registering_a_function() -> None:
     async def a_registered_function_is_not_stored_again_even_with_a_body_that_does_not_match(store: BlobStore) -> None:
         functions = FunctionStore(store)

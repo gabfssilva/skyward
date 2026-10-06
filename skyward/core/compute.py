@@ -25,7 +25,7 @@ import msgspec
 from msgspec import UNSET, UnsetType
 
 from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, LogEntryResource, Page, ProviderResource, TaskResource
-from skyward.core import context, usercode
+from skyward.core import context, usercode, writes
 from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
 from skyward.core.console import Observer, Watcher, watcher
@@ -76,7 +76,6 @@ DEFAULT_IMAGE = Image()
 DEFAULT_EXECUTOR = Executor()
 DEFAULT_OPTIONS = Options()
 INLINE = 256 * 1024
-WRITE_ATTEMPTS = 5
 LEASE_SECONDS = 60
 """How long the compute stays owned after the last renewal.
 
@@ -440,7 +439,7 @@ class Compute:
             ``4`` for a fixed size, ``(2, 8)`` for an elastic range, or a
             :class:`~skyward.Nodes` for a floor that differs from the target.
         """
-        self.loop.run(self._conditional("PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=bounds(nodes)))))
+        self.loop.run(writes.conditional(self.client, self._id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=bounds(nodes)))))
 
     async def _provision(self) -> None:
         if self._attach:
@@ -652,36 +651,10 @@ class Compute:
         The idempotency key is the same across attempts — a rejected precondition
         created nothing.
         """
-        await self._conditional("DELETE", headers={"Idempotency-Key": uuid.uuid4().hex})
+        await writes.conditional(self.client, self._id, "DELETE", headers={"Idempotency-Key": uuid.uuid4().hex})
 
         async with asyncio.timeout(self._shutdown_timeout):
             await self._reach("deleted")
-
-    async def _conditional(self, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeResource:
-        """A write against the compute, guarded by the revision it was read at.
-
-        ``If-Match`` guards against reshaping a compute somebody else reshaped, but
-        the revision also moves on bookkeeping this caller causes and cannot avoid:
-        the reconciler writes what it observed on every tick, and the lease renews
-        itself on a timer. Either landing between the read and the write refuses a
-        change nothing was actually racing, so the precondition is refreshed rather
-        than abandoned.
-        """
-        attempts = WRITE_ATTEMPTS
-        while True:
-            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
-            try:
-                return await self.client.call(
-                    method,
-                    f"/v1/computes/{self._id}",
-                    ComputeResource,
-                    body=body,
-                    headers={"If-Match": f'"{current.revision}"', **(headers or {})},
-                )
-            except SkywardError as error:
-                attempts -= 1
-                if error.code != "revision_conflict" or not attempts:
-                    raise
 
     async def _reach(self, *states: ComputeState) -> ComputeResource:
         """Follow the compute's events; answer with the resource once it is in one of ``states``.

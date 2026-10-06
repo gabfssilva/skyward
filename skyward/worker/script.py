@@ -156,8 +156,13 @@ def _unpacked(includes: bytes | None) -> Iterator[None]:
 
 
 def _within(module: object, directory: str) -> bool:
-    """Whether ``module`` was imported from ``directory``: its file, or for a namespace package, one of its paths."""
-    places = (getattr(module, "__file__", None), *(getattr(module, "__path__", None) or ()))
+    """Whether ``module`` was imported from ``directory``: its file, or for a namespace package, one of its paths.
+
+    Both are read from the module's own namespace: a module may make up any attribute it lacks
+    (``torch.classes`` does), and ``getattr`` would hand back whatever it made up.
+    """
+    namespace = getattr(module, "__dict__", {})
+    places = (namespace.get("__file__"), *(namespace.get("__path__") or ()))
     return any(isinstance(place, str) and place.startswith(directory + os.sep) for place in places)
 
 

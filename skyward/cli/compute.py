@@ -35,7 +35,7 @@ from skyward.cli import compute_app
 from skyward.cli._client import Work, call, resolve
 from skyward.cli._output import Output, dump, render
 from skyward.cli.script import FACTORIES, Call, Script, Whole, read
-from skyward.core import console
+from skyward.core import console, writes
 from skyward.core.client import Client
 from skyward.core.compute import Compute
 from skyward.core.errors import SkywardError
@@ -84,8 +84,6 @@ IDLE = 1.0
 """Seconds of quiet that mean a settled task has no more output coming."""
 DRAIN = 5.0
 """Longest a settled task waits on its own output before giving up on the rest."""
-WRITE_ATTEMPTS = 5
-"""How many times a conditional write is re-read and re-sent before it is a real conflict."""
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -241,7 +239,7 @@ def scale_compute(
     """
     wanted = _nodes(nodes)
     scaled = _call(
-        lambda client: _conditional(client, ref, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted))),
+        lambda client: writes.conditional(client, ref, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted))),
         url=url,
     )
     render(COMPUTE_COLUMNS, [_compute_row(scaled)], output=output)
@@ -260,7 +258,7 @@ def delete_compute(
     confirms the machines are gone, so what comes back is still ``deleting``.
     """
     key = uuid.uuid4().hex
-    deleted = _call(lambda client: _conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url)
+    deleted = _call(lambda client: writes.conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(deleted)], output=output)
 
 
@@ -482,6 +480,7 @@ def run_declared(
             allocation=app.allocation,
             image=msgspec.structs.replace(app.image, includes=(), excludes=()),
             plugins=app.plugins,
+            options=app.options,
             name=declared.name,
             url=daemon,
             delete_on_exit=app.delete_on_exit,
@@ -525,32 +524,6 @@ def _nodes(value: str) -> NodeBounds:
             raise SystemExit(f"--nodes takes N, or MIN:MAX with MIN <= MAX, not {value!r}")
 
 
-async def _conditional(client: Client, ref: str, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeResource:
-    """A write against a compute, guarded by the revision it was read at.
-
-    ``If-Match`` is what keeps two terminals from overwriting each other's intent,
-    but the revision also moves on bookkeeping nobody asked for: the reconciler
-    writes what it observed on every tick, and a lease renews itself on a timer.
-    Either landing between the read and the write refuses a change nothing was
-    racing, so the precondition is refreshed rather than handed back as a failure.
-    """
-    attempts = WRITE_ATTEMPTS
-    while True:
-        current = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
-        try:
-            return await client.call(
-                method,
-                f"/v1/computes/{current.id}",
-                ComputeResource,
-                body=body,
-                headers={"If-Match": f'"{current.revision}"', **(headers or {})},
-            )
-        except SkywardError as error:
-            attempts -= 1
-            if error.code != "revision_conflict" or not attempts:
-                raise
-
-
 def _rank(node: str) -> str:
     if node.lstrip("-").isdigit():
         return node
@@ -589,7 +562,7 @@ async def _standing(client: Client, script: Script) -> bool:
         case _:
             wanted = bounds(script.app.nodes)
             if (found.spec.nodes.initial, found.spec.nodes.min, found.spec.nodes.max) != (wanted.initial, wanted.min, wanted.max):
-                await _conditional(client, found.id, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted)))
+                await writes.conditional(client, found.id, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted)))
             return True
 
 

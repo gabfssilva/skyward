@@ -24,7 +24,7 @@ import pytest
 import skyward as sky
 from skyward.api.v1 import ComputeResource, ComputeSpec, ComputeStatus, LeaseResource, NodeBounds, Page, ProviderResource, TaskCounts
 from skyward.core import client as transport
-from skyward.core.client import Client, connect
+from skyward.core.client import Client, connect, located
 from skyward.core.compute import MOVES
 from skyward.core.errors import DaemonError
 from skyward.server import daemon
@@ -290,6 +290,36 @@ def describe_an_urgent_call() -> None:
 
         assert starved, "the ordinary connections were not all held, so the urgent call proved nothing"
         assert answer == {}, "an urgent call must not queue behind requests holding every ordinary connection"
+
+
+def describe_a_route_and_its_query() -> None:
+    def the_query_a_path_already_carries_is_kept() -> None:
+        assert str(located("/v1/computes/cmp_1?include=nodes.replaced", {})) == "/v1/computes/cmp_1?include=nodes.replaced"
+
+    def a_tuple_is_its_key_repeated_and_none_is_left_out() -> None:
+        url = located("/v1/computes/cmp_1/metrics", {"name": ("cpu", "gpu_util"), "since": 5, "cursor": None})
+
+        assert str(url) == "/v1/computes/cmp_1/metrics?name=cpu&name=gpu_util&since=5"
+
+    def the_two_are_merged() -> None:
+        assert str(located("/v1/tasks?compute=cmp_1", {"limit": 1})) == "/v1/tasks?compute=cmp_1&limit=1"
+
+
+def describe_an_embedded_call_that_is_cancelled() -> None:
+    async def it_leaves_no_request_running_behind(tmp_path: Path) -> None:
+        client = await Client.embedded(tmp_path / "skyward.sqlite")
+        try:
+            for pause in (0.0, 0.001, 0.003, 0.01):
+                calls = [asyncio.create_task(client.call("GET", "/v1/computes", Page[ComputeResource])) for _ in range(4)]
+                await asyncio.sleep(pause)
+                for call in calls:
+                    call.cancel()
+                await asyncio.gather(*calls, return_exceptions=True)
+            await asyncio.sleep(0.3)
+
+            assert [task for task in asyncio.all_tasks() if "handle_async_request" in repr(task.get_coro())] == []
+        finally:
+            await client.close()
 
 
 type Script = Callable[[asyncio.StreamWriter], Awaitable[None]]

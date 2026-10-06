@@ -8,6 +8,7 @@ from pathlib import Path
 import msgspec
 import pytest
 
+from skyward.core import writes
 from skyward.core.client import Client
 from skyward.core.fleet import FleetObserver
 from skyward.server.application.mock import SPEC
@@ -57,13 +58,7 @@ def describe_following_the_fleet() -> None:
             following = asyncio.create_task(fleet.follow())
             await _until(lambda: compute.id in fleet.views)
 
-            current = await client.call("GET", f"/v1/computes/{compute.id}", Compute)
-            await client.call(
-                "DELETE",
-                f"/v1/computes/{compute.id}",
-                Compute,
-                headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": uuid.uuid4().hex},
-            )
+            await writes.delete(client, compute.id)
 
             await _until(lambda: compute.id not in fleet.views, timeout=30.0)
             following.cancel()

@@ -52,7 +52,7 @@ For a first run without a bill, use the `container` provider: the nodes are loca
 
 ## The compute it runs on
 
-The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. The image's `includes` and `excludes` count as the paths written, not as what the files hold: adding or renaming an include names another compute, editing an included file does not. `nodes` and `delete_on_exit` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
+The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. The image's `includes` and `excludes` count as the paths written, not as what the files hold: adding or renaming an include names another compute, editing an included file does not. `nodes`, `delete_on_exit` and a `sky.app`'s `options` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
 
 - **header:** the provider by its kind, the accelerator as written. `"RTX_3090"` and `"rtx-3090"` are two computes.
 - **`sky.app`:** the provider by its kind plus whichever settings differ from that kind's defaults, so a default changed by a release renames nothing. The accelerator counts by what it resolves to: `"A100"`, `"a100"` and `sky.accelerators.A100()` are one compute, `sky.accelerators.A100(count=2)` another.

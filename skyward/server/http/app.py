@@ -58,6 +58,7 @@ from skyward.shared.errors import NotFoundError, SkywardError
 from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import MetricSample, PhaseMark
+from skyward.worker import worker
 from skyward.worker.journal import Console, Metric
 
 logger = logger.bind(component="daemon")
@@ -349,6 +350,9 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         listeners=build_listeners(svc.reconciler, svc.dispatcher, svc.machines, svc.connector),
         event_emitter_backend=ReconcilingEventEmitter,
         exception_handlers={SkywardError: skyward_error_handler, Exception: unhandled_error_handler},
+        # a function's code (with what `sky run` includes) and an uploaded file each arrive as one body,
+        # so the bound is the largest message the cluster carries rather than Litestar's 10 MB
+        request_max_body_size=worker.MAX_MESSAGE_BYTES,
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
         logging_config=Empty if logging else None,

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, MutableMapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Mapping, MutableMapping
 from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
@@ -87,6 +87,15 @@ connection that goes idle while it holds more than twenty.
 Fifty, because a daemon on this machine takes no more submissions a second past
 twenty-five in flight, and the more it is handed at once the slower it places the
 tasks it already has; fifty is what keeps one a hundred milliseconds away as busy.
+"""
+
+FAILURES = (SkywardError, UnexpectedResponseError, httpx.TransportError, msgspec.DecodeError)
+"""What a call ends in when it is not its answer.
+
+The daemon refused, something in between answered for it, the link stayed down
+past the retries, or the answer is in a shape this build cannot read. A screen
+that stays open catches these and says so; anything else is a bug and is left
+to surface.
 """
 
 CONTROL_CONNECTIONS = 2
@@ -388,9 +397,8 @@ class Client:
                 async with turn:
                     response = await http.request(
                         method,
-                        path,
+                        located(path, query),
                         content=body,
-                        params={key: str(value) for key, value in query.items() if value is not None},
                         headers={"Content-Type": content_type, **(headers or {})},
                     )
             except httpx.TransportError:
@@ -488,6 +496,10 @@ class Embedded(httpx.AsyncBaseTransport):
             A failure after the headers have gone out cannot become a status code, and
             it must not become silence either: nothing is awaiting this task, so an
             exception here would be swallowed and the body would simply stop.
+
+            The end of the body is said after the application is over, and not on the
+            way out of a cancellation: a cancelled request has no reader left, and a
+            put into the queue it stopped draining would hold the task open for good.
             """
             try:
                 await self._app(scope, receive, send)
@@ -496,9 +508,8 @@ class Embedded(httpx.AsyncBaseTransport):
                     start.set_exception(exc)
                     return
                 logger.exception("the control plane failed while streaming a response")
-            finally:
-                if start.done() and not disconnected.is_set():
-                    await chunks.put(None)
+            if not disconnected.is_set():
+                await chunks.put(None)
 
         task = asyncio.get_running_loop().create_task(run())
 
@@ -517,7 +528,12 @@ class Embedded(httpx.AsyncBaseTransport):
             finally:
                 disconnected.set()
 
-        started: Message = await start
+        try:
+            started: Message = await start
+        except asyncio.CancelledError:
+            disconnected.set()
+            task.cancel()
+            raise
         return httpx.Response(
             started["status"],
             headers=started.get("headers", []),
@@ -649,6 +665,27 @@ async def started(client: Client, url: str) -> LivenessResource:
         if time.monotonic() >= deadline:
             raise DaemonError(f"no answer from {url} within {START_TIMEOUT:.0f}s — see {daemon.LOG_FILE}")
         await asyncio.sleep(POLL_SECONDS)
+
+
+def located(path: str, query: Mapping[str, object]) -> httpx.URL:
+    """A route and its query, as the one URL that is asked.
+
+    A value that is ``None`` is left out and a tuple is its key repeated, which is
+    how a route takes more than one of something. The query a path already
+    carries is kept: httpx drops it as soon as it is handed ``params``, empty or
+    not, so the two are merged here instead.
+    """
+
+    def each(value: object) -> tuple[object, ...]:
+        match value:
+            case None:
+                return ()
+            case tuple():
+                return value
+            case _:
+                return (value,)
+
+    return httpx.URL(path).copy_merge_params([(key, str(item)) for key, value in query.items() for item in each(value)])
 
 
 def address(url: str) -> tuple[str, int]:

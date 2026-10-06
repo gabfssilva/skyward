@@ -198,6 +198,7 @@ def refresh(view: ComputeView, compute: ComputeResource) -> ComputeView:
         minimum=compute.spec.nodes.min,
         maximum=compute.spec.nodes.max,
         created_at=compute.created_at,
+        cost=compute.cost,
         nodes_total=len(rows),
         nodes=rows,
         tail=tuple(line for line in view.tail if line[0] in kept),

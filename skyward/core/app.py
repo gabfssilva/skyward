@@ -1,8 +1,8 @@
 """A function the command line runs on the compute declared above it.
 
 ``sky.app`` is what ``sky.Compute`` is told about the machines — provider, shape,
-size, image, plugins — as a value, without the pool. Applied to a function, it
-makes that function a command of ``sky run``::
+size, image, plugins — and the options its session runs with, as a value, without
+the pool. Applied to a function, it makes that function a command of ``sky run``::
 
     @sky.app(provider=sky.AWS(), accelerator=sky.accelerators.RTX_3090(), nodes=2)
     def train(epochs: int = 10) -> float: ...
@@ -24,7 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from skyward.core.accelerators import Accelerator
-from skyward.core.spec import NodeSpec
+from skyward.core.spec import NodeSpec, Options
 from skyward.shared.providers import Provider
 from skyward.shared.schemas import Allocation, Image
 from skyward.worker.plugins import Plugin
@@ -44,6 +44,7 @@ class App:
     image: Image = Image()
     plugins: Sequence[Plugin] = ()
     delete_on_exit: bool = True
+    options: Options = Options()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "plugins", tuple(self.plugins))

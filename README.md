@@ -27,6 +27,37 @@ Skyward is a Python library for ephemeral accelerator compute. Spin up cloud acc
 ## Quick Example
 
 ```python
+# pi.py
+import skyward as sky
+
+
+@sky.app(
+    provider=sky.Salad(priority="high"),
+    accelerator=sky.accelerators.RTX_3090(),
+    image=sky.Image(pip=["torch", "numpy"]),
+)
+def estimate_pi(n: int = 100_000_000) -> dict[str, str | float]:
+    """Estimate pi from N random points, on a GPU."""
+    import torch
+
+    points = torch.rand(2, n, device="cuda")
+    inside = (points[0] ** 2 + points[1] ** 2 <= 1).sum().item()
+
+    return {"gpu": torch.cuda.get_device_name(), "pi": 4 * inside / n}
+```
+
+```bash
+sky server start
+sky run pi.py --n 500000000
+```
+
+`sky.app` declares the machines a function runs on. `sky run` provisions them, parses the command line against the function's signature, runs the function there, prints what it returned as JSON, and tears the machines down.
+
+### Inside a program
+
+`sky.Compute` is the same compute as a context manager, for a program that dispatches functions itself:
+
+```python
 import skyward as sky
 
 @sky.function
@@ -66,8 +97,10 @@ with sky.Compute(
 ## Install
 
 ```bash
-uv add skyward
+uv add "skyward[all]"
 ```
+
+The base package is what a node installs. The SDK, the daemon, the `sky` command and each provider SDK are extras; [getting started](https://gabfssilva.github.io/skyward/getting-started/) lists them.
 
 ## Requirements
 

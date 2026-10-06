@@ -15,6 +15,7 @@ import json
 import sys
 import tarfile
 import textwrap
+import types
 from functools import partial
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from skyward.cli.script import Call, Script, Whole, read
 from skyward.core import usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.app import App
+from skyward.core.spec import Options
 from skyward.shared.providers import AWS
 from skyward.shared.schemas import NodeBounds, PipIndex
 from skyward.worker.plugins import HuggingFace, Torch
@@ -435,6 +437,7 @@ def describe_the_compute_a_script_is_named_after() -> None:
                 App(provider=AWS(region="us-east-1")),
                 App(provider=AWS(), nodes=8),
                 App(provider=AWS(), delete_on_exit=False),
+                App(provider=AWS(), options=Options(ready_timeout=1800)),
             ],
         )
         def what_is_not_the_machines_is_not_part_of_it(tmp_path: Path, other: App) -> None:
@@ -514,6 +517,18 @@ def describe_running_the_text_on_a_node() -> None:
         run("from shipped import VERSION\nprint(VERSION)\n", ("train.py",), second)
 
         assert capsys.readouterr().out == "1\n2\n"
+
+    def a_module_that_makes_up_any_attribute_leaves_what_it_includes_to_be_cleaned_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # torch.classes answers every name it is asked for, __path__ included
+        class Anything(types.ModuleType):
+            def __getattr__(self, name: str) -> object:
+                return object()
+
+        monkeypatch.setitem(sys.modules, "anything", Anything("anything"))
+        shipped(tmp_path)
+
+        assert run("import shipped\n", ("train.py",), archive(tmp_path)) == 0
+        assert "shipped" not in sys.modules
 
     def a_traceback_through_what_it_includes_shows_the_lines(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         shipped(tmp_path, "def fail() -> None:\n    raise ValueError('from the package')\n")
