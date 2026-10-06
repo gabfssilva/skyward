@@ -1,7 +1,8 @@
 """The machines a compute asks for are bought together, not one after another."""
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping
+import contextlib
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Self
@@ -29,7 +30,7 @@ KEY = keypair()[0]
 
 
 class Gated:
-    """A provider whose launches wait until the test lets them all go, counting how many waited at once."""
+    """A provider whose launches wait until all of them are waiting at once, counting how many did."""
 
     kind: ClassVar[str] = "gated"
     credential_fields: ClassVar[tuple[str, ...]] = ()
@@ -57,6 +58,8 @@ class Gated:
     async def launch(self, binding: Binding, market: Market, node: str) -> Machine:
         self.waiting += 1
         self.peak = max(self.peak, self.waiting)
+        if self.waiting == NODES:
+            self.open.set()
         try:
             await self.open.wait()
         finally:
@@ -107,13 +110,6 @@ class Offers:
         return Page(items=(OFFER,))
 
 
-async def settled(reading: Callable[[], int], for_seconds: float = 0.3) -> bool:
-    """Whether the reading stopped moving — every launch that was going to start has started."""
-    before = reading()
-    await asyncio.sleep(for_seconds)
-    return reading() == before
-
-
 def describe_a_compute_that_asks_for_many_machines() -> None:
     async def it_buys_them_all_at_once(tmp_path: Path) -> None:
         await connect(tmp_path / "skyward.sqlite")
@@ -139,9 +135,8 @@ def describe_a_compute_that_asks_for_many_machines() -> None:
         assert len(requested) == NODES
 
         purchases = [asyncio.create_task(machines.create(compute.id, node_id)) for node_id in requested]
-        async with asyncio.timeout(10):
-            while provider.waiting < NODES and not await settled(lambda: provider.waiting):
-                pass
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(provider.open.wait(), timeout=10)
         provider.open.set()
         await asyncio.gather(*purchases)
 

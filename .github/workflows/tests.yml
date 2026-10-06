@@ -58,8 +58,8 @@ jobs:
         node-version: "22"
     - name: Install Claude Code
       run: npm install -g @anthropic-ai/claude-code
-    - name: Check plugin
-      run: task plugin:check
+    - name: Validate plugin
+      run: task plugin:validate
 
   build-image:
     needs: [check]

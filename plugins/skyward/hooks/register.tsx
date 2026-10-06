@@ -143,7 +143,7 @@ const STATE_COLORS = new Map([
 const RANK_COLORS = ['#3b6fd8', '#8e5bd6', '#1f8f8f', '#c7702a', '#c2427a', '#6b8e23', '#546e7a', '#8d6e63']
 const RANK_WIDTH = 5
 
-const TASK_ORDERS: readonly TaskOrder[] = ['state', 'submitted', 'finished']
+const NEXT_TASK_ORDER: Record<TaskOrder, TaskOrder> = { state: 'submitted', submitted: 'finished', finished: 'state' }
 // The rest (cancelled, timed_out, indeterminate) is shown as what the total leaves over.
 const COUNTED_TASK_STATES = ['running', 'queued', 'succeeded', 'failed']
 const TASK_GLYPHS = new Map([
@@ -1113,7 +1113,7 @@ export const register: Register = (on) => {
         .filter((part) => part !== null)
         .join(' · ')
       const next = page.next
-      const order = TASK_ORDERS[(TASK_ORDERS.indexOf(query.order) + 1) % TASK_ORDERS.length]
+      const order = NEXT_TASK_ORDER[query.order]
       const functionInput = (): RenderElement | null => {
         if (e.surface === 'mobile') return null
         const { Input } = $.ui.resolve(e)

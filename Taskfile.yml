@@ -37,10 +37,21 @@ tasks:
       - uv run lint-imports
 
   plugin:check:
-    desc: Generate the plugin's type declarations, type check it, and validate both manifests
+    desc: Type check the plugin and validate both manifests
     cmds:
-      - cd plugins/skyward && CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p "/plugin-types types" < /dev/null
+      - task: plugin:types
+      - task: plugin:validate
+
+  plugin:types:
+    desc: Type check the plugin against the declarations the engine writes when a session loads it
+    cmds:
+      # loading the plugin writes .claude-plugin/types; /cost is a local command, so the session needs no model and no login
+      - claude --plugin-dir plugins/skyward -p "/cost" < /dev/null > /dev/null
       - npx -y -p typescript@5 tsc -p plugins/skyward
+
+  plugin:validate:
+    desc: Validate the plugin's manifest and the marketplace's
+    cmds:
       - claude plugin validate --strict plugins/skyward
       - claude plugin validate --strict .
 
