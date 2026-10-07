@@ -222,6 +222,8 @@ Each field maps to a phase of the bootstrap:
 
 Because `Image` is frozen, two computes built from the same image produce the same environment — same Python version, same packages, same system dependencies. This is reproducibility without writing a Dockerfile: the environment specification lives in your Python code, versioned alongside your experiments.
 
+`Image(mutable=True)` relaxes the fixed image for a compute that is up. The default is `False`, and everything above holds. With `mutable=True`, `pip`, `pip_indexes`, `includes` and `excludes` can change after the compute is ready, through `Compute.update(image=...)` or `sky compute update`. Each ready node is sent through bootstrapping again: the worker drains the work it holds and leaves, the packages are installed into the same virtual environment, the includes are swapped, and the worker starts again. The node comes back `ready` and reports the digest of the image it now runs. The change is best-effort. Removing a package from `pip` does not promise its removal from the machine, because `uv pip install` adds and upgrades and does not uninstall. `base`, `python`, `apt`, `env` and `metrics` cannot change in place: a compute whose image differs in one of them is a different compute, as it is without the flag.
+
 `skyward` controls how Skyward itself reaches the nodes. The default detects whether you're running from an editable install and, if so, ships your local source instead of installing from PyPI — so changes to Skyward's own code appear on remote machines immediately during development.
 
 ## Runtime context

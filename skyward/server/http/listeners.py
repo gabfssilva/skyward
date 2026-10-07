@@ -77,13 +77,19 @@ def build_listeners(
         await reconciler.compute(compute_id)
 
     @Listener("node.observed")
-    async def on_node_observed(compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
+    async def on_node_observed(compute_id: str, node_id: str, state: NodeState, error: str | None, image: str | None = None) -> None:
         """A node said what became of it.
 
         It goes through the bus rather than straight into the reconciler so that a
         machine flapping between states cannot spawn one pass per flap.
         """
-        await reconciler.observed(compute_id, node_id, state, error)
+        await reconciler.observed(compute_id, node_id, state, error, image=image)
+
+    @Listener("node.refresh")
+    async def on_node_refresh(compute_id: str, node_id: str) -> None:
+        """The node holds nothing any more and runs another image than the spec's."""
+        if connector:
+            await connector.refresh(compute_id, node_id)
 
     @Listener("task.changed")
     async def on_task_changed(task_id: str) -> None:
@@ -113,6 +119,7 @@ def build_listeners(
         on_node_deleting,
         on_node_draining,
         on_node_observed,
+        on_node_refresh,
         on_task_changed,
         on_compute_dispatch,
         on_compute_deleted,

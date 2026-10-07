@@ -81,7 +81,7 @@ The supported provider kinds are:
 
 A kind whose SDK extra is not installed is not registered, so it will not appear. `sky providers list --kinds` shows what this installation can actually reach.
 
-The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--ttl`, `--base`, `--python`, `--pip`, `--apt`, `--pip-index`, `--env`, `--plugin`, `--url`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
+The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--ttl`, `--base`, `--python`, `--pip`, `--apt`, `--pip-index`, `--env`, `--mutable`, `--plugin`, `--url`, and `--output`. `--mutable` is `Image(mutable=True)`: the packages and includes may be changed afterwards with `update`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
 
 `--base`, `--python`, `--pip`, `--apt`, `--pip-index` and `--env` are the image the nodes build, with the meaning `sky.Image` gives them in the SDK: the packages land in the interpreter `run` and `exec` use. `--pip`, `--apt`, `--pip-index`, `--env` and `--plugin` repeat for more than one; `--env` takes `KEY=VALUE`. `--plugin` names a plugin by its kind (`torch`, `jax`, `huggingface`, …), with parameters as `key=value` after a colon: `--plugin torch:backend=gloo,cuda=cu124`. The parameters are validated against the plugin's own fields before anything is sent, the way constructing `sky.plugins.Torch(...)` would, and a parameter left out is the plugin's default. `sky compute view` shows the image a compute was asked to build.
 
@@ -103,6 +103,17 @@ sky compute scale research --nodes 2:8
 `--nodes N` is a fixed size; `--nodes MIN:MAX` is an elastic range, the same thing `nodes=(2, 8)` means in the SDK. The bounds are written whole, so the flag is the compute's new size and not a patch on the old one.
 
 Like `create`, it returns without waiting: what comes back is a new `generation`, and the machines are bought or drained by reconciliation afterwards. A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused — its process group was formed with the ranks it started with, and one added now would block in it.
+
+### Update
+
+`update` changes the image of a compute that is up, without replacing its machines. It takes the mutable fields of the image (`--pip`, `--pip-index`, `--include`, `--exclude`) and works only on a compute created with a mutable image:
+
+```bash
+sky compute update research --pip six
+sky compute update research --include ./src/classy_enc
+```
+
+The flags give the image's new lists, so a package left out of the command is not in the next image. Like `scale`, it returns without waiting: the nodes refresh afterwards, each one passing through `node.bootstrapping` and back to `node.ready`. A compute whose image is fixed refuses it with `image_fixed`.
 
 ### Read and delete
 

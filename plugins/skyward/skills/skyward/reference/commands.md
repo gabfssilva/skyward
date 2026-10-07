@@ -106,8 +106,9 @@ sky compute view REF
 sky compute create --provider KIND [--name N] [--accelerator A] [--nodes 1]
                    [--region R] [--cpus N] [--memory GB] [--ttl SECONDS]
                    [--base IMAGE] [--python 3.12] [--pip PKG]... [--apt PKG]...
-                   [--pip-index URL]... [--env KEY=VALUE]... [--plugin NAME[:key=value,...]]...
+                   [--pip-index URL]... [--env KEY=VALUE]... [--mutable] [--plugin NAME[:key=value,...]]...
 sky compute scale REF --nodes N|MIN:MAX
+sky compute update REF [--pip PKG]... [--pip-index URL]... [--include PATH]... [--exclude GLOB]...
 sky compute delete REF
 ```
 
@@ -116,6 +117,7 @@ sky compute delete REF
 - `create` returns immediately; the machines arrive afterwards. The image flags mean what `sky.Image`'s fields mean; `--plugin` is checked against the plugin's own fields before anything is sent. It registers the provider account from *this* process if the daemon has none, because the daemon never reads the environment.
 - `--ttl` is the dead-man switch a supporting provider arms on each machine: with nobody connected for that long, the machine removes itself. `0` never does. The default is the spec's, and it is short.
 - `scale --nodes N` fixes the size; `--nodes MIN:MAX` makes it elastic (`1 <= MIN <= MAX`). What comes back is a new `generation`, not a finished resize.
+- `update` sets the mutable fields of a compute's image (`pip`, `pip-index`, `include`, `exclude`) as whole lists and returns a new `generation`. It is refused with `image_fixed` on a compute whose image is not `mutable`, which `create --mutable` is what makes it.
 - `delete` is accepted, not done — the compute stays `deleting` until the provider confirms the machines are gone.
 - Writes are guarded by `If-Match` on the compute's revision and retried five times on a `revision_conflict`, since the reconciler and the lease also move it.
 

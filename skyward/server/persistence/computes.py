@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import msgspec
-from msgspec import Struct, field
+from msgspec import UNSET, Struct, field
 from piccolo.columns import Column
 from piccolo.custom_types import Combinable
 from piccolo.query.functions.aggregate import Count
@@ -18,7 +18,7 @@ from skyward.server.persistence.store import after, digest, ident, now, once, pa
 from skyward.server.persistence.tables import ComputeRow, GenerationRow, TaskRow
 from skyward.shared import lifecycle
 from skyward.shared.billing import accrued
-from skyward.shared.errors import ComputeNotResizableError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
+from skyward.shared.errors import ComputeNotResizableError, ImageFixedError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
 from skyward.shared.events import (
     ComputeBound,
     ComputeCreated,
@@ -44,6 +44,7 @@ from skyward.shared.schemas import (
     Error,
     Generation,
     GenerationCreate,
+    Image,
     Lease,
     LeaseClaim,
     Market,
@@ -274,32 +275,48 @@ class ComputeStore:
         )
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute:
-        """Resize in place.
+        """Change the size, and on a mutable compute the image, in place.
 
-        A new size is a new definition, so it is a new generation — but the
-        infrastructure is not replaced, it is grown or drained. That is the whole
-        reason ``nodes`` is the only field the API lets through here: everything
-        else would mean throwing the machines away, and that has to be asked for.
+        A size and an image are the two things a definition changes without replacing
+        the machines it was built into. A size grows or drains them. An image on a
+        compute whose image was built ``mutable`` is applied to the machines that are
+        up: the reconciler sends each ready node with drift through bootstrapping, and
+        it comes back ready with the new packages. Anything else the image holds is
+        refused, because it cannot be changed on a machine that is up — a different
+        base or interpreter is a different machine, and a compute built without the
+        flag keeps the contract it always had.
 
-        A compute running a collective is refused, because growing it is not
-        something the machines can be told: the process group is formed on the first
-        task and never formed again, so a rank arriving later blocks in a rendezvous
-        the others have already left. Writing the same size back is not a resize and
-        is left alone, so a retry of a request that landed still answers.
+        A new definition is a new generation. A compute running a collective is refused
+        a size change, because growing it is not something the machines can be told:
+        the process group is formed on the first task and never formed again, so a rank
+        arriving later blocks in a rendezvous the others have already left. Writing the
+        same definition back is not a change and is left alone, so a retry of a request
+        that landed still answers.
         """
         row = await self.checked(ref, expected_revision)
         current = await unpacked(row.spec, ComputeSpec)
+        nodes = current.nodes if body.nodes is UNSET else body.nodes
+        image = current.image if body.image is UNSET else body.image
 
-        if body.nodes == current.nodes:
+        if nodes == current.nodes and image == current.image:
             return await self._served(row)
-        if freezes := plugins.collective(current.plugins):
+        if nodes != current.nodes and (freezes := plugins.collective(current.plugins)):
             raise ComputeNotResizableError(
                 f"compute {row.id} runs {freezes}, a collective: its process group was formed with the ranks it "
                 f"started with, and a machine added now would block in it",
                 plugin=freezes,
             )
+        if image != current.image:
+            if not current.image.mutable:
+                raise ImageFixedError(f"compute {row.id}'s image is fixed: a different image is a different compute", compute=row.id)
+            if fixed := sorted(name for name in Image.__struct_fields__ if name not in Image.MUTABLE and getattr(image, name) != getattr(current.image, name)):
+                raise ImageFixedError(
+                    f"compute {row.id}: {', '.join(fixed)} cannot change on a machine that is up; only {', '.join(sorted(Image.MUTABLE))} can",
+                    compute=row.id,
+                    fields=fixed,
+                )
 
-        await self.regenerate(row, msgspec.structs.replace(current, nodes=body.nodes))
+        await self.regenerate(row, msgspec.structs.replace(current, nodes=nodes, image=image))
         return await self.get(row.id)
 
     async def delete(self, ref: str, expected_revision: int, idempotency_key: str, cause: DeletionCause = "requested") -> Compute:

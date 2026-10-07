@@ -70,6 +70,71 @@ def describe_one_pass() -> None:
         assert not any(node.id in reconciler._idle for node in await nodes.of(compute))
 
 
+def describe_a_node_running_another_image() -> None:
+    async def it_is_written_bootstrapping_and_announced_as_such(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        wake = Wakeup()
+        woken = _woken(wake)
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch, wake)
+        node = await _ready_node(nodes, compute, image="another image")
+
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, node.id)).state == "bootstrapping"
+        assert ("node.bootstrapping", node.id) in woken
+
+    async def it_is_refreshed_once_it_holds_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        wake = Wakeup()
+        woken = _woken(wake)
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch, wake)
+        node = await _ready_node(nodes, compute, image="another image")
+
+        await reconciler.compute(compute)
+
+        assert ("node.refresh", node.id) in woken
+
+    async def it_is_not_refreshed_while_an_execution_runs_on_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        wake = Wakeup()
+        woken = _woken(wake)
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch, wake)
+        node = await _ready_node(nodes, compute, image="another image")
+        tasks = TaskStore(computes, nodes, BlobStore(), EventStore())
+        task, _ = await tasks.submit(
+            TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args"),
+            idempotency_key="held",
+        )
+        await tasks.observe(task.executions[0].id, "started", node_id=node.id)
+
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, node.id)).state == "bootstrapping"
+        assert ("node.refresh", node.id) not in woken
+        assert ("node.connect", node.id) in woken
+
+    async def it_is_never_refreshed_when_it_never_reported_an_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        wake = Wakeup()
+        woken = _woken(wake)
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch, wake)
+        node = await nodes.request(compute, 1)
+        await nodes.observe(node.id, "bootstrapping")
+
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, node.id)).image is None
+        assert ("node.refresh", node.id) not in woken
+
+    async def it_is_left_alone_when_it_runs_the_specs_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        wake = Wakeup()
+        woken = _woken(wake)
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch, wake)
+        digest = (await computes.get(compute)).spec.image.digest()
+        node = await _ready_node(nodes, compute, image=digest)
+
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, node.id)).state == "ready"
+        assert not any(event in ("node.bootstrapping", "node.refresh") and node_id == node.id for event, node_id in woken)
+
+
 def describe_a_deleted_compute() -> None:
     async def it_cancels_what_it_still_held_and_answers_the_caller_waiting_on_it(tmp_path: Path) -> None:
         daemon = await _daemon(tmp_path)
@@ -172,7 +237,7 @@ async def _unrenewed(compute: str, seconds: float) -> None:
     ).where(ComputeRow.id == compute).run()
 
 
-async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ComputeStore, str, CountingNodes, Reconciler]:
+async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wake: Wakeup | None = None) -> tuple[ComputeStore, str, CountingNodes, Reconciler]:
     """A reconciler over a compute of its own, with a provider that has nothing to say."""
     events = EventStore()
     computes, compute = await given(tmp_path / "skyward.sqlite", events=events)
@@ -183,8 +248,26 @@ async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
         return None
 
     monkeypatch.setattr(machines, "resolve", nothing)
-    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, Wakeup())
+    reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, wake or Wakeup())
     return computes, compute.id, nodes, reconciler
+
+
+def _woken(wake: Wakeup) -> list[tuple[str, str | None]]:
+    """Every wakeup the reconciler emits, as (event, node id), in the order it emits them."""
+    calls: list[tuple[str, str | None]] = []
+    wake.bind(lambda event, **payload: calls.append((event, payload.get("node_id"))))
+    return calls
+
+
+async def _ready_node(nodes: NodeStore, compute: str, image: str | None) -> Node:
+    """A node that reported ready having built ``image``."""
+    node = await nodes.request(compute, 1)
+    await nodes.observe(node.id, "ready", image=image)
+    return node
+
+
+async def _node(nodes: NodeStore, compute: str, node_id: str) -> Node:
+    return next(node for node in await nodes.of(compute) if node.id == node_id)
 
 
 class _Daemon:

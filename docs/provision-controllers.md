@@ -148,7 +148,7 @@ Compute deletion skips the idle wait: its desired node count becomes zero and al
 
 ## Generations
 
-The API treats the Compute definition as versioned state. A `PATCH` can change `spec.nodes` in place and creates a new generation for the resize. Every other field of the definition is fixed for the life of the compute: a different image or provider is a different compute.
+The API treats the Compute definition as versioned state. A `PATCH` can change `spec.nodes` in place and creates a new generation for the resize. It can also change `spec.image`, but only on a compute whose image is mutable (`Image(mutable=True)`), and only in `pip`, `pip_indexes`, `includes`, `excludes` and `includes_sha256`. Any other field that differs, and any image change on a compute whose image is fixed, is refused with `422 image_fixed` naming the field. The provider, accelerator, worker, plugins, volumes and ports are fixed for the life of the compute: a different one is a different compute.
 
 An earlier definition can be made current again, as a new generation:
 
@@ -159,6 +159,12 @@ POST /v1/computes/{id}/generations   {"source": 2}
 Nothing is replaced by it. A size that differs is reconciled the way a resize is, and a machine bought from then on is built to the definition now current; the machines already up stay as they were built.
 
 Revisions protect concurrent changes. Reads return an `ETag`; writes send it back as `If-Match`. Idempotency keys make repeated create, delete, and generation requests safe to retry.
+
+## Image refresh
+
+A new mutable image is applied to the nodes that are up, not to new machines. Each `ready` node whose recorded image digest differs from the digest of `spec.image` is sent back through `bootstrapping`: the worker drains the work it holds and leaves, the packages are installed into the same virtual environment, the includes are swapped, and the worker starts again. The reconciler does this to every node with a stale digest in the same pass, not one node at a time, because a collective needs its ranks restarted together.
+
+On a compute with a fixed `nodes` count, a refreshing node moves the compute to `provisioning` until it is ready again. The compute still accepts tasks, and a task waits for a ready node. A node that fails to refresh is `failed`, and the reconciler replaces it like any other failed node.
 
 ## Leases and abandoned resources
 

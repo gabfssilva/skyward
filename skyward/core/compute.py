@@ -176,6 +176,13 @@ class Compute:
     it per call. The default tries once more after a loss and never after an
     exception; ``None`` retries nothing.
 
+    A ``name`` the daemon already holds for a compute that is up is adopted when that
+    compute's image is mutable, and not refused: the pool attaches to it and sends it
+    the ``nodes`` and ``image`` given here. The machines must be the same kind — a name
+    is not a way to reach machines of another provider or accelerator, and that is an
+    error. A compute whose image was not built mutable keeps the contract it always
+    had, and the same name is refused by the daemon.
+
     ``attach`` is :meth:`attached`'s: the compute that already exists, in place of
     a definition. It is a constructor argument only so that the class has one
     constructor.
@@ -441,6 +448,31 @@ class Compute:
         """
         self.loop.run(writes.conditional(self.client, self._id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=bounds(nodes)))))
 
+    def update(self, image: Image) -> None:
+        """Change the image a mutable compute runs from here on.
+
+        Only the packages and the code change: ``pip``, ``pip_indexes`` and
+        ``includes``. The base, the interpreter, the rest of the image and the
+        machines themselves cannot. Every ready node goes through bootstrapping
+        again and comes back ready with the new packages; a task submitted in the
+        meantime waits for one.
+
+        A compute whose image was not created with ``mutable=True`` refuses this
+        with ``image_fixed``. Like every other write it records an intent and
+        returns — the nodes are bootstrapping until they are not.
+
+        Parameters
+        ----------
+        image
+            The image to run from now on, as the whole image: a field left out is
+            a field removed, not kept.
+        """
+        self.loop.run(self._update(image))
+
+    async def _update(self, image: Image) -> None:
+        packed = await self._packed(image)
+        await writes.conditional(self.client, self._id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(image=packed)))
+
     async def _provision(self) -> None:
         if self._attach:
             found = await self.client.call("GET", f"/v1/computes/{self._attach}", ComputeResource)
@@ -448,16 +480,17 @@ class Compute:
         else:
             await self._ensure_providers()
             await self._upload_includes()
-            await self._upload_volumes()
-            await self._upload_retry()
-            compute = await self.client.call(
-                "POST",
-                "/v1/computes",
-                ComputeResource,
-                body=msgspec.json.encode(ComputeCreate(spec=self._spec, name=self._name)),
-                headers={"Idempotency-Key": uuid.uuid4().hex},
-            )
-            self._id = compute.id
+            if not await self._adopt():
+                await self._upload_volumes()
+                await self._upload_retry()
+                compute = await self.client.call(
+                    "POST",
+                    "/v1/computes",
+                    ComputeResource,
+                    body=msgspec.json.encode(ComputeCreate(spec=self._spec, name=self._name)),
+                    headers={"Idempotency-Key": uuid.uuid4().hex},
+                )
+                self._id = compute.id
 
         await self._claim()
         self._leasing = self.loop.start(self._renew())
@@ -512,23 +545,61 @@ class Compute:
                     )
 
     async def _upload_includes(self) -> None:
+        self._spec = msgspec.structs.replace(self._spec, image=await self._packed(self._spec.image))
+
+    async def _packed(self, image: Image) -> Image:
         """Pack the local code the image asks for, and store it where the node can reach it.
 
         The paths are the client's — the daemon may be somewhere else entirely — so the
         tarball is built here, uploaded as a blob, and the spec carries only its hash.
-        The node reads the bytes back from the blob store when it comes up.
+        The node reads the bytes back from the blob store when it comes up. An image
+        with no includes has nothing to store and comes back as it was.
         """
-        image = self._spec.image
         if not image.includes:
-            return
+            return image
 
         blob = await asyncio.to_thread(usercode.tarball, image.includes, image.excludes)
         sha = await codec.digest(blob)
         await self.client.upload(f"/v1/blobs/{sha}", blob)
-        self._spec = msgspec.structs.replace(
-            self._spec,
-            image=msgspec.structs.replace(image, includes_sha256=sha),
+        return msgspec.structs.replace(image, includes_sha256=sha)
+
+    async def _adopt(self) -> bool:
+        """Take over the compute this name already holds, if its image is mutable; answer whether one was taken.
+
+        Nothing is adopted under a name the daemon has no compute for, nor under one
+        whose image is fixed or whose machines are on their way out: all of them fall
+        through to the create, which answers as it always has. An adopted compute
+        keeps its machines, so they must be the kind this definition asks for; its
+        size and image are sent what this definition says, and only what differs is
+        written.
+        """
+        if self._name is None:
+            return False
+        try:
+            found = await self.client.call("GET", f"/v1/computes/{self._name}", ComputeResource)
+        except SkywardError as error:
+            if error.code != "not_found":
+                raise
+            return False
+        if found.status.state in ("deleted", "deleting") or not found.spec.image.mutable:
+            return False
+
+        held = sorted((spec.provider.kind, spec.accelerator or "") for spec in found.spec.specs)
+        asked = sorted((spec.provider.kind, spec.accelerator or "") for spec in self._spec.specs)
+        if held != asked:
+            raise RuntimeError(f"{self._name} names a compute on other machines: a different machine is a different compute, so give this one another name")
+
+        wanted = self._spec.nodes
+        current = found.spec.nodes
+        image = msgspec.convert(msgspec.to_builtins(found.spec.image), Image)
+        patch = ComputeSpecPatch(
+            nodes=wanted if (wanted.initial, wanted.min, wanted.max) != (current.initial, current.min, current.max) else UNSET,
+            image=self._spec.image if self._spec.image != image else UNSET,
         )
+        if patch.nodes is not UNSET or patch.image is not UNSET:
+            await writes.conditional(self.client, found.id, "PATCH", body=msgspec.json.encode(patch))
+        self._id = found.id
+        return True
 
     async def _upload_retry(self) -> None:
         """Put the pool's retry decision where the daemon and the nodes can ask it.

@@ -139,6 +139,12 @@ class Script:
         naming a second — and so is ``delete_on_exit``, which is what a run does on
         its way out rather than what the machines are.
 
+        A mutable image is state the compute changes in place, so it is left out too:
+        a script that changes its ``pip`` changes the compute its name stands for
+        rather than naming another. A fixed image is identity, as it has always been,
+        and counts without the flag that says so, so that the computes named before
+        the flag existed keep their names.
+
         A ``sky.app``'s accelerator counts by what it resolves to, so ``"A100"`` and
         ``sky.accelerators.A100()`` are one compute. A header's counts as written, as
         it has since headers first named computes: a name is only ever recomputed,
@@ -158,7 +164,7 @@ class Script:
             app.memory_gb,
             app.region,
             app.allocation,
-            app.image,
+            None if app.image.mutable else {name: value for name, value in msgspec.to_builtins(app.image).items() if name != "mutable"},
             [plugin.ref() for plugin in app.plugins],
         )
         digest = hashlib.sha256(msgspec.json.encode(wanted, order="sorted")).hexdigest()
@@ -217,6 +223,7 @@ def _declared(metadata: _Metadata, declared: _Skyward) -> App:
             includes=declared.image.includes,
             excludes=declared.image.excludes,
             skyward=declared.image.skyward,
+            mutable=declared.image.mutable,
         ),
         plugins=tuple(_plugin(table) for table in declared.plugins),
         delete_on_exit=declared.delete_on_exit,
@@ -302,6 +309,7 @@ class _Image(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     includes: tuple[str, ...] = ()
     excludes: tuple[str, ...] = ()
     skyward: SkywardSource = "auto"
+    mutable: bool = False
 
 
 class _Skyward(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

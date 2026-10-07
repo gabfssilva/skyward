@@ -35,7 +35,7 @@ from skyward.cli import compute_app
 from skyward.cli._client import Work, call, resolve
 from skyward.cli._output import Output, dump, render
 from skyward.cli.script import FACTORIES, Call, Script, Whole, read
-from skyward.core import console, writes
+from skyward.core import console, usercode, writes
 from skyward.core.client import Client
 from skyward.core.compute import Compute
 from skyward.core.errors import SkywardError
@@ -160,6 +160,7 @@ def create_compute(
     apt: Annotated[list[str] | None, Parameter(help="An apt package to install. Repeat for more than one")] = None,
     pip_index: Annotated[list[str] | None, Parameter(help="An extra package index URL. Repeat for more than one")] = None,
     env: Annotated[list[str] | None, Parameter(help="An environment variable on the nodes, as KEY=VALUE. Repeat for more than one")] = None,
+    mutable: Annotated[bool, Parameter(negative="", help="Let `sky compute update` change the image's packages and includes while the compute is up")] = False,
     plugin: Annotated[list[str] | None, Parameter(help="A plugin, as NAME or NAME:key=value,… (torch, torch:backend=gloo). Repeat for more than one")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
@@ -168,7 +169,9 @@ def create_compute(
 
     ``--base``, ``--python``, ``--pip``, ``--apt``, ``--pip-index`` and ``--env`` are
     the image the nodes build, with the meaning ``Image`` gives them in the SDK: the
-    packages land in the interpreter ``run`` and ``exec`` use. ``--plugin`` names a
+    packages land in the interpreter ``run`` and ``exec`` use. ``--mutable`` is
+    ``Image(mutable=True)``: the packages and includes may be changed afterwards
+    with ``update``, on the machines already up. ``--plugin`` names a
     plugin by its kind, with parameters as ``key=value`` after a colon, and is
     validated here against the plugin's own fields, the way constructing one in
     the SDK would.
@@ -203,6 +206,7 @@ def create_compute(
             apt=tuple(apt or ()),
             pip_indexes=tuple(PipIndex(url=index) for index in pip_index or ()),
             env=pairs(env or (), "--env"),
+            mutable=mutable,
         ),
         plugins=tuple(_plugin(text) for text in plugin or ()),
     )
@@ -243,6 +247,50 @@ def scale_compute(
         url=url,
     )
     render(COMPUTE_COLUMNS, [_compute_row(scaled)], output=output)
+
+
+@compute_app.command(name="update")
+def update_compute(
+    ref: str,
+    *,
+    pip: Annotated[list[str] | None, Parameter(help="Packages the nodes install from here on; replaces the list")] = None,
+    pip_index: Annotated[list[str] | None, Parameter(help="Extra package index URLs; replaces the list")] = None,
+    include: Annotated[list[str] | None, Parameter(help="Paths to pack and ship, from the working directory; replaces the list")] = None,
+    exclude: Annotated[list[str] | None, Parameter(help="Patterns left out of the includes; replaces the list")] = None,
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+    output: Annotated[Output, Parameter(help="table or json")] = "table",
+) -> None:
+    """Change the packages or the code a mutable compute's nodes run.
+
+    Each flag replaces the list the compute has, and a flag left out keeps it. The
+    nodes that are up go through bootstrapping again and come back ready with the
+    new image, and a task submitted meanwhile waits for them. So this returns a new
+    ``generation`` rather than a finished update.
+
+    A compute whose image was not created ``mutable`` refuses the change with
+    ``image_fixed``: its image is its identity, and another one is another compute.
+    """
+
+    async def work(client: Client) -> ComputeResource:
+        found = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
+        image = msgspec.convert(msgspec.to_builtins(found.spec.image), Image)
+        if pip is not None:
+            image = msgspec.structs.replace(image, pip=tuple(pip))
+        if pip_index is not None:
+            image = msgspec.structs.replace(image, pip_indexes=tuple(PipIndex(url=index) for index in pip_index))
+        if exclude is not None:
+            image = msgspec.structs.replace(image, excludes=tuple(exclude))
+        if include is not None or exclude is not None:
+            includes = tuple(include) if include is not None else image.includes
+            sha: str | None = None
+            if includes:
+                blob = await asyncio.to_thread(usercode.tarball, includes, image.excludes)
+                sha = await codec.digest(blob)
+                await client.upload(f"/v1/blobs/{sha}", blob)
+            image = msgspec.structs.replace(image, includes=includes, includes_sha256=sha)
+        return await writes.conditional(client, found.id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(image=image)))
+
+    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url))], output=output)
 
 
 @compute_app.command(name="delete")
@@ -478,7 +526,7 @@ def run_declared(
             region=app.region,
             nodes=app.nodes,
             allocation=app.allocation,
-            image=msgspec.structs.replace(app.image, includes=(), excludes=()),
+            image=_without_includes(app.image),
             plugins=app.plugins,
             options=app.options,
             name=declared.name,
@@ -541,11 +589,14 @@ def _spoke(ran: dict[str, Result], output: Output) -> None:
 
 
 async def _standing(client: Client, script: Script) -> bool:
-    """Whether the compute the file declares is up, sized to what it asks for now.
+    """Whether the compute the file declares is up, sized and imaged to what it asks for now.
 
-    A deleted compute is not standing, and its name is free again. One still being
-    deleted is refused rather than waited on: its machines are on their way out,
-    and the name is not free until they are gone.
+    A mutable image is brought to the one the file asks for, keeping whatever the
+    compute was given to include by ``sky compute update`` — a run ships its own
+    includes and has no say over those. A fixed image is part of the compute's name,
+    so it is already the same. A deleted compute is not standing, and its name is
+    free again. One still being deleted is refused rather than waited on: its
+    machines are on their way out, and the name is not free until they are gone.
     """
     try:
         found = await client.call("GET", f"/v1/computes/{script.name}", ComputeResource)
@@ -561,9 +612,24 @@ async def _standing(client: Client, script: Script) -> bool:
             raise SystemExit(f"compute {script.name} is being deleted; run again once it is gone")
         case _:
             wanted = bounds(script.app.nodes)
-            if (found.spec.nodes.initial, found.spec.nodes.min, found.spec.nodes.max) != (wanted.initial, wanted.min, wanted.max):
-                await writes.conditional(client, found.id, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted)))
+            resized = (found.spec.nodes.initial, found.spec.nodes.min, found.spec.nodes.max) != (wanted.initial, wanted.min, wanted.max)
+            current = msgspec.convert(msgspec.to_builtins(found.spec.image), Image)
+            image = msgspec.structs.replace(
+                _without_includes(script.app.image),
+                includes=current.includes,
+                excludes=current.excludes,
+                includes_sha256=current.includes_sha256,
+            )
+            reimaged = current.mutable and current != image
+            if resized or reimaged:
+                patch = ComputeSpecPatch(nodes=wanted if resized else msgspec.UNSET, image=image if reimaged else msgspec.UNSET)
+                await writes.conditional(client, found.id, "PATCH", msgspec.json.encode(patch))
             return True
+
+
+def _without_includes(image: Image) -> Image:
+    """The image a run creates: the compute's, with the code left to each run that ships it."""
+    return msgspec.structs.replace(image, includes=(), excludes=())
 
 
 def _where(node: str) -> Where:

@@ -75,6 +75,7 @@ type ErrorCode = Literal[
     "compute_not_connected",
     "compute_not_accepting",
     "compute_not_resizable",
+    "image_fixed",
     "unsupported_provider",
     "unsupported_plugin",
     "hash_mismatch",
@@ -204,6 +205,8 @@ class Image(Struct, frozen=True, kw_only=True):
     bootstrap_timeout: int = 900
     skyward: SkywardSource = "auto"
     warm: bool = False
+    mutable: bool = False
+    """Whether the image of a compute that is up may change, in its pip, indexes and includes."""
 
 
 class ComputeSpec(Struct, frozen=True, kw_only=True):
@@ -414,6 +417,8 @@ class NodeResource(Struct, frozen=True, kw_only=True):
     """What a machine without an address yet is doing, as the provider tells it."""
     busy: int
     """How many attempts are running on it."""
+    image: str | None = None
+    """The digest of the image the machine materialized, null until it first reports ready."""
     metrics: dict[str, Gauge] | UnsetType = UNSET
     phases: tuple[Phase, ...] | UnsetType = UNSET
     running: tuple[Running, ...] | UnsetType = UNSET
@@ -594,9 +599,10 @@ class CreateComputeResource(Struct, frozen=True, kw_only=True):
 
 
 class UpdateComputeResource(Struct, frozen=True, kw_only=True):
-    """A resize: ``nodes`` is the one part of a spec that changes without replacing the machines."""
+    """A resize, a new image for a mutable compute, or both: the parts of a spec that change without replacing the machines."""
 
-    nodes: NodeBounds
+    nodes: NodeBounds | UnsetType = UNSET
+    image: Image | UnsetType = UNSET
 
 
 class CreateGenerationResource(Struct, frozen=True, kw_only=True):

@@ -26,7 +26,7 @@ from skyward.worker.journal import LOCK, Console, Metric
 
 pytestmark = pytest.mark.local
 
-type Report = tuple[NodeState, str | None]
+type Report = tuple[NodeState, str | None, str | None]
 
 
 class _Link(Ssh):
@@ -43,6 +43,9 @@ class _Link(Ssh):
         if not self._tails:
             raise SshUnavailableError("127.0.0.1: reconnection exhausted")
         return Result(exit_code=0 if self._worker_alive else 1, stdout="", stderr="")
+
+    async def connect(self) -> None:
+        pass
 
     async def put(self, path: str, content: bytes) -> None:
         pass
@@ -78,7 +81,7 @@ def _node(link: _Link, reports: list[Report], ready: bool = True, options: Optio
         private_key="key",
         image=Image(),
         source=Source(arguments=("skyward",)),
-        listener=lambda state, error: reports.append((state, error)),
+        listener=lambda state, error, digest: reports.append((state, error, digest)),
         output=_quiet,
         sample=_quiet,
         phase=_quiet,
@@ -98,7 +101,7 @@ def describe_a_link_that_gives_up_reconnecting() -> None:
         async with asyncio.timeout(5):
             await node._watch()
 
-        assert reports == [("lost", "127.0.0.1: reconnection exhausted")]
+        assert reports == [("lost", "127.0.0.1: reconnection exhausted", None)]
 
     async def the_probe_stops_quietly_instead_of_dying() -> None:
         reports: list[Report] = []
@@ -119,7 +122,7 @@ def describe_a_link_that_heals() -> None:
         async with asyncio.timeout(5):
             await node._watch()
 
-        assert reports == [("lost", "the machine came back without its worker")]
+        assert reports == [("lost", "the machine came back without its worker", None)]
         assert any("pgrep" in command for command in link.commands)
 
     async def onto_the_same_machine_it_keeps_following_the_log() -> None:
@@ -137,7 +140,7 @@ def describe_a_link_that_heals() -> None:
             await node._watch()
 
         assert phases == ["later"]
-        assert reports == [("lost", "127.0.0.1: reconnection exhausted")]
+        assert reports == [("lost", "127.0.0.1: reconnection exhausted", None)]
 
     async def before_the_node_is_ready_it_asks_nothing_of_the_machine() -> None:
         reports: list[Report] = []
@@ -148,7 +151,7 @@ def describe_a_link_that_heals() -> None:
             await node._watch()
 
         assert link.commands == []
-        assert reports == [("lost", "127.0.0.1: reconnection exhausted")]
+        assert reports == [("lost", "127.0.0.1: reconnection exhausted", None)]
 
     async def after_a_drop_cut_a_line_in_half_it_reads_that_line_again_whole() -> None:
         apt = '{"type":"phase","event":"completed","phase":"apt"}\n'
@@ -365,8 +368,8 @@ def describe_console_lines() -> None:
 class _Venv(_Link):
     """A machine bootstrapped as root: its venv's python resolves into ``/root``, which only root may enter."""
 
-    def __init__(self, user: str) -> None:
-        super().__init__(tails=[[]])
+    def __init__(self, user: str, tails: list[list[str] | SshUnavailableError] | None = None) -> None:
+        super().__init__(tails=tails or [[]])
         self._user = user
 
     async def run(self, command: str, *, timeout: float | None = None) -> Result:
@@ -387,4 +390,55 @@ def describe_the_code_the_client_shipped() -> None:
 
         await node._sync_user_code()
 
-        assert any("tar xzf /tmp/_user_code.tar.gz -C /opt/skyward/.venv/lib/python3.13/site-packages " in command for command in link.commands)
+        assert any(f"tar xzf /tmp/_user_code.tar.gz -C {bootstrap.INCLUDES}/" in command for command in link.commands)
+        assert any(f"/opt/skyward/.venv/lib/python3.13/site-packages/{bootstrap.PTH}" in command for command in link.commands)
+
+
+def describe_a_node_refreshed_in_place() -> None:
+    async def adopted_then_refreshed_it_reports_ready_on_the_new_digest() -> None:
+        reports: list[Report] = []
+        link = _Venv("root", tails=[[_phase("shutdown"), _phase("refresh"), _phase("worker")]])
+        node = _node(link, reports, ready=False)
+
+        await node._run()
+        node.refresh(Image(pip=["six"]), b"tar", "digest-2")
+        async with asyncio.timeout(5):
+            await node._refreshing
+        await node.close()
+
+        assert reports == [
+            ("connecting", None, None),
+            ("ready", None, None),
+            ("ready", None, "digest-2"),
+        ], "bootstrapping is the reconciler's to write, which is what sent the node here"
+        assert any(bootstrap.REFRESH in command for command in link.commands)
+        assert any(bootstrap.PTH in command for command in link.commands)
+
+    async def a_refresh_phase_that_fails_reports_failed_with_its_error() -> None:
+        reports: list[Report] = []
+        failed = '{"type":"phase","event":"failed","phase":"refresh","error":"exit code 1"}\n'
+        link = _Venv("root", tails=[[_phase("shutdown"), failed]])
+        node = _node(link, reports, ready=False)
+
+        await node._run()
+        node.refresh(Image(pip=["six"]), b"tar", "digest-2")
+        async with asyncio.timeout(5):
+            await node._refreshing
+        await node.close()
+
+        assert reports[-1] == ("failed", "refresh: exit code 1", None)
+
+    async def a_refresh_asked_while_one_runs_is_the_same_task() -> None:
+        reports: list[Report] = []
+        link = _Venv("root", tails=[[_phase("shutdown"), _phase("refresh"), _phase("worker")]])
+        node = _node(link, reports, ready=False)
+
+        await node._run()
+        started = node.refresh(Image(pip=["six"]), b"tar", "digest-2")
+        first = node._refreshing
+        again = node.refresh(Image(pip=["seven"]), b"tar", "digest-3")
+
+        assert (started, again) == (True, False), "only the first call is the one that started it, and only it may ask the worker to leave"
+        assert node._refreshing is first
+        assert node._applied == "digest-2"
+        await node.close()

@@ -35,10 +35,22 @@ from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow, FunctionRow, NodeRow, TaskRow
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared.errors import ComputeNotConnectedError, NameTakenError, NotFoundError
+from skyward.shared.errors import ComputeNotConnectedError, ImageFixedError, NameTakenError, NotFoundError
 from skyward.shared.events import ComputeAbandoned, ComputeDeleted
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Compute, ComputeCreate, DeletionCause, Image, Node, Task, TaskCounts, TaskCreate, TaskOrder
+from skyward.shared.schemas import (
+    Compute,
+    ComputeCreate,
+    ComputeSpecPatch,
+    DeletionCause,
+    Image,
+    Node,
+    NodeBounds,
+    Task,
+    TaskCounts,
+    TaskCreate,
+    TaskOrder,
+)
 
 pytestmark = pytest.mark.local
 
@@ -633,6 +645,53 @@ def describe_binding_a_compute() -> None:
         await store.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"region": "eu"}, private_key="key"))
 
         assert (await store.infrastructure(compute.id)).binding == {"region": "eu"}
+
+
+def describe_changing_an_image_in_place() -> None:
+    async def an_image_fixed_at_creation_is_refused_any_change(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="fixed")
+
+        with pytest.raises(ImageFixedError) as refused:
+            await store.patch(compute.id, ComputeSpecPatch(image=Image(python="3.13", pip=("six",))), compute.revision)
+
+        assert refused.value.code == "image_fixed" and refused.value.status == 422
+        assert (await store.get(compute.id)).spec.image == SPEC.image
+
+    async def a_mutable_image_refuses_a_change_to_its_interpreter(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        spec = msgspec.structs.replace(SPEC, image=msgspec.structs.replace(SPEC.image, mutable=True))
+        compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="mutable")
+
+        with pytest.raises(ImageFixedError) as refused:
+            await store.patch(compute.id, ComputeSpecPatch(image=Image(python="3.12", pip=("torch",), mutable=True)), compute.revision)
+
+        assert "python" in refused.value.message
+        assert refused.value.details["fields"] == ["python"]
+
+    async def a_mutable_image_takes_new_packages_as_a_new_generation(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        spec = msgspec.structs.replace(SPEC, image=msgspec.structs.replace(SPEC.image, mutable=True))
+        compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="repackaged")
+
+        written = await store.patch(
+            compute.id,
+            ComputeSpecPatch(image=Image(python="3.13", pip=("six",), mutable=True)),
+            compute.revision,
+        )
+
+        assert written.generation == compute.generation + 1
+        assert tuple(written.spec.image.pip) == ("six",)
+
+    async def a_patch_carrying_only_nodes_leaves_the_image_alone(tmp_path: Path) -> None:
+        store = await _store(tmp_path)
+        spec = msgspec.structs.replace(SPEC, image=msgspec.structs.replace(SPEC.image, mutable=True))
+        compute, _ = await store.create(ComputeCreate(spec=spec), idempotency_key="resized")
+
+        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=16)), compute.revision)
+
+        assert resized.spec.nodes == NodeBounds(initial=16)
+        assert resized.spec.image == spec.image
 
 
 def describe_taking_hold_of_one_machine() -> None:

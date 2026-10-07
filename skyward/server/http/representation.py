@@ -72,6 +72,7 @@ def node(reading: NodeReading) -> v1.NodeResource:
         launched_at=node.launched_at,
         terminated_at=node.terminated_at,
         last_error=_error(node.last_error),
+        image=node.image,
         progress=(
             v1.Progress(step=machine.progress, completion=machine.completion)
             if machine and machine.progress is not None and node.state == "provisioning"

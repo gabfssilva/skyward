@@ -93,11 +93,17 @@ class ComputeController(Controller):
         "/{compute:str}",
         summary="Change a compute's spec",
         description=(
-            "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\n"
-            "A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 "
-            "compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank "
-            "added afterwards blocks in it.\n\n"
-            "The rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the "
+            "`spec.nodes` and `spec.image` are mutable in place. A new size bumps `generation` and the reconciler "
+            "resizes with drain.\n\n"
+            "`spec.image` changes only when the compute's `Image` was created with `mutable=true`, and then only in "
+            "`pip`, `pip_indexes`, `includes` and `excludes`. A ready node is sent through bootstrapping and comes back "
+            "`ready` with the new packages. Removing a package is not promised to take it off the machine. Any other "
+            "field of the image that differs, or any image change on a compute that is not mutable, is `422 "
+            "image_fixed`, naming the field.\n\n"
+            "A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused a change of `spec.nodes` "
+            "with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so "
+            "a rank added afterwards blocks in it.\n\n"
+            "The rest of the definition (provider, worker, plugins, volumes, ports) is fixed for the life of the "
             "compute; a different one is a different compute."
         ),
         responses=failures(404, 412, 422),

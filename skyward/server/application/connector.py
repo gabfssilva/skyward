@@ -108,9 +108,35 @@ class Connector:
                 user_code=user_code,
                 volumes=infrastructure.volumes,
                 instance_timeout=instance_timeout,
+                applied=compute.spec.image.digest(),
             )
         finally:
             runtime.release(node_id)
+
+    async def refresh(self, compute_id: str, node_id: str) -> None:
+        """Bring a machine that runs another image than the spec's up to it, in place.
+
+        Asked once the node holds nothing, which the reconciler waits for before it
+        sends the node here. The node is one this daemon holds: a daemon that has
+        not taken hold of it yet picks it up through :meth:`connect`, which adopts the
+        worker that is still running and reports ``ready`` without a digest — and the
+        reconciler sends it here again, on the next pass, for that.
+        """
+        compute = await self._computes.get(compute_id)
+        nodes = await self._nodes.of(compute_id)
+        node = next((candidate for candidate in nodes if candidate.id == node_id), None)
+        digest = compute.spec.image.digest()
+        if node is None or node.state != "bootstrapping" or node.image is None or node.image == digest:
+            return
+
+        runtime = self._runtimes.of(compute_id)
+        if runtime is None or node_id not in runtime.nodes:
+            return
+
+        includes = compute.spec.image.includes_sha256
+        user_code = await self._blobs.get(includes) if includes else None
+        image = plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins))
+        await runtime.refresh(node_id, image, user_code, digest)
 
     async def disconnect(self, compute_id: str, node_id: str) -> None:
         """Let go of one machine before it is terminated.

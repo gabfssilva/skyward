@@ -37,7 +37,9 @@ A write that changes one must say which revision it expected:
 $ http PATCH :17590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"initial": 8}'
 ```
 
-`nodes` is the only field this accepts, and a compute running a collective plugin is refused with `422 compute_not_resizable`: its process group was formed with the ranks it started with.
+`spec` takes `nodes`, and `image` on a compute created with `Image(mutable=True)`. A mutable image changes `pip`, `pip_indexes`, `includes`, `excludes` and `includes_sha256`, and nothing else. A different value for any other field, or any `image` change on a compute whose image is fixed, is refused with `422 image_fixed`, naming the field. A `nodes` change on a compute running a collective plugin is refused with `422 compute_not_resizable`: its process group was formed with the ranks it started with.
+
+Each node reports `image` in its resource, the digest of the image it materialized, and it is null until the node first reaches `ready`. A `ready` node whose digest differs from the compute's `spec.image` is refreshed; the refresh shows as `node.bootstrapping` followed by `node.ready`, and `status.observed_generation` catches up with `generation` once every node reports the current digest. No event type is added for it.
 
 If the stored revision has moved on, the write is refused with `412` and `revision_conflict`. That error is retryable: re-read, re-apply, re-send. Every successful write bumps the revision.
 
@@ -79,6 +81,7 @@ Every failure is the same JSON object, whatever produced it:
 | `lease_held` | 409 | yes | Another process owns this compute |
 | `compute_not_accepting` | 422 | no | The compute is deleting or failed |
 | `compute_not_resizable` | 422 | no | The compute runs a collective, and its ranks are frozen |
+| `image_fixed` | 422 | no | The compute's image is not mutable, or the change is to a field a mutable image cannot change in place |
 | `unsupported_provider` | 422 | no | No adapter registered for that kind |
 | `unsupported_plugin` | 422 | no | No plugin registered under that kind |
 | `hash_mismatch` | 400 | no | Uploaded content does not hash to its name |

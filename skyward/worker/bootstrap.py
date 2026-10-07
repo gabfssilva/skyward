@@ -19,6 +19,9 @@ WORKER = f"{PYTHON} -m skyward.worker"
 """How the worker is started, and what ``pgrep`` finds on a machine already running one."""
 VARS = f"{SKYWARD_DIR}/vars.sh"
 ENV = f"{SKYWARD_DIR}/env.sh"
+REFRESH = f"{SKYWARD_DIR}/refresh.sh"
+INCLUDES = f"{SKYWARD_DIR}/includes"
+PTH = "skyward-includes.pth"
 
 GEESEFS = "v0.43.8"
 """The geesefs release the nodes mount with, pinned.
@@ -30,11 +33,11 @@ reproduced from the spec that caused it.
 GEESEFS_BIN = "/usr/local/bin/geesefs"
 FUSE_ROOT = "/mnt/geesefs"
 
-HEADER = """#!/bin/bash
+_OPENING = """#!/bin/bash
 set -e
 
 mkdir -p /opt/skyward
-rm -f /opt/skyward/events.jsonl /opt/skyward/events.lock
+@CLEAR@
 
 export DEBIAN_FRONTEND=noninteractive
 export UV_NO_PROGRESS=1
@@ -75,12 +78,29 @@ phase() {
     emit_phase completed "$name"
 }
 
-trap 'emit_phase failed bootstrap "\\"$BASH_COMMAND\\""' ERR
+trap 'emit_phase failed @NAME@ "\\"$BASH_COMMAND\\""' ERR
 
-emit_phase started bootstrap
+emit_phase started @NAME@
 """
 
-FOOTER = "emit_phase completed bootstrap\n"
+
+def _opening(name: str, reset: bool) -> str:
+    """The part of every bootstrap-shaped script that is the same for each of them.
+
+    ``reset`` empties the journal, which only a first bootstrap may do: a machine that
+    is already up has a daemon following the file from an offset, and a refresh that
+    truncated it would strand that offset.
+    """
+    clear = "rm -f /opt/skyward/events.jsonl /opt/skyward/events.lock\n" if reset else ""
+    return _OPENING.replace("@CLEAR@\n", clear).replace("@NAME@", name)
+
+
+def _closing(name: str) -> str:
+    return f"emit_phase completed {name}\n"
+
+
+HEADER = _opening("bootstrap", reset=True)
+FOOTER = _closing("bootstrap")
 
 UV = "command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh"
 
@@ -509,6 +529,17 @@ def _pyproject(image: Image) -> str:
     return "\n".join(lines)
 
 
+def _install(image: Image) -> tuple[str, str]:
+    """The project file the install needs, if any, and the command that installs into the venv.
+
+    Scoped indexes make the install a project operation, which reads its indexes from
+    a file written first. Without them it is ``uv pip``, which needs no file at all.
+    """
+    if image.pip_indexes:
+        return f"cat > {SKYWARD_DIR}/pyproject.toml <<'PYPROJECT'\n{_pyproject(image)}\nPYPROJECT", f"cd {SKYWARD_DIR} && uv add --python {PYTHON}"
+    return "", f"uv pip install --python {PYTHON}"
+
+
 def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurrency: int = 1, volumes: tuple[str, ...] = ()) -> str:
     """The bootstrap, as a shell script the machine runs on its own.
 
@@ -558,13 +589,7 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
     exports = "\n".join(f"export {key}={value!r}" for key, value in image.env.items())
     env_file = f"cat > {ENV} <<'ENVSH'\n{exports}\nENVSH" if exports else ""
     preload = f"source {VARS} 2>/dev/null; " if image.shell_vars else ""
-
-    if image.pip_indexes:
-        pyproject = f"cat > {SKYWARD_DIR}/pyproject.toml <<'PYPROJECT'\n{_pyproject(image)}\nPYPROJECT"
-        install = f"cd {SKYWARD_DIR} && uv add --python {PYTHON}"
-    else:
-        pyproject = ""
-        install = f"uv pip install --python {PYTHON}"
+    pyproject, install = _install(image)
 
     postamble = "\n".join((*volumes, *(op for plugin in plugins for op in plugin.bootstrap(image, concurrency))))
 
@@ -584,6 +609,43 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
             FOOTER,
         ),
     )
+
+
+def refresh(image: Image) -> str:
+    """The script a machine that is up runs to take on the packages a changed image adds.
+
+    The image's packages go into the venv the machine already has, and what is there
+    already is left as it is, so running it twice is the same as running it once. The
+    journal is not reset: the daemon is following it from an offset, and a truncation
+    under that offset would strand the tail. The metrics collectors are not started
+    again either; the ones this machine runs keep their generation.
+
+    Only what an image can change in place is here. The venv, apt, the volumes and the
+    plugins belong to the bootstrap, and a refresh does not repeat them.
+    """
+    pyproject, install = _install(image)
+    preload = f"source {VARS} 2>/dev/null; " if image.shell_vars else ""
+    packages = " ".join(image.pip)
+    return "\n".join(
+        (
+            _opening("refresh", reset=False),
+            _shell_vars(image.shell_vars) if image.shell_vars else "",
+            pyproject,
+            f"phase deps '{preload}{install} {packages}'" if packages else "",
+            _closing("refresh"),
+        ),
+    )
+
+
+def pth(directory: str) -> str:
+    """The ``.pth`` line that puts ``directory`` first on ``sys.path``.
+
+    A line that starts with ``import`` is executed by ``site``, which is what puts the
+    directory first rather than last. So the code the user shipped wins over an
+    installed package of the same name, as it did when it was unpacked into
+    ``site-packages``.
+    """
+    return f"import sys; sys.path.insert(0, {directory!r})\n"
 
 
 RESTARTS = 5

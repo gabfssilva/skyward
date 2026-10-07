@@ -155,6 +155,8 @@ subprocesses: ipc.Pool | None = None
 """Where a task runs under ``process`` and ``loky``. Set by :func:`main`."""
 admission: asyncio.Semaphore
 """How many attempts and pulls the worker takes on at once: ``concurrency + buffer``. Set by :func:`main`; see :func:`admit`."""
+leaving: asyncio.Event
+"""Set once :func:`leave` has drained the worker: what :func:`main` waits on, in place of waiting forever. Set by :func:`main`."""
 
 
 async def health(
@@ -304,7 +306,16 @@ class Topology(casty.Askable[None]):
     peers: tuple[str, ...]
 
 
-type ControlMessage = Ping | Topology
+@dataclass(frozen=True, slots=True)
+class Shutdown(casty.Askable[None]):
+    """Leave once what is held is done.
+
+    The supervisor reads an exit of zero as intentional and does not start the worker again; the node that asked starts
+    it after it has changed the venv.
+    """
+
+
+type ControlMessage = Ping | Topology | Shutdown
 
 CONTROL = "control"
 """The key of :func:`control` on every node."""
@@ -348,6 +359,10 @@ async def control(ctx: casty.Context[None, ControlMessage]) -> None:
     it lands where :func:`skyward.instance_info` looks for it. Without it a node that was here before the resize goes
     on sharding data into the number of ways there used to be, which is not an error anywhere: it is rows processed
     twice and rows processed never.
+
+    :class:`Shutdown` is the one question that changes what the node does next. It is answered at once, and the drain
+    it starts runs as a task of its own: the reply says the worker has heard it, and :func:`main` leaves when
+    :func:`leave` has set :data:`leaving`.
     """
     async for message in ctx.inbox:
         match message:
@@ -356,8 +371,26 @@ async def control(ctx: casty.Context[None, ControlMessage]) -> None:
             case Topology(peers, reply_to=reply_to):
                 os.environ["SKYWARD_PEERS"] = ",".join(peers)
                 reply_to.tell(None)
+            case Shutdown(reply_to=reply_to):
+                _detach(leave())
+                reply_to.tell(None)
             case _:
                 assert_never(message)
+
+
+async def leave() -> None:
+    """Wait until nothing here is owed or running, then let :func:`main` leave.
+
+    Nothing is refused on the way. The daemon stopped placing work before it asked for this, and whatever still arrives
+    is run and answered first. An attempt can be admitted while the wait goes on, so the outcomes are checked again
+    until none is pending; then the tasks handed on are, for the same reason, and an :func:`answer` holds at most
+    :data:`HOLD` seconds, so that wait is looped too.
+    """
+    while pending := [promise for promise in outcomes.values() if not promise.done()]:
+        await asyncio.wait(pending)
+    while pending := [handed for handed in running if handed is not asyncio.current_task() and not handed.done()]:
+        await asyncio.wait(pending)
+    leaving.set()
 
 
 def admit(id: str, code: bytes, args: bytes, decision: bytes = b"", attempt: int = 1, settled: tuple[str, ...] = ()) -> None:
@@ -784,12 +817,17 @@ async def main() -> None:
     Any other waits for one of them to answer, which may be a machine that is still
     installing its dependencies: the list is every node that has an address, not every
     node that is up.
+
+    Leaving the ``async with`` normally is an orderly leave of the cluster, and an exit of zero. That is what a
+    :class:`Shutdown` ends in: the phase saying so is in the journal before the cluster is left, and the supervisor
+    reads the exit as intentional.
     """
-    global installed, thread_pool, subprocesses, admission
+    global installed, thread_pool, subprocesses, admission, leaving
 
     refs = msgspec.json.decode(os.environ.get("SKYWARD_PLUGINS", "[]"), type=tuple[PluginRef, ...])
     installed = plugins.resolve(refs)
     admission = asyncio.Semaphore(CONCURRENCY + BUFFER)
+    leaving = asyncio.Event()
 
     cluster = casty.Cluster(
         bind=f"0.0.0.0:{PORT}",
@@ -817,9 +855,17 @@ async def main() -> None:
             health_monitor = await start_health(health_checks())
             emit(Phase(event="completed", phase="worker"))
             if health_monitor is None:
-                await asyncio.Event().wait()
+                await leaving.wait()
             else:
-                emit(Health(reason=await health_monitor))
+                gone = asyncio.create_task(leaving.wait())
+                done, _ = await asyncio.wait({health_monitor, gone}, return_when=asyncio.FIRST_COMPLETED)
+                if health_monitor in done:
+                    emit(Health(reason=health_monitor.result()))
+                else:
+                    health_monitor.cancel()
+                gone.cancel()
+            if leaving.is_set():
+                emit(Phase(event="completed", phase="shutdown"))
         finally:
             distributed.unbind()
             await asyncio.to_thread(stack.close)

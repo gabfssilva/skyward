@@ -197,3 +197,29 @@ def _supervised(worker: str) -> tuple[list[dict[str, object]], int]:
     assert done.returncode == 0, done.stderr
     ended, *lines = done.stdout.splitlines()
     return [json.loads(line) for line in lines], int(ended.removeprefix("exit "))
+
+
+def describe_the_refresh_script() -> None:
+    @pytest.mark.local
+    def it_installs_the_packages_and_leaves_the_journal_and_the_venv_alone() -> None:
+        script = bootstrap.refresh(Image(pip=["six"]))
+
+        assert "phase deps" in script
+        assert "emit_phase started refresh" in script
+        assert "emit_phase completed refresh" in script
+        assert "uv venv" not in script
+        assert "rm -f /opt/skyward/events.jsonl" not in script
+        assert "emit_phase started bootstrap" not in script
+
+    @pytest.mark.local
+    def a_bootstrap_still_resets_the_journal_and_says_it_started() -> None:
+        script = bootstrap.script(Image(pip=["six"]), "skyward")
+
+        assert "rm -f /opt/skyward/events.jsonl" in script
+        assert "emit_phase started bootstrap" in script
+
+
+def describe_the_include_path_file() -> None:
+    @pytest.mark.local
+    def it_inserts_the_directory_at_the_front_of_sys_path() -> None:
+        assert bootstrap.pth("/x") == "import sys; sys.path.insert(0, '/x')\n"

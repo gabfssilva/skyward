@@ -131,7 +131,7 @@ class NodeStore:
         rows = await NodeRow.objects().where(NodeRow.compute_id == compute).order_by(NodeRow.rank)
         return tuple([await _to_node(row) for row in rows])
 
-    async def observe(self, node_id: str, state: NodeState, error: Error | None = None) -> None:
+    async def observe(self, node_id: str, state: NodeState, error: Error | None = None, image: str | None = None) -> None:
         """What the node's own lifecycle reported. Written by nobody else.
 
         A transition that carries no error leaves the last one where it is. The
@@ -141,6 +141,11 @@ class NodeStore:
         erase the only answer to why the machine was replaced, two ticks after it
         was written. A node that reports itself ``ready`` is the one thing that
         makes an old error stale, so that is where it is dropped.
+
+        The image digest is written only on ``ready``, and only when the node says which
+        image it built. An adoption that does not know — a daemon that restarted onto a
+        running worker — leaves the last digest standing, so the drift check still
+        compares against what the machine actually last built.
         """
         row = await NodeRow.objects().where(NodeRow.id == node_id).first()
         if row is None:
@@ -154,6 +159,8 @@ class NodeStore:
             changes[NodeRow.last_error] = await packed(error)
         elif state == "ready":
             changes[NodeRow.last_error] = None
+            if image is not None:
+                changes[NodeRow.image] = image
 
         if state in TERMINAL and row.terminated_at is None:
             changes[NodeRow.terminated_at] = now()
@@ -189,4 +196,5 @@ async def _to_node(row: NodeRow) -> Node:
         launched_at=row.launched_at,
         last_error=await unpacked(row.last_error, Error) if row.last_error else None,
         terminated_at=row.terminated_at,
+        image=row.image,
     )

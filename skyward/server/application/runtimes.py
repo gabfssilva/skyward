@@ -37,8 +37,8 @@ from skyward.worker.journal import Console, Metric
 
 logger = logger.bind(component="runtimes")
 
-type Listener = Callable[[str, str, NodeState, str | None], None]
-"""(compute, node, state, error)"""
+type Listener = Callable[[str, str, NodeState, str | None, str | None], None]
+"""(compute, node, state, error, image)"""
 
 type Output = Callable[[str, str, tuple[Console, ...]], Awaitable[None]]
 """(compute, node, lines)"""
@@ -376,6 +376,38 @@ class Runtime:
         await (await self.control(node_id)).ask(worker.Topology(peers))
         node.peers = peers
 
+    async def refresh(self, node_id: str, image: Image, user_code: bytes | None, applied: str) -> None:
+        """Send one ready node through a refresh, and let the worker go so it can be started on the new image.
+
+        The order matters. The node resets its phase waiters synchronously, before
+        this asks the worker to shut down: the shutdown phase may land on the journal
+        before the node's task reaches its first await, and a waiter reset after that
+        would wait for a phase that already came and went.
+
+        The ask's failure is not the refresh's. A worker that cannot be reached is a
+        worker the node waits for through its own bootstrap phases, and the node fails
+        the refresh at its timeout; raising here would fail it sooner for a reason it
+        can recover from. Where the client is the only seed to the cluster, the next
+        call dials it again, from whatever is ready then.
+
+        The reconciler offers the refresh on every tick for as long as the row says
+        the node is bootstrapping on another image, and the node takes only the
+        first. The shutdown goes with that one alone: asked again while a refresh
+        runs, it would reach whichever worker answers, which may already be the new
+        one, and a new worker told to leave is a machine with no worker at all.
+        """
+        node = self.nodes.get(node_id)
+        if node is None or not node.held or not node.refresh(image, user_code, applied):
+            return
+
+        try:
+            await (await self.control(node_id)).ask(worker.Shutdown())
+        except (casty.Unavailable, TimeoutError, ComputeNotConnectedError) as exc:
+            logger.bind(compute_id=self.compute, node_id=node_id).warning("the worker did not answer the shutdown: {}", exc)
+
+        if self.cluster and len(self.ready) == 1:
+            await self._redial(node_id)
+
     async def execution(self, node_id: str, execution_id: str) -> casty.Ref[worker.ExecutionMessage]:
         """The key one attempt lives at, on the worker of the node it was placed on."""
         system = await self.system(node_id)
@@ -685,6 +717,7 @@ class Runtimes:
         user_code: bytes | None = None,
         volumes: tuple[str, ...] = (),
         instance_timeout: int | None = None,
+        applied: str | None = None,
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
 
@@ -712,7 +745,8 @@ class Runtimes:
             volumes=volumes,
             instance_timeout=instance_timeout,
             tls=identity(runtime.authority, node_id) if runtime.authority else None,
-            listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
+            applied=applied,
+            listener=lambda state, error, image: self._listener(runtime.compute, node_id, state, error, image),
             output=lambda lines: self._output(runtime.compute, node_id, lines),
             sample=lambda reading: self._sample(runtime.compute, node_id, reading),
             phase=lambda event, name, error: self._phase(runtime.compute, node_id, event, name, error),

@@ -162,8 +162,8 @@ def services() -> Services:
         await events.publish(MetricEvent(compute=compute, node=node, name=reading.name, value=reading.value))
 
     runtimes = Runtimes(
-        listener=lambda compute, node, state, error: wake(
-            "node.observed", compute_id=compute, node_id=node, state=state, error=error,
+        listener=lambda compute, node, state, error, image: wake(
+            "node.observed", compute_id=compute, node_id=node, state=state, error=error, image=image,
         ),
         output=console,
         sample=sampled,

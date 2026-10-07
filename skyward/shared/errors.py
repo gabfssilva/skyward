@@ -59,6 +59,13 @@ class ComputeNotResizableError(SkywardError):
     status = 422
 
 
+class ImageFixedError(SkywardError):
+    """An image change to a compute whose image was not built mutable, or to a field a mutable image may not change."""
+
+    code = "image_fixed"
+    status = 422
+
+
 class UnsupportedProviderError(SkywardError):
     code = "unsupported_provider"
     status = 422

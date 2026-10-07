@@ -138,7 +138,7 @@ class Reconciler:
                 else:
                     await self._computes.apply(ComputeDegraded(compute=compute_id, error=str(exc), code=code))
 
-    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str | None) -> None:
+    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str | None, image: str | None = None) -> None:
         """What the node's own lifecycle reported, and what follows from it.
 
         The only thing the reconciler is told rather than reads. No query can answer
@@ -155,6 +155,7 @@ class Reconciler:
             node_id,
             state,
             Error(code="not_found", message=error, retryable=True) if error else None,
+            image=image,
         )
         await self._events.record(NodeEvent(compute=compute_id, node=node_id, state=state, error=error))
         await self.compute(compute_id)
@@ -188,6 +189,16 @@ class Reconciler:
         await self._machines.resolve(compute)
 
         nodes = await self._nodes.of(compute.id)
+        digest = compute.spec.image.digest()
+        if compute.spec.desired != "deleted":
+            drifted = [node for node in nodes if node.state == "ready" and node.image is not None and node.image != digest]
+            for node in drifted:
+                log.bind(node_id=node.id).info("rank {} runs another image: refreshing it", node.rank)
+                await self._nodes.observe(node.id, "bootstrapping")
+                await self._announce("bootstrapping", compute.id, node.id)
+            if drifted:
+                nodes = await self._nodes.of(compute.id)
+
         alive = [node for node in nodes if node.state in LIVE]
         load, holding, owed = await self._tasks.pressure(compute.id)
         buy, spare = demand(compute, nodes, load)
@@ -241,8 +252,14 @@ class Reconciler:
         A draining node leaves as soon as the work it was holding is finished. This is
         the only place the two halves meet: the reconciler decided it should go, the
         queue decides when.
+
+        A ready node whose image is not the spec's is sent through bootstrapping, and
+        refreshed once nothing runs on it — the same wait a draining node gets. A null
+        image is a node that never reported one, which is a real bootstrap and is never
+        refreshed.
         """
         doomed = compute.spec.desired == "deleted"
+        digest = compute.spec.image.digest()
 
         async def retire(node: Node) -> None:
             await self._nodes.observe(node.id, "deleting")
@@ -252,6 +269,9 @@ class Reconciler:
             match node.state:
                 case "requested":
                     await self._announce("requested", compute.id, node.id, record=False)
+                case "bootstrapping" if not doomed and node.image is not None and node.image != digest and not holding[node.id]:
+                    self._wake("node.connect", compute_id=compute.id, node_id=node.id)
+                    self._wake("node.refresh", compute_id=compute.id, node_id=node.id)
                 case "connecting" | "bootstrapping" | "ready":
                     self._wake("node.connect", compute_id=compute.id, node_id=node.id)
                 case "draining" if doomed or not holding[node.id]:

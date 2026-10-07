@@ -40,7 +40,7 @@ def train(epochs: int = 10) -> None:
 - A relative path counts from the file's directory, not from where `sky run` was typed; an absolute one is taken as it is.
 - Each path lands under its own name, in a directory that is first on the node's `sys.path` while the file runs: `src/classy_enc` is `import classy_enc`, `helpers.py` is `import helpers`. Being first, it wins over an installed package of the same name.
 - A directory is walked. `__pycache__`, `*.pyc`, `.git`, `.venv`, `node_modules`, `*.egg-info`, and whatever `excludes` names (glob patterns, matched against each component of a path) are left out.
-- It is packed on this machine and sent with **every run**, not installed when a machine is set up. A run that attaches to a compute kept up runs the code as it is now. The machines are built without it, so `sky compute run`, `exec` and `ssh` on that compute do not see it.
+- It is packed on this machine and sent with **every run**, not installed when a machine is set up, whether or not the image is `mutable`. A run that attaches to a compute kept up runs the code as it is now. The machines are built without it, so `sky compute run`, `exec` and `ssh` on that compute do not see it.
 - It is on the path of the process running the file, and of what that process forks; a new interpreter the code starts itself (`subprocess.run([sys.executable, ...])`) does not have it.
 - A path that is not there, or two paths that would land under one name (`a/utils` and `b/utils`), are refused before anything is bought.
 
@@ -52,7 +52,7 @@ For a first run without a bill, use the `container` provider: the nodes are loca
 
 ## The compute it runs on
 
-The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. The image's `includes` and `excludes` count as the paths written, not as what the files hold: adding or renaming an include names another compute, editing an included file does not. `nodes`, `delete_on_exit` and a `sky.app`'s `options` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
+The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what would take other machines: the provider, the accelerator, `cpus`, `memory_gb`, `region`, `allocation`, the image and the plugins. The image's `includes` and `excludes` count as the paths written, not as what the files hold: adding or renaming an include names another compute, editing an included file does not. An image declared `mutable` (`mutable = true` under `[tool.skyward.image]`, `image=sky.Image(mutable=True)` in a `sky.app`) is left out of the digest: its packages can change without naming another compute, and the next run against the compute that is up patches `pip` and `pip_indexes` on it before submitting the work. Includes still travel with each run and are not part of the patch. `nodes`, `delete_on_exit` and a `sky.app`'s `options` are not in it, and neither are credentials, so a rotated key names nothing new. The two forms count the provider and the accelerator differently:
 
 - **header:** the provider by its kind, the accelerator as written. `"RTX_3090"` and `"rtx-3090"` are two computes.
 - **`sky.app`:** the provider by its kind plus whichever settings differ from that kind's defaults, so a default changed by a release renames nothing. The accelerator counts by what it resolves to: `"A100"`, `"a100"` and `sky.accelerators.A100()` are one compute, `sky.accelerators.A100(count=2)` another.
@@ -62,6 +62,7 @@ The compute is named `<file stem>-<8 hex digits>`, the digits a digest of what w
 | no compute by that name, or it is `deleted` | a new one is created, and the run waits for it to be ready |
 | one is up | the run attaches to it; nothing is bootstrapped again |
 | one is up and `nodes` changed | it is resized first, then the work is submitted |
+| one is up, its image is `mutable`, and `pip` or `pip_indexes` changed | the image is patched and the nodes refresh before the work is submitted |
 | one is up, `nodes` changed, and it runs a collective plugin (`torch`, `jax`, `accelerate`) | refused, `compute_not_resizable`: delete it and run again |
 | one is `deleting` | refused: `run again once it is gone` |
 

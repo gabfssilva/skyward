@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import shlex
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import aclosing
@@ -25,7 +26,7 @@ DEFAULT_OPTIONS = Options()
 BATCH = 256
 """Console lines handed to the store in one write, at most."""
 
-type Listener = Callable[[NodeState, str | None], None]
+type Listener = Callable[[NodeState, str | None, str | None], None]
 type Output = Callable[[tuple[Console, ...]], Awaitable[None]]
 type Sample = Callable[[Metric], Awaitable[None]]
 type Phased = Callable[[PhaseMark, str, str | None], Awaitable[None]]
@@ -74,6 +75,7 @@ class Node:
         volumes: tuple[str, ...] = (),
         instance_timeout: int | None = None,
         tls: Identity | None = None,
+        applied: str | None = None,
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -99,6 +101,8 @@ class Node:
         self._volumes = volumes
         self._instance_timeout = instance_timeout
         self._tls = tls
+        self._applied: str | None = applied
+        """The digest of the spec image this machine is being built to, reported with ready so the row says which image the node materialized."""
         self._worker_timeout = options.worker_timeout
         self._health_command = options.health_command
         self._health_interval = options.health_interval
@@ -120,6 +124,7 @@ class Node:
         self._lifecycle: asyncio.Task[None] | None = None
         self._monitor: asyncio.Task[None] | None = None
         self._probe: asyncio.Task[None] | None = None
+        self._refreshing: asyncio.Task[None] | None = None
         self._reached: dict[str, asyncio.Future[str | None]] = {}
         self._failure: str | None = None
         self._said: asyncio.Queue[Console | Metric | Phase | None] = asyncio.Queue()
@@ -130,7 +135,7 @@ class Node:
         self._lifecycle = asyncio.create_task(self._run())
 
     async def close(self) -> None:
-        for task in (self._lifecycle, self._monitor, self._probe):
+        for task in (self._lifecycle, self._monitor, self._probe, self._refreshing):
             if task:
                 task.cancel()
         await self._ssh.close()
@@ -167,7 +172,7 @@ class Node:
 
     async def _run(self) -> None:
         try:
-            self._listener("connecting", None)
+            self._listener("connecting", None, None)
             self._log.debug("dialling {}@{}:{}", self._machine.user, self._machine.host, self._machine.port)
             await self._ssh.connect()
             self._log.debug("logged in")
@@ -176,11 +181,12 @@ class Node:
             if await self._serving():
                 self._log.info("a worker is already running here; adopting it")
                 self.tunnel = await self._ssh.forward(worker.PORT)
+                self._applied = None
                 self._ready()
                 return
 
             await self._arm_timeout()
-            self._listener("bootstrapping", None)
+            self._listener("bootstrapping", None, None)
             await self._bootstrap()
             await self._sync_user_code()
             await self._launch()
@@ -190,7 +196,7 @@ class Node:
             raise
         except Exception as exc:
             self._log.warning("node failed: {}", exc)
-            self._listener("failed", str(exc))
+            self._listener("failed", str(exc), None)
 
     async def _arm_timeout(self) -> None:
         if not self._instance_timeout:
@@ -209,7 +215,7 @@ class Node:
         question.
         """
         self._log.info("ready on rank {}, reached through 127.0.0.1:{}", self._rank, self.tunnel)
-        self._listener("ready", None)
+        self._listener("ready", None, self._applied)
         if command := self._health_command:
             self._probe = asyncio.create_task(self._health(command))
 
@@ -244,29 +250,50 @@ class Node:
         await self._reach("bootstrap", float(self._image.bootstrap_timeout))
 
     async def _sync_user_code(self) -> None:
-        """Unpack the client's local code into the environment the worker imports from.
+        """Make the client's local code importable on the worker, and keep no other copy of it.
 
         The tarball was built where the files are — the client — and carried here as
-        bytes. It lands in the venv's ``site-packages``, so a package the user shipped
-        alongside their function imports on the worker the same as it does at home.
+        bytes. Each digest gets a directory of its own under the includes, and a
+        ``.pth`` in the venv's ``site-packages`` names the one that is current: a
+        refresh is a swap of that line, and the copy it replaced is removed. The line
+        inserts at the front of ``sys.path``, so a package the user shipped wins over an
+        installed one of the same name.
         """
-        if not self._user_code:
-            return
-
-        remote = "/tmp/_user_code.tar.gz"
-        await self._ssh.put(remote, self._user_code)
-
         query = await self._ssh.run(f"{self._sudo}{bootstrap.PYTHON} -c \"import sysconfig; print(sysconfig.get_path('purelib'))\"")
         target = query.stdout.strip()
         if not target:
             raise BootstrapFailedError(f"could not locate site-packages: {query.stderr}")
+        pointer = f"{target}/{bootstrap.PTH}"
 
-        result = await self._ssh.run(f"{self._sudo}tar xzf {remote} -C {target} && rm -f {remote}", timeout=60.0)
+        if not self._user_code:
+            await self._ssh.run(f"{self._sudo}rm -f {pointer} && {self._sudo}rm -rf {bootstrap.INCLUDES}")
+            return
+
+        digest = hashlib.sha256(self._user_code).hexdigest()
+        directory = f"{bootstrap.INCLUDES}/{digest}"
+        remote = "/tmp/_user_code.tar.gz"
+        await self._ssh.put(remote, self._user_code)
+
+        result = await self._ssh.run(
+            f"{self._sudo}mkdir -p {directory} && {self._sudo}tar xzf {remote} -C {directory} && rm -f {remote}",
+            timeout=60.0,
+        )
         if result.exit_code != 0:
             raise BootstrapFailedError(f"user code: {result.stderr or result.stdout}")
 
+        point = await self._ssh.run(f"printf %s {shlex.quote(bootstrap.pth(directory))} | {self._sudo}tee {pointer} > /dev/null")
+        if point.exit_code != 0:
+            raise BootstrapFailedError(f"user code: {point.stderr or point.stdout}")
+
+        await self._ssh.run(f"{self._sudo}find {bootstrap.INCLUDES} -mindepth 1 -maxdepth 1 -type d ! -name {digest} -exec rm -rf {{}} +")
+
     async def _launch(self) -> None:
-        """Start the worker, and open the way to it.
+        """Start the worker, and open the way to it."""
+        await self._start_worker()
+        self.tunnel = await self._ssh.forward(worker.PORT)
+
+    async def _start_worker(self) -> None:
+        """Start the worker, and wait for it to say it is up.
 
         The seeds arrive from above, and so do the rank and the peers. What a node
         is among the others is a fact about the compute — the one class of thing
@@ -298,7 +325,55 @@ class Node:
         await self._ssh.run(f"nohup {self._sudo}env {environment} bash -c {shlex.quote(supervisor)} >> {SKYWARD_DIR}/worker.log 2>&1 &")
 
         await self._reach("worker", self._worker_timeout)
-        self.tunnel = await self._ssh.forward(worker.PORT)
+
+    def refresh(self, image: Image, user_code: bytes | None, applied: str) -> bool:
+        """Bring a ready node up to ``image`` in place, and say whether this call is the one that started it.
+
+        The waiters are reset here, synchronously rather than in the task: the caller
+        asks the worker to shut down right after this returns, and the shutdown phase
+        may land before the task's first await. A request that arrives while one runs
+        is dropped and answered ``False``, and the running one keeps the digest it
+        started with — the caller must then ask nothing of the worker, because the
+        worker it would reach may already be the new one.
+        """
+        if self._refreshing and not self._refreshing.done():
+            return False
+        self._image = image
+        self._user_code = user_code
+        self._applied = applied
+        self._failure = None
+        for phase in ("shutdown", "refresh", "worker"):
+            self._reached.pop(phase, None)
+        self._refreshing = asyncio.create_task(self._refresh())
+        return True
+
+    async def _refresh(self) -> None:
+        """The bootstrap's sequence again, on a machine that already has its venv.
+
+        The worker is asked to shut down and that phase awaited; the refresh script
+        installs what the image adds and reports ``refresh``; the code is swapped and a
+        new worker started, which reports ``worker`` as the first one did. The tunnel is
+        not rebuilt: it forwards to the remote port, and the new worker opens that same
+        port. ``bootstrapping`` is not reported from here — the reconciler wrote it when
+        it decided on the refresh, and that is what sent the node here. Any failure is
+        reported as ``failed``.
+        """
+        try:
+            if self._probe:
+                self._probe.cancel()
+                self._probe = None
+            await self._reach("shutdown", self._worker_timeout)
+            await self._ssh.put(bootstrap.REFRESH, bootstrap.refresh(self._image).encode())
+            await self._ssh.run(f"chmod +x {bootstrap.REFRESH} && nohup {self._sudo}{bootstrap.REFRESH} > /dev/null 2>&1 &")
+            await self._reach("refresh", float(self._image.bootstrap_timeout))
+            await self._sync_user_code()
+            await self._start_worker()
+            self._ready()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._log.warning("refresh failed: {}", exc)
+            self._listener("failed", str(exc), None)
 
     async def _tls_environment(self) -> dict[str, str]:
         """Put this node's certificate on the machine, and say where it left it.
@@ -416,10 +491,10 @@ class Node:
                     else:
                         await asyncio.sleep(1.0)
                         if self.tunnel is not None and not await self._serving():
-                            self._listener("lost", "the machine came back without its worker")
+                            self._listener("lost", "the machine came back without its worker", None)
                             return
         except SshUnavailableError as exc:
-            self._listener("lost", str(exc))
+            self._listener("lost", str(exc), None)
 
     async def _health(self, command: str) -> None:
         """Ask the machine whether it is still usable, and give up on it when it is not.
@@ -451,13 +526,13 @@ class Node:
             failures += 1
             self._log.warning("health check failed {} of {} times: {}", failures, self._health_failures, result.stderr.strip() or command)
             if failures >= self._health_failures:
-                self._listener("lost", f"health check failed {failures} times: {result.stderr.strip() or command}")
+                self._listener("lost", f"health check failed {failures} times: {result.stderr.strip() or command}", None)
                 return
 
     def _observe(self, event: NodeEvent) -> None:
         match event:
             case Health(reason=reason):
-                self._listener("lost", reason)
+                self._listener("lost", reason, None)
             case Phase() as reached:
                 self._log.debug("phase {} {}{}", reached.phase, reached.event, f": {reached.error}" if reached.error else "")
                 match reached:

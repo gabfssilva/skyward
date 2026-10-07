@@ -174,6 +174,7 @@ class NodeRow(Table, tablename="nodes"):
     created_at = Timestamptz()
     launched_at = Timestamptz(null=True, default=None)
     terminated_at = Timestamptz(null=True, default=None)
+    image = Varchar(null=True, default=None)
 
 
 class BlobRow(Table, tablename="blobs"):

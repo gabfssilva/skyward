@@ -95,6 +95,7 @@ sky compute get training
 sky compute view training          # the compute plus the machines it stands on
 sky compute scale training --nodes 8
 sky compute scale training --nodes 2:8      # elastic range, MIN:MAX
+sky compute update training --pip six       # mutable image only: pip, pip-index, include, exclude
 sky compute delete training
 ```
 
@@ -112,6 +113,7 @@ Three things to expect:
 - **create returns immediately.** It posts intent; the machines arrive afterwards. Watch with `sky monitor <ref>` or `sky log <ref> -f`.
 - **delete is accepted, not done.** What comes back is still `deleting`, and stays that way until the provider confirms the machines are gone.
 - **scale returns a new `generation`**, not a finished resize. What is up is kept; the difference is bought or drained by reconciliation.
+- **update changes the mutable fields of a running compute's image** (`--pip`, `--pip-index`, `--include`, `--exclude`) and is refused with `image_fixed` when the image was not created `mutable`. The flags give the new lists, and the nodes refresh afterwards.
 
 `--ttl SECONDS` on create is the dead-man switch the providers that support one arm on each machine: with nobody connected for that long, the machine removes itself rather than billing for a daemon that is never coming back. `--ttl 0` never does.
 

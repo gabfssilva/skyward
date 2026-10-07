@@ -30,7 +30,7 @@ from skyward.core.accelerators import Accelerator
 from skyward.core.app import App
 from skyward.core.spec import Options
 from skyward.shared.providers import AWS
-from skyward.shared.schemas import NodeBounds, PipIndex
+from skyward.shared.schemas import Image, NodeBounds, PipIndex
 from skyward.worker.plugins import HuggingFace, Torch
 from skyward.worker.script import Exited, Returned, call, run
 from skyward.worker.stopping import Stop
@@ -458,6 +458,15 @@ def describe_the_compute_a_script_is_named_after() -> None:
         )
         def what_would_take_other_machines_is_another_compute(tmp_path: Path, other: App) -> None:
             assert named(tmp_path, App(provider=AWS())) != named(tmp_path, other)
+
+        def a_fixed_image_is_identity(tmp_path: Path) -> None:
+            assert named(tmp_path, App(provider=AWS(), image=Image(pip=("six",)))) != named(tmp_path, App(provider=AWS(), image=Image(pip=("numpy",))))
+
+        def a_mutable_image_is_state_the_compute_changes_in_place(tmp_path: Path) -> None:
+            six = App(provider=AWS(), image=Image(pip=("six",), mutable=True))
+            numpy = App(provider=AWS(), image=Image(pip=("numpy",), mutable=True))
+
+            assert named(tmp_path, six) == named(tmp_path, numpy)
 
 
 @pytest.mark.local

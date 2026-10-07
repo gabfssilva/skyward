@@ -1,7 +1,7 @@
 import hashlib
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import msgspec
 from msgspec import UNSET, Struct, UnsetType, field
@@ -111,6 +111,7 @@ type ErrorCode = Literal[
     "compute_not_connected",
     "compute_not_accepting",
     "compute_not_resizable",
+    "image_fixed",
     "unsupported_provider",
     "unsupported_plugin",
     "hash_mismatch",
@@ -292,6 +293,17 @@ class Image(Struct, frozen=True):
     the image and on the snapshot behind it, so it can be found again and removed.
     Only providers that can snapshot a running machine honor it.
     """
+    mutable: bool = False
+    """Whether the image of a compute that is up may be changed, best-effort.
+
+    Only :data:`MUTABLE` may change, and a node that is ``ready`` with another image is
+    sent through bootstrapping again and comes back ready. A package removed from
+    ``pip`` is not promised to leave the machine. A compute built without it keeps the
+    contract it always had: a different image is a different compute.
+    """
+
+    MUTABLE: ClassVar[frozenset[str]] = frozenset({"pip", "pip_indexes", "includes", "excludes", "includes_sha256"})
+    """The fields a PATCH may change on a mutable image."""
 
     def __post_init__(self) -> None:
         for name in ("pip", "apt", "pip_indexes", "includes", "excludes"):
@@ -331,6 +343,21 @@ class Image(Struct, frozen=True):
         """
         identity = (self.base, self.python, self.pip, self.apt, self.pip_indexes, source)
         return hashlib.sha256(msgspec.json.encode(identity)).hexdigest()[:12]
+
+    def digest(self) -> str:
+        """Name exactly this image, every field included.
+
+        A node reports the digest of the image it materialized, and the reconciler compares
+        it with the spec's to tell when the spec asks for another one. Unlike
+        :meth:`content_hash` it is not about warm images, and it includes what the
+        bootstrap re-applies: the exports, the shell vars, the metrics and the includes.
+
+        Returns
+        -------
+        str
+            The sha256 of the image's deterministic JSON encoding, in full.
+        """
+        return hashlib.sha256(msgspec.json.encode(self, order="deterministic")).hexdigest()
 
 
 class Volume(Struct, frozen=True):
@@ -510,9 +537,11 @@ class Options(Struct, frozen=True):
 class ComputeSpec(Struct, frozen=True):
     """Everything a compute was asked to be. Intent, never observation.
 
-    Only a client writes it, and only through ``PATCH``. Of its fields exactly one
-    is mutable in place — ``nodes``, which resizes. The rest is fixed for the life
-    of the compute: a different image or provider is a different compute.
+    Only a client writes it, and only through ``PATCH``. Of its fields ``nodes``
+    is mutable in place — it resizes — and so is ``image`` when it was built
+    :attr:`Image.mutable`, in the fields that can change on a machine that is up.
+    The rest is fixed for the life of the compute: a different provider, or a
+    different image on a compute that is not mutable, is a different compute.
     """
 
     specs: tuple[Spec, ...]
@@ -546,9 +575,10 @@ class ComputeSpec(Struct, frozen=True):
 
 
 class ComputeSpecPatch(Struct, frozen=True):
-    """The one field of a spec that can change without replacing machines."""
+    """The two parts of a spec that change without replacing the machines: the size, always; the image, when the compute's image is mutable."""
 
-    nodes: NodeBounds
+    nodes: NodeBounds | UnsetType = UNSET
+    image: Image | UnsetType = UNSET
 
 
 class ComputeCreate(Struct, frozen=True):
@@ -689,6 +719,8 @@ class Node(Struct, frozen=True):
     launched_at: datetime | None = None
     last_error: Error | None = None
     terminated_at: datetime | None = None
+    image: str | None = None
+    """The digest of the image the machine materialized, null until it first reports ``ready``. The reconciler compares it with the spec's image digest."""
 
 
 type Aggregate = Literal["avg", "min", "max", "last"]
