@@ -1,0 +1,46 @@
+# Skyward
+
+> Distributed compute orchestration for ML/AI. Decorate a Python function with `@sky.function`, and Skyward provisions cloud GPUs, ships your code over SSH, runs it remotely, and returns the result - behind a synchronous, operator-based API.
+
+Skyward turns ordinary functions into remote compute tasks: define lazily with `@sky.function`, provision with `with sky.Compute(...) as compute:`, and dispatch with an operator (`>>` one node, `@` broadcast, `&` parallel, `>` async). Works across AWS, GCP, RunPod, VastAI, Lambda, and more, with multi-provider selection, autoscaling, distributed collections, and framework plugins (PyTorch, JAX, Keras, Accelerate).
+
+## Complete reference
+
+- [Skyward for LLMs (full, single file)](https://gabfssilva.github.io/skyward/llms-full.txt): the complete usage surface — Computes, tasks, providers, accelerators, runtime API, distributed collections, plugins, storage, events, CLI, recipes, and constraints. Start here.
+
+## Docs
+
+- [Getting started](https://gabfssilva.github.io/skyward/getting-started/): install and first job.
+- [Core concepts](https://gabfssilva.github.io/skyward/concepts/): lazy functions, operators, Computes, tasks, leases.
+- [Providers](https://gabfssilva.github.io/skyward/providers/): supported clouds, provider accounts, and cached offers.
+- [Accelerators](https://gabfssilva.github.io/skyward/accelerators/): full GPU/accelerator catalog.
+- [Distributed training](https://gabfssilva.github.io/skyward/distributed-training/): multi-node PyTorch/JAX/Keras.
+- [Distributed collections](https://gabfssilva.github.io/skyward/distributed-collections/): dict, set, counter, queue, barrier, lock, registry.
+- [Plugins](https://gabfssilva.github.io/skyward/plugins/): torch, jax, keras, cuml, accelerate, mig, mps, and custom plugins.
+- [Volumes](https://gabfssilva.github.io/skyward/volumes/): mount S3/GCS buckets as a filesystem.
+- [CLI](https://gabfssilva.github.io/skyward/cli/): the `sky` command-line client and long-lived server.
+- [Jupyter notebooks](https://gabfssilva.github.io/skyward/notebook/): local Jupyter, remote kernel - every cell runs on a Skyward node.
+
+## Guides (runnable)
+
+- [Hello, Skyward!](https://gabfssilva.github.io/skyward/guides/hello-skyward/): minimal end-to-end example.
+- [Parallel execution](https://gabfssilva.github.io/skyward/guides/parallel-execution/): the `&` and `gather` patterns.
+- [Broadcast](https://gabfssilva.github.io/skyward/guides/broadcast/): run on every node with `@`.
+- [Data sharding](https://gabfssilva.github.io/skyward/guides/data-sharding/): `sky.shard` for data parallelism.
+- [PyTorch distributed](https://gabfssilva.github.io/skyward/guides/pytorch-distributed/): DDP across nodes.
+- [Multi-provider selection](https://gabfssilva.github.io/skyward/guides/multi-provider/): cheapest across clouds.
+
+## API reference
+
+- [Compute and task dispatch](https://gabfssilva.github.io/skyward/reference/pool/): `Compute`, `Spec`, `Pending`, `Group`, `Streaming`.
+- [Runtime](https://gabfssilva.github.io/skyward/reference/runtime/): `instance_info`, `shard`, output control.
+- [Distributed collections](https://gabfssilva.github.io/skyward/reference/distributed/)
+- [Events](https://gabfssilva.github.io/skyward/reference/events/)
+- [Plugins](https://gabfssilva.github.io/skyward/reference/plugins/)
+
+## Optional
+
+- [Configuration](https://gabfssilva.github.io/skyward/reference/config/): control-plane resolution, provider accounts, and Compute options.
+- [Choosing a provider](https://gabfssilva.github.io/skyward/choosing-a-provider/): opinionated guide.
+- [Architecture](https://gabfssilva.github.io/skyward/architecture/): control plane, reconciliation, persistence, and Casty data plane.
+- [Repository](https://github.com/gabfssilva/skyward): source and issues.
