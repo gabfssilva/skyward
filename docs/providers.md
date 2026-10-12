@@ -503,8 +503,8 @@ with sky.Compute(
 | `priority` | `"high", "medium", "low", "batch"` | `"low"` | Allocation priority. Higher is faster to place and more expensive. |
 | `country_codes` | `str or Sequence[str] or None` | `None` | Restrict placement to these countries. |
 | `image` | `str or None` | `None` | Container image override. |
-| `cpus` | `int` | `4` | The largest a node of this account may be, in vCPUs. |
-| `memory_gb` | `int` | `16` | The same ceiling for RAM, in whole GiB. |
+| `cpus` | `int` | `4` | vCPUs given to a node with a GPU. A CPU-only node is sized by the spec. |
+| `memory_gb` | `int` | `16` | The same, for RAM, in whole GiB. |
 | `storage_gb` | `int` | `50` | Container storage in GB. |
 | `vcpu_price` | `float` | `0.005` | Dollars per vCPU-hour, for CPU-only nodes. |
 | `memory_price` | `float` | `0.001` | Dollars per GB-hour, for CPU-only nodes. |

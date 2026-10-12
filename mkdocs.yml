@@ -159,6 +159,7 @@ nav:
           - Massed Compute: reference/providers/massed-compute.md
           - Novita: reference/providers/novita.md
           - RunPod: reference/providers/runpod.md
+          - Salad: reference/providers/salad.md
           - Scaleway: reference/providers/scaleway.md
           - TensorDock: reference/providers/tensordock.md
           - VastAI: reference/providers/vastai.md

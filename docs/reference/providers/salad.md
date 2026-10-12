@@ -15,24 +15,13 @@ provider = sky.Salad(
 )
 ```
 
-The API key can come from `SALAD_API_KEY`. `organization` and `project` can come from `SALAD_ORGANIZATION` and `SALAD_PROJECT`.
+The API key can come from `SALAD_API_KEY`. `organization` and `project` can come from `SALAD_ORGANIZATION` and `SALAD_PROJECT`; the project name is lowercased.
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `api_key` | `SALAD_API_KEY` | Account credential. |
-| `organization` | `SALAD_ORGANIZATION` | Salad organization name. |
-| `project` | `SALAD_PROJECT` | Salad project name, lowercased. |
-| `priority` | `"low"` | `high`, `medium`, `low` or `batch`. Selects the price and how readily the workload is preempted. |
-| `country_codes` | every country | Restrict placement to these ISO country codes. |
-| `image` | a CUDA runtime image | Base image, overridden by `Image(base=...)`. An image that already carries sshd, curl and websocat is used as is; otherwise it must be Debian or Ubuntu based, because the container command installs them with `apt-get`. |
-| `cpus` | `4` | vCPUs given to a node **with a GPU**. CPU-only nodes are sized by the spec. |
-| `memory_gb` | `16` | The same, for RAM, in whole GiB. |
-| `storage_gb` | `50` | Container storage. Salad's floor is 1 GiB. |
-| `vcpu_price` | `0.005` | Dollars per vCPU-hour, for CPU-only nodes. |
-| `memory_price` | `0.001` | Dollars per GB-hour, for CPU-only nodes. |
-| `request_timeout` | `30` | Seconds for one Salad API call. |
+`priority` (`high`, `medium`, `low` or `batch`) selects the price and how readily the workload is preempted. `spot` allocation is not available; every offer is on-demand, billed per second.
 
-`spot` allocation is not available; every offer is on-demand, billed per second.
+The base image is a CUDA runtime image unless `image` or `Image(base=...)` names another. An image that already carries sshd, curl and websocat is used as is; otherwise it must be Debian or Ubuntu based, because the container command installs them with `apt-get`. `storage_gb` is the container's storage, and Salad's floor is 1 GiB.
+
+::: skyward.Salad
 
 ## What the account is offered
 
