@@ -146,13 +146,14 @@ class Dispatcher:
         Reattaching stays here: it is per-execution by nature, and it takes no
         slot — waiting on a worker for an outcome it owes needs no lock.
 
-        So does an attempt timed out while its machine still ran it. The stop is
-        asked again on every sweep until the worker lets go, because one asked while
-        the link was down, or before a restarted daemon held the node again, never
-        arrived; and one this process is not already waiting on is waited on here.
+        So does an attempt timed out while its machine still ran it, and one its
+        caller cancelled once it had started. The stop is asked again on every sweep
+        until the worker lets go, because one asked while the link was down, or before
+        a restarted daemon held the node again, never arrived; and one this process is
+        not already waiting on is waited on here.
         """
         task = await self._tasks.get(task_id)
-        stopping = [execution for execution in task.executions if execution.stopping and execution.node_id]
+        stopping = [execution for execution in task.executions if (execution.stopping or execution.state == "cancel_requested") and execution.node_id]
         if task.state not in ("queued", "running") and not stopping:
             return
 
@@ -246,6 +247,10 @@ class Dispatcher:
         unshielded ``await`` in the unwinding would be cancelled on the spot — which
         is precisely how a generator gets left running on a machine somebody is still
         paying for.
+
+        A failure is written down before it is handed over. It is the last frame, a
+        reader that has it is free to leave, and leaving closes this generator at the
+        ``yield`` it is suspended on — with the verdict still unwritten, if it came after.
         """
         task = await self._tasks.get(task_id)
         runtime = self._runtimes.of(task.compute_id)
@@ -266,7 +271,7 @@ class Dispatcher:
         runtime.dispatched.add(execution.id)
         started = await self._tasks.observe(execution.id, "started", node_id=node_id)
 
-        failure: Error | None = None
+        failed: tuple[bytes, Error] | None = None
         try:
             if not started:
                 return
@@ -279,8 +284,7 @@ class Dispatcher:
                     case End():
                         break
                     case Failed(error=error, traceback=trace):
-                        failure = Error(code="task_failed", message=error, retryable=False, details={"traceback": trace})
-                        yield frame
+                        failed = (frame, Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}))
                         break
                     case Chunk():
                         yield frame
@@ -293,10 +297,15 @@ class Dispatcher:
                 await asyncio.shield(attempt.ask(worker.Close()))
             await asyncio.shield(self._tasks.release(execution.id))
 
-        if failure:
-            await self._tasks.observe(execution.id, "failed", error=failure)
-        else:
-            await self._tasks.observe(execution.id, "succeeded")
+        match failed:
+            case None:
+                await self._tasks.observe(execution.id, "succeeded")
+            case (last, _) if await self._cancelling(task.id, execution.id):
+                await self._tasks.observe(execution.id, "cancelled")
+                yield last
+            case (last, failure):
+                await self._tasks.observe(execution.id, "failed", error=failure)
+                yield last
 
     async def _free(self, compute_id: str, runtime: Runtime) -> tuple[str, ...]:
         """Nodes with a slot going spare, in rank order.
@@ -517,7 +526,8 @@ class Dispatcher:
 
         An attempt timed out while it ran already has its verdict, and the answer that
         arrives afterwards changes nothing about it — but it is how the worker says it
-        let go, so the slot is released whatever the answer was.
+        let go, so the slot is released whatever the answer was. One stopped while its
+        cancel was pending is ``cancelled``.
         """
         log = logger.bind(compute_id=task.compute_id)
         try:
@@ -534,6 +544,9 @@ class Dispatcher:
                         await self._tasks.observe(execution.id, "failed", error=failure)
                 case Lost(error=error):
                     await self._lost(task, execution, RuntimeError(error), retry.Lost("process_died", node_id))
+                case Stopped() if await self._cancelling(task.id, execution.id):
+                    log.info("execution {} stopped, as its cancel asked", execution.id)
+                    await self._tasks.observe(execution.id, "cancelled")
                 case Stopped():
                     log.info("execution {} stopped", execution.id)
                     stopped = Error(code="task_failed", message="stopped: it ran past its time", retryable=False, details={"timeout": "run"})
@@ -583,12 +596,23 @@ class Dispatcher:
         The task never shows a terminal state in between, so a caller waiting on it
         is not handed the ending a moment before the retry that was meant to spare
         them. The new execution is ``created``, and the next pass places it.
+
+        An attempt whose caller cancelled it is not tried again, whatever ended it:
+        it ends as ``state``, and the task with it.
         """
+        if await self._cancelling(task.id, execution.id):
+            await self._tasks.observe(execution.id, state, error=error)
+            return
         logger.bind(compute_id=task.compute_id).info(
             "execution {} {}; attempt {} of task {} is written down", execution.id, state, execution.ordinal + 1, task.id
         )
         if await self._tasks.observe(execution.id, state, error=error, again=True):
             self._wake("compute.dispatch", compute_id=task.compute_id)
+
+    async def _cancelling(self, task_id: str, execution_id: str) -> bool:
+        """Whether the attempt's cancel is pending, as the store says now: the task a wait began with predates the cancel."""
+        task = await self._tasks.get(task_id)
+        return any(execution.id == execution_id and execution.state == "cancel_requested" for execution in task.executions)
 
     async def _stop(self, compute_id: str, node_id: str, execution_id: str) -> None:
         """Ask a worker to stop an attempt. One not delivered is asked again by the next sweep."""

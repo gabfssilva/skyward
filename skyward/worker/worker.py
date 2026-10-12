@@ -134,7 +134,7 @@ pulling: set[str] = set()
 
 A close that lands mid-pull cannot close the generator — it is executing — so it
 only lets go of it, and the pull closes it once it comes back."""
-STOPPED = "the stream was stopped: it ran past its time"
+STOPPED = "the stream was stopped"
 """What a stream's next pull says once :func:`stop` let go of it."""
 running: set[asyncio.Task[object]] = set()
 """What the actors handed on and nobody awaits: the attempts, and the answers being held. Kept so none is collected half-way."""
@@ -270,7 +270,7 @@ class Result(casty.Askable[bytes]):
 
 @dataclass(frozen=True, slots=True)
 class Stop(casty.Askable[bool]):
-    """Stop an attempt that ran past its time, and say whether anything here was running it. See :func:`stop`."""
+    """Stop an attempt that ran past its time or was cancelled, and say whether anything here was running it. See :func:`stop`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,7 +492,7 @@ async def close(id: str) -> None:
 
 
 async def stop(id: str) -> bool:
-    """Stop an attempt that ran past its time, and say whether anything here was running it.
+    """Stop an attempt that ran past its time or was cancelled, and say whether anything here was running it.
 
     The attempt's own :class:`Result` is what hears ``Stopped``, once the function has unwound; this only says the
     request landed. An attempt that has not started yet is remembered, and never starts. A stream is let go of the way

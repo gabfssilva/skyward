@@ -21,6 +21,7 @@ import pytest
 
 import skyward as sky
 from skyward.shared.schemas import FunctionExcerpt
+from tests.conftest import cancel_once_started
 
 pytestmark = [pytest.mark.compute, pytest.mark.xdist_group("pool")]
 
@@ -66,6 +67,14 @@ def scaled(factor: int, x: int) -> int:
 @sky.function(retry=None)
 def crash() -> None:
     os.kill(os.getpid(), signal.SIGSEGV)
+
+
+@sky.function(retry=None)
+def spinning(seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+    return "finished"
 
 
 @sky.function
@@ -128,6 +137,17 @@ def describe_dispatching_a_call() -> None:
                 _ = slow(60).with_timeout(3) >> pool
 
             assert double(1) >> pool == 2
+
+    def describe_when_it_is_cancelled_while_it_runs() -> None:
+        def it_is_stopped_on_the_node_and_ends_cancelled(pool: sky.Compute, daemon: str) -> None:
+            future = spinning(60) > pool
+            cancel_once_started(daemon, "spinning")
+
+            with pytest.raises(sky.TaskFailedError) as raised:
+                future.result(timeout=30)
+
+            assert raised.value.details["state"] == "cancelled"
+            assert sorted(rank for _, rank in where_am_i() @ pool) == [0, 1], "the node it ran on let go of its slot"
 
 
 def describe_the_implicit_pool() -> None:

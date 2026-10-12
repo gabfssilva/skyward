@@ -1,4 +1,4 @@
-"""How an attempt that ran past its time is stopped, on the machine running it.
+"""How an attempt that ran past its time, or was cancelled, is stopped on the machine running it.
 
 Nothing kills a thread, and a process pool one of whose children is killed breaks
 for every task in flight in it — the attempts beside the one that ran too long would

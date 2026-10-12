@@ -41,7 +41,7 @@ class Stopped(Struct, frozen=True, tag="stopped", tag_field="status"):
     """The daemon asked the attempt to stop, and it did.
 
     Not ``Lost``: the process under it did not die of something unknown, it was
-    interrupted on purpose because the attempt ran past its time — and an ending the
+    interrupted on purpose because the attempt ran past its time or was cancelled — and an ending the
     daemon asked for is not one whose retry decision is worth asking.
     """
 

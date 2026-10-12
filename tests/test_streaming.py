@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar
 
 import cloudpickle
+import httpx
 import msgspec
 import pytest
 
@@ -24,7 +25,7 @@ from skyward.shared.observability.logger import NAME
 from skyward.worker import worker
 from skyward.worker.api import Info
 from skyward.worker.plugins import Plugin
-from tests.conftest import execution, hosting
+from tests.conftest import cancel_once_started, execution, hosting
 
 cloudpickle.register_pickle_by_value(sys.modules[__name__])
 
@@ -39,6 +40,15 @@ def slowly(to: int) -> Iterator[float]:
     for _ in range(to):
         time.sleep(0.3)
         yield time.monotonic()
+
+
+@sky.stream
+def ticking() -> Iterator[int]:
+    tick = 0
+    while True:
+        time.sleep(0.05)
+        yield tick
+        tick += 1
 
 
 @sky.stream
@@ -96,6 +106,18 @@ def describe_a_stream_out_of_a_node() -> None:
                 next(items)
 
             assert "the generator said no" in raised.value.message
+
+    def describe_when_it_is_cancelled_while_it_is_read() -> None:
+        def it_is_let_go_of_on_the_node_and_ends_cancelled(pool: sky.Compute, daemon: str) -> None:
+            items = ticking() >> pool
+            assert next(items) == 0
+
+            task = cancel_once_started(daemon, "ticking")
+            with pytest.raises(sky.TaskFailedError):
+                for _ in range(200):
+                    next(items)
+
+            assert httpx.get(f"{daemon}/v1/tasks/{task}", timeout=10).json()["state"] == "cancelled"
 
 
 @pytest.mark.compute

@@ -129,10 +129,11 @@ class TaskController(Controller):
         status_code=202,
         summary="Cancel a task",
         description=(
-            "Before `started`, cancellation is guaranteed (CAS + worker ack). After `started` it is best-effort: the "
-            "execution enters `cancel_requested` and only becomes `cancelled` once the worker confirms it stopped. "
-            "Without that confirmation the outcome is `indeterminate` — Python code that may still be running is never "
-            "declared cancelled."
+            "Before `started`, cancellation is certain: the execution has not reached a worker, and it is cancelled by a "
+            "write conditional on that. After `started` the execution enters `cancel_requested`, the worker is asked to "
+            "stop it until it lets go, and it becomes `cancelled` once the worker says it stopped. An execution that "
+            "finished before the stop landed keeps its outcome, and one whose worker is gone is `indeterminate` — Python "
+            "code that may still be running is never declared cancelled. A cancelled task is not retried."
         ),
         responses=failures(404, 409),
     )

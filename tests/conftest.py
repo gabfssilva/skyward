@@ -258,6 +258,18 @@ async def held(client: Client, name: str) -> ComputeResource:
     )
 
 
+def cancel_once_started(daemon: str, function: str) -> str:
+    """Cancel the call of ``function`` once a machine has started it, as ``DELETE /v1/tasks/{id}`` does; its id."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        page = httpx.get(f"{daemon}/v1/tasks", params={"function": function, "state": "running"}, timeout=10).json()
+        if started := [task["id"] for task in page["items"] if any(attempt["state"] == "started" for attempt in task["executions"])]:
+            httpx.delete(f"{daemon}/v1/tasks/{started[0]}", headers={"Idempotency-Key": uuid.uuid4().hex}, timeout=10).raise_for_status()
+            return started[0]
+        time.sleep(0.2)
+    raise TimeoutError(f"no call of {function} started within a minute")
+
+
 def machine(node_id: str, rank: int, now: datetime, state: str = "ready", **fields: object) -> NodeResource:
     """One node as the API tells it, launched half an hour before ``now``; ``fields`` replace what it says."""
     return msgspec.convert(
