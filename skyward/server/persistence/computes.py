@@ -337,10 +337,7 @@ class ComputeStore:
             row = await self.checked(ref, expected_revision)
             spec = msgspec.structs.replace(await unpacked(row.spec, ComputeSpec), desired="deleted")
 
-            row.spec = await packed(spec)
-            row.deletion_cause = row.deletion_cause or cause
-            row.revision += 1
-            await row.save().run()
+            await self._written(row, {ComputeRow.spec: await packed(spec), ComputeRow.deletion_cause: row.deletion_cause or cause})
             nodes = await self._nodes.of(row.id)
             live = [node for node in nodes if node.state in NODES_LIVE]
             await self.apply(ComputeDeleting(
@@ -374,31 +371,38 @@ class ComputeStore:
         restarting, a script killed. What must never happen is two, because a
         compute's live SSH connections and casty client exist in exactly one
         process.
+
+        Whether it is free is decided by the write, not by the read before it: two
+        claims that both read a free lease would otherwise both be told they hold it.
         """
         row = await self._row(ref)
-        expires = now() + timedelta(seconds=claim.ttl_seconds)
+        moment = now()
+        expires = moment + timedelta(seconds=claim.ttl_seconds)
+        free = ComputeRow.lease_owner.is_null() | (ComputeRow.lease_owner == claim.owner) | (ComputeRow.lease_expires_at <= moment)
 
-        held = row.lease_owner is not None and row.lease_expires_at is not None and row.lease_expires_at > now()
-        if held and row.lease_owner != claim.owner:
-            raise LeaseHeldError(f"compute {row.id} is owned by {row.lease_owner}", owner=row.lease_owner)
+        landed = await ComputeRow.update({
+            ComputeRow.lease_owner: claim.owner,
+            ComputeRow.lease_expires_at: expires,
+            ComputeRow.revision: ComputeRow.revision + 1,
+        }).where((ComputeRow.id == row.id) & free).returning(ComputeRow.id).run()
+        if not landed:
+            owner = (await self._row(row.id)).lease_owner
+            raise LeaseHeldError(f"compute {row.id} is owned by {owner}", owner=owner)
 
-        renewal = held and row.lease_owner == claim.owner
-        row.lease_owner = claim.owner
-        row.lease_expires_at = expires
-        row.revision += 1
-        await row.save().run()
+        renewal = row.lease_owner == claim.owner and row.lease_expires_at is not None and row.lease_expires_at > moment
         if not renewal:
             await self.apply(LeaseClaimed(compute=row.id, owner=claim.owner))
 
         return Lease(owner=claim.owner, expires_at=expires)
 
     async def release_lease(self, ref: str) -> None:
-        row = await self._row(ref)
-        row.lease_owner = None
-        row.lease_expires_at = None
-        row.revision += 1
-        await row.save().run()
-        await self.apply(LeaseReleased(compute=row.id))
+        compute_id = await self.identify(ref)
+        await ComputeRow.update({
+            ComputeRow.lease_owner: None,
+            ComputeRow.lease_expires_at: None,
+            ComputeRow.revision: ComputeRow.revision + 1,
+        }).where(ComputeRow.id == compute_id).run()
+        await self.apply(LeaseReleased(compute=compute_id))
 
     async def infrastructure(self, compute_id: str) -> Infrastructure:
         row = await self._row(compute_id)
@@ -462,12 +466,10 @@ class ComputeStore:
 
     async def regenerate(self, row: ComputeRow, spec: ComputeSpec) -> int:
         """A new definition for the same compute: the row moves on, and the generation is frozen and said."""
-        row.spec = await packed(spec)
-        row.revision += 1
-        row.generation += 1
-        await row.save().run()
-        await self._freeze(row.id, row.generation, spec)
-        return row.generation
+        generation = row.generation + 1
+        await self._written(row, {ComputeRow.spec: await packed(spec), ComputeRow.generation: generation})
+        await self._freeze(row.id, generation, spec)
+        return generation
 
     async def live(self) -> tuple[str, ...]:
         """Every compute that still owes something — the sweep's worklist."""
@@ -489,6 +491,19 @@ class ComputeStore:
         if not rows:
             raise NotFoundError(f"no such compute: {ref}")
         return next((row for row in rows if row.status_state != "deleted"), rows[0])
+
+    async def _written(self, row: ComputeRow, changes: Mapping[Column, Any]) -> None:
+        """Write what was decided from ``row``, if the compute is still at the revision ``row`` was read at.
+
+        Only the columns decided are written. The row as a whole is what it was when
+        it was read, and a binding or a lease that landed since is not in it: saved
+        back whole, it would erase a binding the machines were launched under.
+        """
+        landed = await ComputeRow.update({**changes, ComputeRow.revision: ComputeRow.revision + 1}).where(
+            (ComputeRow.id == row.id) & (ComputeRow.revision == row.revision),
+        ).returning(ComputeRow.id).run()
+        if not landed:
+            raise RevisionConflictError(f"compute {row.id} moved on from revision {row.revision} while it was being written")
 
     async def _status(self, compute_id: str) -> dict[str, Any]:
         """The columns :meth:`apply` decides by — not the row, which carries the key and three JSON blobs."""

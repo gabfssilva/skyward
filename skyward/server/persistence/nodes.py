@@ -53,10 +53,11 @@ class NodeStore:
 
         async def mark() -> str:
             row = await self._row(compute, node_id)
-            row.desired = "deleted"
-            row.state = "draining"
-            row.revision += 1
-            await row.save().run()
+            await NodeRow.update({
+                NodeRow.desired: "deleted",
+                NodeRow.state: "draining",
+                NodeRow.revision: NodeRow.revision + 1,
+            }).where(NodeRow.id == row.id).run()
             return row.id
 
         _, _ = await once(f"node.drain:{compute}", idempotency_key, None, mark)

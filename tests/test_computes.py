@@ -10,6 +10,7 @@ import asyncio
 import sqlite3
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +36,7 @@ from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import ComputeRow, EventRow, ExecutionRow, FunctionRow, NodeRow, TaskRow
 from skyward.server.persistence.tasks import TaskStore
-from skyward.shared.errors import ComputeNotConnectedError, ImageFixedError, NameTakenError, NotFoundError
+from skyward.shared.errors import ComputeNotConnectedError, ImageFixedError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
 from skyward.shared.events import ComputeAbandoned, ComputeDeleted
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import (
@@ -44,6 +45,7 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     DeletionCause,
     Image,
+    LeaseClaim,
     Node,
     NodeBounds,
     Task,
@@ -647,6 +649,81 @@ def describe_binding_a_compute() -> None:
         assert (await store.infrastructure(compute.id)).binding == {"region": "eu"}
 
 
+def describe_a_compute_bound_while_another_write_is_in_flight() -> None:
+    """The reconciler binds a compute while a request that read the row is still on its way to writing it."""
+
+    async def a_lease_claimed_meanwhile_leaves_the_binding_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        _meanwhile(monkeypatch, store, lambda: store.bind(compute.id, BOUND))
+
+        await store.claim_lease(compute.id, LeaseClaim(owner="sdk_1", ttl_seconds=60))
+
+        assert await store.infrastructure(compute.id) == BOUND
+        assert (await store.get(compute.id)).lease.owner == "sdk_1"
+
+    async def a_lease_released_meanwhile_leaves_the_binding_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        await store.claim_lease(compute.id, LeaseClaim(owner="sdk_1", ttl_seconds=60))
+        _meanwhile(monkeypatch, store, lambda: store.bind(compute.id, BOUND))
+
+        await store.release_lease(compute.id)
+
+        assert await store.infrastructure(compute.id) == BOUND
+        assert (await store.get(compute.id)).lease.owner is None
+
+    async def a_deletion_that_read_the_row_before_is_refused_and_leaves_the_binding_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        _meanwhile(monkeypatch, store, lambda: store.bind(compute.id, BOUND))
+
+        with pytest.raises(RevisionConflictError):
+            await store.delete(compute.id, compute.revision, "gone")
+
+        assert await store.infrastructure(compute.id) == BOUND
+        assert (await store.get(compute.id)).spec.desired == SPEC.desired
+
+    async def a_resize_that_read_the_row_before_is_refused_and_leaves_the_binding_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        _meanwhile(monkeypatch, store, lambda: store.bind(compute.id, BOUND))
+
+        with pytest.raises(RevisionConflictError):
+            await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=2)), compute.revision)
+
+        assert await store.infrastructure(compute.id) == BOUND
+        assert (await store.get(compute.id)).generation == compute.generation
+
+
+def describe_claiming_a_lease() -> None:
+    async def of_two_claims_in_flight_together_one_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        _meanwhile(monkeypatch, store, lambda: store.claim_lease(compute.id, LeaseClaim(owner="sdk_2", ttl_seconds=60)))
+
+        with pytest.raises(LeaseHeldError) as refused:
+            await store.claim_lease(compute.id, LeaseClaim(owner="sdk_1", ttl_seconds=60))
+
+        assert refused.value.details["owner"] == "sdk_2"
+        assert (await store.get(compute.id)).lease.owner == "sdk_2"
+
+    async def an_expired_one_is_taken_by_whoever_claims_it(tmp_path: Path) -> None:
+        store, compute = await _unbound(tmp_path)
+        await store.claim_lease(compute.id, LeaseClaim(owner="sdk_1", ttl_seconds=0))
+
+        await store.claim_lease(compute.id, LeaseClaim(owner="sdk_2", ttl_seconds=60))
+
+        assert (await store.get(compute.id)).lease.owner == "sdk_2"
+
+
+def describe_draining_a_node() -> None:
+    async def a_machine_launched_meanwhile_is_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, compute = await _unbound(tmp_path)
+        nodes = NodeStore()
+        node = await nodes.request(compute.id, compute.generation)
+        _meanwhile(monkeypatch, nodes, lambda: nodes.launched(node.id, Machine(id="m1", state="running")))
+
+        drained = await nodes.drain(compute.id, node.id, "drain")
+
+        assert (drained.state, drained.machine) == ("draining", "m1")
+
+
 def describe_changing_an_image_in_place() -> None:
     async def an_image_fixed_at_creation_is_refused_any_change(tmp_path: Path) -> None:
         store = await _store(tmp_path)
@@ -831,6 +908,31 @@ OLD_COMPUTES = """CREATE TABLE "computes" ("id" VARCHAR(255) PRIMARY KEY NOT NUL
 async def _store(tmp_path: Path) -> ComputeStore:
     await connect(tmp_path / "skyward.sqlite")
     return ComputeStore(EventStore(), NodeStore())
+
+
+BOUND = Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"group": "g"}, private_key="key")
+
+
+async def _unbound(tmp_path: Path) -> tuple[ComputeStore, Compute]:
+    store = await _store(tmp_path)
+    compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="unbound")
+    return store, compute
+
+
+def _meanwhile(monkeypatch: pytest.MonkeyPatch, store: ComputeStore | NodeStore, write: Callable[[], Awaitable[object]]) -> None:
+    """Land ``write`` once, between the next read of a row and whatever is written from that read."""
+    read = store._row
+    landed = False
+
+    async def then(*ref: str) -> Any:
+        nonlocal landed
+        row = await read(*ref)
+        if not landed:
+            landed = True
+            await write()
+        return row
+
+    monkeypatch.setattr(store, "_row", then)
 
 
 async def _delete(store: ComputeStore, compute: str, cause: DeletionCause = "requested") -> None:
