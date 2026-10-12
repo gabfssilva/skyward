@@ -17,17 +17,17 @@ from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
 from skyward.shared.tls import Identity
 from skyward.worker import bootstrap, plugins, worker
-from skyward.worker.journal import SKYWARD_DIR, Console, Health, Metric, NodeEvent, Phase
+from skyward.worker.journal import SKYWARD_DIR, Console, Emitted, Health, Metric, NodeEvent, Phase
 
 logger = logger.bind(component="node")
 
 DEFAULT_OPTIONS = Options()
 
 BATCH = 256
-"""Console lines handed to the store in one write, at most."""
+"""Console lines and emitted events handed to the store in one write, at most."""
 
 type Listener = Callable[[NodeState, str | None, str | None], None]
-type Output = Callable[[tuple[Console, ...]], Awaitable[None]]
+type Output = Callable[[tuple[Console | Emitted, ...]], Awaitable[None]]
 type Sample = Callable[[Metric], Awaitable[None]]
 type Phased = Callable[[PhaseMark, str, str | None], Awaitable[None]]
 
@@ -127,7 +127,7 @@ class Node:
         self._refreshing: asyncio.Task[None] | None = None
         self._reached: dict[str, asyncio.Future[str | None]] = {}
         self._failure: str | None = None
-        self._said: asyncio.Queue[Console | Metric | Phase | None] = asyncio.Queue()
+        self._said: asyncio.Queue[Console | Emitted | Metric | Phase | None] = asyncio.Queue()
         self.tunnel: int | None = None
         """The local port the daemon's casty client dials to reach this worker."""
 
@@ -543,7 +543,7 @@ class Node:
                     case Phase():
                         pass
                 self._said.put_nowait(reached)
-            case Console() | Metric():
+            case Console() | Emitted() | Metric():
                 self._said.put_nowait(event)
 
     async def _report(self) -> None:
@@ -585,11 +585,11 @@ class Node:
             self._settle(phase, error)
 
 
-def _runs(said: list[Console | Metric | Phase | None]) -> Iterator[tuple[Console, ...] | Metric | Phase | None]:
-    lines: list[Console] = []
+def _runs(said: list[Console | Emitted | Metric | Phase | None]) -> Iterator[tuple[Console | Emitted, ...] | Metric | Phase | None]:
+    lines: list[Console | Emitted] = []
     for event in said:
         match event:
-            case Console():
+            case Console() | Emitted():
                 lines.append(event)
             case _:
                 if lines:

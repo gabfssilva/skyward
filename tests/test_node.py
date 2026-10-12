@@ -22,7 +22,7 @@ from skyward.server.application.ssh import Result, Ssh, SshUnavailableError
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Image, NodeState, Options
 from skyward.worker import bootstrap
-from skyward.worker.journal import LOCK, Console, Metric
+from skyward.worker.journal import LOCK, Console, Emitted, Metric
 
 pytestmark = pytest.mark.local
 
@@ -272,6 +272,10 @@ def _console(content: str) -> str:
     return f'{{"type":"console","content":"{content}"}}\n'
 
 
+def _emitted(name: str) -> str:
+    return f'{{"type":"emitted","id":"{name}","name":"{name}","payload":{{"n":1}},"at":1757887200000}}\n'
+
+
 def _heard(node: Node) -> list[str]:
     phases: list[str] = []
 
@@ -363,6 +367,32 @@ def describe_console_lines() -> None:
             await node._watch()
 
         assert batches == [("0", "1"), ("2", "3"), ("4",)]
+
+    async def carry_the_emitted_events_written_among_them_in_their_place() -> None:
+        lines = [_console("one"), _emitted("epoch"), _console("two"), _phase("apt"), _emitted("done")]
+        said: list[tuple[str, ...] | str] = []
+        node = _node(_File(lines), [])
+
+        def word(line: Console | Emitted) -> str:
+            match line:
+                case Console(content=content):
+                    return content
+                case Emitted(name=name):
+                    return name
+
+        async def printed(batch: tuple[Console | Emitted, ...]) -> None:
+            said.append(tuple(word(line) for line in batch))
+
+        async def noted(event: str, phase: str, error: str | None) -> None:
+            said.append(phase)
+
+        node._output = printed
+        node._phase = noted
+
+        async with asyncio.timeout(5):
+            await node._watch()
+
+        assert said == [("one", "epoch", "two"), "apt", ("done",)]
 
 
 class _Venv(_Link):

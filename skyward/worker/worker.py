@@ -44,7 +44,7 @@ from skyward.shared.schemas import Executor as ExecutorKind
 from skyward.shared.schemas import PluginRef
 from skyward.worker import distributed, ipc, plugins, stopping
 from skyward.worker.api import Info, instance_info
-from skyward.worker.journal import Health, Journal, Phase, emit, task
+from skyward.worker.journal import Health, Journal, Phase, append, task
 from skyward.worker.plugins import Plugin
 
 PORT = 25520
@@ -853,19 +853,19 @@ async def main() -> None:
             await asyncio.to_thread(setup, stack)
 
             health_monitor = await start_health(health_checks())
-            emit(Phase(event="completed", phase="worker"))
+            append(Phase(event="completed", phase="worker"))
             if health_monitor is None:
                 await leaving.wait()
             else:
                 gone = asyncio.create_task(leaving.wait())
                 done, _ = await asyncio.wait({health_monitor, gone}, return_when=asyncio.FIRST_COMPLETED)
                 if health_monitor in done:
-                    emit(Health(reason=health_monitor.result()))
+                    append(Health(reason=health_monitor.result()))
                 else:
                     health_monitor.cancel()
                 gone.cancel()
             if leaving.is_set():
-                emit(Phase(event="completed", phase="shutdown"))
+                append(Phase(event="completed", phase="shutdown"))
         finally:
             distributed.unbind()
             await asyncio.to_thread(stack.close)
@@ -891,6 +891,6 @@ def cli() -> None:
     try:
         asyncio.run(main())
     except Exception as exc:
-        emit(Phase(event="failed", phase="worker", error=str(exc)))
+        append(Phase(event="failed", phase="worker", error=str(exc)))
         raise
 

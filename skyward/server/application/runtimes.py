@@ -33,14 +33,14 @@ from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef, SkywardSource
 from skyward.shared.tls import Authority, identity
 from skyward.worker import worker
-from skyward.worker.journal import Console, Metric
+from skyward.worker.journal import Console, Emitted, Metric
 
 logger = logger.bind(component="runtimes")
 
 type Listener = Callable[[str, str, NodeState, str | None, str | None], None]
 """(compute, node, state, error, image)"""
 
-type Output = Callable[[str, str, tuple[Console, ...]], Awaitable[None]]
+type Output = Callable[[str, str, tuple[Console | Emitted, ...]], Awaitable[None]]
 """(compute, node, lines)"""
 
 type Sample = Callable[[str, str, Metric], Awaitable[None]]

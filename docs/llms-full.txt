@@ -280,7 +280,7 @@ Public root symbols include:
 `Compute`, `Spec`, `Options`, `Executor`, `Nodes`, `Image`, `Volume`, `Port`,
 `Provider`, `Pending`, `Group`, `Streaming`, `function`, `stream`, `gather`,
 `instance_info`, `shard`, `is_head`, `stdout`, `stderr`, `silent`,
-`redirect_output`, `dict`, `set`, `counter`, `queue`, `barrier`, `lock`,
+`redirect_output`, `emit`, `dict`, `set`, `counter`, `queue`, `barrier`, `lock`,
 `registry`, `DistributedRegistry`, `Consistency`, `Storage`, `DockerImage`,
 `SkywardError`, `TaskFailedError`, and `TaskIndeterminateError`.
 

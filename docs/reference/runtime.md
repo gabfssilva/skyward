@@ -49,6 +49,22 @@ def train_epoch(features, labels):
 
 Pass `node` and `total_nodes` explicitly when testing a shard outside a node. Otherwise they are read from `Info`.
 
+## Events
+
+`sky.emit(name, payload)` sends a JSON value to the daemon, which records it in the compute's event log as a `node.emitted` event. It can be called anywhere on a node — a task, a thread it started, a plugin's `setup`, an executor subprocess — and names the task whose code is running, when there is one. The output policy does not apply to it.
+
+```python
+@sky.function
+def train(epochs):
+    for epoch in range(epochs):
+        loss = step()
+        sky.emit("epoch", {"epoch": epoch, "loss": loss})
+```
+
+The events are read like any other: `sky log`, `GET /v1/events/log?types=node.emitted`, or the stream. An event is limited to 64 KiB; larger values belong in the task's result or in storage.
+
+::: skyward.emit
+
 ## Output and callbacks
 
 `stdout`, `stderr`, and `silent` control which task output is sent back to the client. `redirect_output(callback)` temporarily sends both streams to a callback and yields callback writers.

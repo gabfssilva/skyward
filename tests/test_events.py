@@ -12,7 +12,7 @@ from skyward.server.persistence.db import connect
 from skyward.server.persistence.events import BACKLOG, PAGE, EventStore, Live, Record
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
-from skyward.shared.events import ConsoleEvent, LogEntry, MetricEvent, NodeEvent, TaskEvent
+from skyward.shared.events import ConsoleEvent, EmittedEvent, Event, LogEntry, MetricEvent, NodeEvent, TaskEvent
 from skyward.shared.schemas import Page
 
 pytestmark = pytest.mark.local
@@ -24,6 +24,10 @@ type Runs = AsyncIterator[tuple[Record, ...]]
 
 def line(compute: str, content: str, node: str = "n0") -> ConsoleEvent:
     return ConsoleEvent(compute=compute, node=node, content=content)
+
+
+def emitted(compute: str, key: str, node: str = "n0", task: str | None = None) -> EmittedEvent:
+    return EmittedEvent(compute=compute, node=node, id=key, name="epoch", at=now(), payload={"key": key}, task=task, execution=task and "exe_1")
 
 
 def content(payload: bytes) -> str:
@@ -198,6 +202,26 @@ def describe_record_all() -> None:
 
         assert [(sequence, content(payload)) for sequence, _, payload in stored] == list(zip(sequences, given, strict=True))
 
+    async def an_emitted_event_read_again_is_stored_and_delivered_once(events: EventStore) -> None:
+        first, between, second, after = emitted("cmp_a", "e1"), line("cmp_a", "between"), emitted("cmp_a", "e2"), line("cmp_a", "after")
+        stream = events.stream(None, None, None, None)
+        try:
+            await events.record_all([first, between])
+            await events.record_all([first, second])
+            await events.record(after)
+            delivered = await take(stream, 4)
+        finally:
+            await stream.aclose()
+
+        decode = msgspec.json.Decoder(Event)
+        assert [decode.decode(payload) for _, _, payload in delivered] == [first, between, second, after]
+        assert len((await events.log(None, 10, compute="cmp_a")).items) == 4
+
+    async def identical_lines_a_node_printed_are_both_stored(events: EventStore) -> None:
+        await events.record_all([line("cmp_a", "same"), line("cmp_a", "same")])
+
+        assert said(await events.log(None, 10, compute="cmp_a")) == ["same", "same"]
+
     async def it_does_nothing_with_no_events(events: EventStore) -> None:
         await events.record_all([])
         await events.record(line("a", "only"))
@@ -263,6 +287,15 @@ def describe_reading_the_log() -> None:
         page = await events.log(None, 10, types=("node.ready",))
 
         assert [entry.type for entry in page.items] == ["node.ready"]
+
+    async def it_reads_what_a_task_emitted_under_its_task_and_its_node(events: EventStore) -> None:
+        await events.record_all([emitted("cmp_a", "e1", node="n1", task="tsk_1"), emitted("cmp_a", "e2", node="n0", task="tsk_2")])
+
+        by_task = await events.log(None, 10, task="tsk_1")
+        by_node = await events.log(None, 10, node="n1")
+
+        assert [entry.data for entry in by_task.items] == [entry.data for entry in by_node.items]
+        assert [entry.type for entry in by_task.items] == ["node.emitted"]
 
     async def it_reads_one_nodes_lines_among_the_others(events: EventStore) -> None:
         await events.record_all([line("cmp_a", "from zero", "n0"), line("cmp_a", "from one", "n1")])

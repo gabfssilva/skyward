@@ -5,6 +5,7 @@ import os
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import casty
@@ -55,11 +56,11 @@ from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared.errors import NotFoundError, SkywardError
-from skyward.shared.events import ConsoleEvent, MetricEvent, PhaseEvent
+from skyward.shared.events import ConsoleEvent, EmittedEvent, MetricEvent, PhaseEvent
 from skyward.shared.observability import LogConfig, level, logger, setup_logging
 from skyward.shared.schemas import MetricSample, PhaseMark
 from skyward.worker import worker
-from skyward.worker.journal import Console, Metric
+from skyward.worker.journal import Console, Emitted, Metric
 
 logger = logger.bind(component="daemon")
 
@@ -142,15 +143,28 @@ def services() -> Services:
     providers = ProviderStore()
     tasks = TaskStore(computes, nodes, blobs, events)
 
-    async def console(compute: str, node: str, lines: tuple[Console, ...]) -> None:
-        """A node names the execution it was running; the line is recorded under that execution's task too."""
+    async def said(compute: str, node: str, lines: tuple[Console | Emitted, ...]) -> None:
+        """A node names the execution it was running; what it said is recorded under that execution's task too."""
         owners = await tasks.owners({line.task for line in lines if line.task})
-        await events.record_all(
-            tuple(
-                ConsoleEvent(compute=compute, node=node, content=line.content, task=owners.get(line.task) if line.task else None, execution=line.task)
-                for line in lines
-            )
-        )
+
+        def recorded(line: Console | Emitted) -> ConsoleEvent | EmittedEvent:
+            owner = owners.get(line.task) if line.task else None
+            match line:
+                case Console(content=content):
+                    return ConsoleEvent(compute=compute, node=node, content=content, task=owner, execution=line.task)
+                case Emitted():
+                    return EmittedEvent(
+                        compute=compute,
+                        node=node,
+                        id=line.id,
+                        name=line.name,
+                        at=datetime.fromtimestamp(line.at / 1000, UTC),
+                        payload=line.payload,
+                        task=owner,
+                        execution=line.task,
+                    )
+
+        await events.record_all(tuple(recorded(line) for line in lines))
 
     async def phased(compute: str, node: str, event: PhaseMark, phase: str, error: str | None) -> None:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
@@ -165,7 +179,7 @@ def services() -> Services:
         listener=lambda compute, node, state, error, image: wake(
             "node.observed", compute_id=compute, node_id=node, state=state, error=error, image=image,
         ),
-        output=console,
+        output=said,
         sample=sampled,
         phase=phased,
         transport=casty.Runtime(threads=THREADS),

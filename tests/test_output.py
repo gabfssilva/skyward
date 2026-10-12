@@ -16,7 +16,7 @@ import msgspec
 import pytest
 
 import skyward as sky
-from skyward.shared.events import ConsoleEvent, LogEntry
+from skyward.shared.events import ConsoleEvent, EmittedEvent, LogEntry
 from skyward.shared.schemas import Page
 from skyward.worker import journal
 
@@ -26,6 +26,13 @@ cloudpickle.register_pickle_by_value(sys.modules[__name__])
 @sky.function
 def talkative(mark: str) -> int:
     print(f"<<{mark}>>")
+    return 1
+
+
+@sky.function
+@sky.silent
+def emitting(mark: str) -> int:
+    sky.emit("probe", {"mark": mark, "values": [1, 2.5, None]})
     return 1
 
 
@@ -105,6 +112,25 @@ def describe_what_a_node_prints() -> None:
             assert entry.data.task.startswith("tsk_") and entry.data.execution.startswith("exe_")
             assert entry in history
             assert "task.started" in {event.type for event in history}
+
+    def describe_an_event_the_task_emitted() -> None:
+        def it_is_recorded_under_the_task_whose_attempt_emitted_it(pool: sky.Compute, daemon: str) -> None:
+            mark = f"emitted {time.time_ns()}"
+            payload = {"mark": mark, "values": [1, 2.5, None]}
+            assert emitting(mark) >> pool == 1
+
+            def emitted() -> list[LogEntry]:
+                entries = logged(daemon, types="node.emitted")
+                return [entry for entry in entries if isinstance(entry.data, EmittedEvent) and entry.data.payload == payload]
+
+            deadline = time.monotonic() + 20.0
+            while not (found := emitted()) and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+            (entry,) = found
+            assert isinstance(entry.data, EmittedEvent) and entry.data.task and entry.data.execution
+            assert entry.data.name == "probe"
+            assert entry in logged(daemon, task=entry.data.task)
 
     def describe_when_only_the_head_may_speak() -> None:
         def the_other_ranks_are_dropped_on_the_node(pool: sky.Compute, capsys: pytest.CaptureFixture[str]) -> None:

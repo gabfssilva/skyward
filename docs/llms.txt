@@ -33,7 +33,7 @@ Skyward turns ordinary functions into remote compute tasks: define lazily with `
 ## API reference
 
 - [Compute and task dispatch](https://gabfssilva.github.io/skyward/reference/pool/): `Compute`, `Spec`, `Pending`, `Group`, `Streaming`.
-- [Runtime](https://gabfssilva.github.io/skyward/reference/runtime/): `instance_info`, `shard`, output control.
+- [Runtime](https://gabfssilva.github.io/skyward/reference/runtime/): `instance_info`, `shard`, `emit`, output control.
 - [Distributed collections](https://gabfssilva.github.io/skyward/reference/distributed/)
 - [Events](https://gabfssilva.github.io/skyward/reference/events/)
 - [Plugins](https://gabfssilva.github.io/skyward/reference/plugins/)

@@ -49,6 +49,7 @@ For a compute the `event:` name and the `type` tag are the same word, one per fa
 | `compute.{fact}` — see below | the same name |
 | `node.{state}` | `node.state` |
 | `node.console` | `node.console` |
+| `node.emitted` | `node.emitted` |
 | `node.phase` | `node.phase` |
 | `node.metrics` | `node.metrics` |
 | `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |
@@ -84,11 +85,12 @@ The state machine is `requested → provisioning ⇄ ready`, either of which may
 
 `node.{state}` is recorded whenever a node's lifecycle reports a new state, where `state` is one of the node states: `requested`, `provisioning`, `connecting`, `bootstrapping`, `ready`, `draining`, `lost`, `deleting`, `deleted`, `failed`. The payload carries `node` and `state`, and `error` when the transition came with one. `state` repeats what the event name already said, which is the point: a payload that has been written down or exported has to say what it is without the frame that carried it.
 
-Three more come from the node itself rather than from the reconciler:
+Four more come from the node itself rather than from the reconciler:
 
 | Event | Payload | Notes |
 |-------|---------|-------|
 | `node.console` | `node`, `content`, and `task` when the line belongs to one | A node's stdout/stderr. Recorded |
+| `node.emitted` | `node`, `id`, `name`, `at`, `payload`, and `task` when the call belongs to one | What `sky.emit` sent. Recorded once per `id`, even when the daemon reads the node's log again |
 | `node.phase` | `node`, `event`, `phase`, `at`, `error` | A bootstrap phase turning over, so a late subscriber replays the checklist. Recorded |
 | `node.metrics` | `node`, `name`, `value` | *Published.* One gauge reading. Its history is kept apart from the log: `GET /v1/computes/{id}/metrics` |
 

@@ -809,6 +809,19 @@ class NodeConsoleEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag=
     execution: str | None = None
 
 
+class NodeEmittedEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="node.emitted"):
+    """A JSON value the code on a node sent with ``sky.emit``, once per ``id``, and the task and attempt it belongs to when it belongs to one."""
+
+    compute: str
+    node: str
+    id: str
+    name: str
+    at: datetime
+    payload: object = None
+    task: str | None = None
+    execution: str | None = None
+
+
 class NodePhaseEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="node.phase"):
     """A bootstrap phase opened, closed or broke."""
 
@@ -858,6 +871,7 @@ type Event = (
     | NodeStateEvent
     | NodeProgressEvent
     | NodeConsoleEvent
+    | NodeEmittedEvent
     | NodePhaseEvent
     | NodeMetricsEvent
     | TaskStateEvent
@@ -1050,6 +1064,7 @@ __all__ = [
     "NodeBounds",
     "NodeConsoleEvent",
     "NodeDesired",
+    "NodeEmittedEvent",
     "NodeInclude",
     "NodeMetricsEvent",
     "NodePhaseEvent",

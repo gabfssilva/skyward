@@ -43,6 +43,8 @@ def _detail(name: str, payload: dict[str, str]) -> str:
             return payload.get("content", "")
         case "node.phase":
             return " ".join(filter(None, (payload.get("event"), payload.get("phase"), payload.get("error"))))
+        case "node.emitted":
+            return f"{payload.get('name', '')} {json.dumps(payload.get('payload'))}"
         case _:
             return payload.get("error", "")
 

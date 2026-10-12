@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         ComputeReady,
         ConsoleEvent,
         CostEvent,
+        EmittedEvent,
         Event,
         GenerationApplied,
         GenerationCreated,
@@ -100,6 +101,7 @@ if TYPE_CHECKING:
     from skyward.worker import metrics, plugins, storage
     from skyward.worker.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
     from skyward.worker.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
+    from skyward.worker.journal import emit
     from skyward.worker.storage import Storage
 
 RUNTIME = ("CallbackWriter", "Info", "instance_info", "is_head", "redirect_output", "shard", "silent", "stderr", "stdout")
@@ -126,6 +128,7 @@ EVENTS = (
     "ComputeReady",
     "ConsoleEvent",
     "CostEvent",
+    "EmittedEvent",
     "Event",
     "GenerationApplied",
     "GenerationCreated",
@@ -174,6 +177,7 @@ __all__ = [
     "CostEvent",
     "DistributedRegistry",
     "DockerImage",
+    "EmittedEvent",
     "Event",
     "EventCallback",
     "Executor",
@@ -230,6 +234,7 @@ __all__ = [
     "barrier",
     "counter",
     "dict",
+    "emit",
     "function",
     "gather",
     "instance_info",
@@ -263,6 +268,8 @@ def __getattr__(name: str) -> object:
             value = importlib.import_module(f"skyward.worker.{name}")
         case "Storage":
             value = importlib.import_module("skyward.worker.storage").Storage
+        case "emit":
+            value = importlib.import_module("skyward.worker.journal").emit
         case _ if name in EVENTS:
             value = getattr(importlib.import_module("skyward.shared.events"), name)
         case _ if name in SCHEMAS:

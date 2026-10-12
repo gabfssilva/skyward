@@ -140,6 +140,7 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS metric_samples_at ON metric_samples (at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS metric_chunks_window ON metric_chunks (compute_id, node_id, since)",
     "CREATE INDEX IF NOT EXISTS metric_chunks_last_id ON metric_chunks (last_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS events_emitted ON events (json_extract(payload, '$.id')) WHERE type = 'node.emitted'",
 )
 """What the models cannot say.
 
@@ -164,6 +165,10 @@ older than a boundary, a range on ``at`` rather than a walk through the table. A
 chunk is unique by its window, so a window sealed again folds into the same row,
 and a cursor is checked against the chunks compacted after it through
 ``last_id`` — a range of a few rows, not every chunk the compute ever had.
+
+An emitted event is unique by the id the node gave it, for the same reason a
+sample is: it is the one event a node's log read again must not repeat. Only those
+rows carry one, so the index covers only them.
 """
 
 

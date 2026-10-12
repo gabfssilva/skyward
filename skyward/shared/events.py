@@ -245,6 +245,25 @@ class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
     execution: str | None = None
 
 
+class EmittedEvent(Struct, frozen=True, tag_field="type", tag="node.emitted"):
+    """Something the user's code said with ``sky.emit``, on a node, and the work it belongs to when it belongs to some.
+
+    ``id`` is the one the machine gave it, and the log holds one event per id: a
+    node's log read again after the daemon restarted is not said twice. ``at`` is
+    the machine's clock at the call. ``payload`` is the JSON value it was given;
+    ``task`` and ``execution`` mean what they mean on :class:`ConsoleEvent`.
+    """
+
+    compute: str
+    node: str
+    id: str
+    name: str
+    at: datetime
+    payload: object = None
+    task: str | None = None
+    execution: str | None = None
+
+
 class PhaseEvent(Struct, frozen=True, tag_field="type", tag="node.phase"):
     """A bootstrap phase turning over, so a late subscriber replays the checklist.
 
@@ -304,6 +323,7 @@ type Event = (
     | NodeEvent
     | ProgressEvent
     | ConsoleEvent
+    | EmittedEvent
     | PhaseEvent
     | MetricEvent
     | TaskEvent
@@ -359,6 +379,7 @@ __all__ = [
     "ComputeReady",
     "ConsoleEvent",
     "CostEvent",
+    "EmittedEvent",
     "Event",
     "GenerationApplied",
     "GenerationCreated",

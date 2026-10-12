@@ -11,7 +11,7 @@ from piccolo.columns.combination import WhereRaw
 from skyward.server.persistence.store import now
 from skyward.server.persistence.tables import EventRow
 from skyward.shared import codec
-from skyward.shared.events import ConsoleEvent, Event, LogEntry, NodeEvent, PhaseEvent, TaskEvent, name
+from skyward.shared.events import ConsoleEvent, EmittedEvent, Event, LogEntry, NodeEvent, PhaseEvent, TaskEvent, name
 from skyward.shared.observability import logger
 from skyward.shared.schemas import Page
 
@@ -93,20 +93,27 @@ class EventStore:
         self.deliver(await self.append(event))
 
     async def record_all(self, events: Sequence[Event]) -> None:
-        """Write the lines a node printed together in one statement, then hand them over in order.
+        """Write what a node said together in one statement, then hand over what was new, in order.
 
         A single INSERT is atomic, and SQLite assigns the rowids of its rows in the
-        order they were given, so the sequences sorted line up with the events.
+        order they were given, so the rows read back sorted are the events in order.
+        An event the log already holds — an emitted one whose id is taken, read
+        again off a node's log after the daemon restarted — is not written, and not
+        handed over twice.
         """
         if not events:
             return
 
         rows = [await _row(event) for event in events]
-        inserted = await EventRow.insert(*(row for row, _, _ in rows)).returning(EventRow.sequence).run()
-        sequences = sorted(item["sequence"] for item in inserted)
+        inserted = await (
+            EventRow.insert(*(row for row, _, _ in rows))
+            .on_conflict(action="DO NOTHING")
+            .returning(EventRow.sequence, EventRow.type, EventRow.payload, EventRow.compute_id, EventRow.task_id)
+            .run()
+        )
 
-        for (_, frame, payload), sequence, event in zip(rows, sequences, events, strict=True):
-            self.deliver(Live(sequence=sequence, type=frame, payload=payload, compute=event.compute, task=_task(event)))
+        for item in sorted(inserted, key=lambda item: item["sequence"]):
+            self.deliver(Live(sequence=item["sequence"], type=item["type"], payload=item["payload"].encode(), compute=item["compute_id"], task=item["task_id"]))
 
     async def append(self, event: Event) -> Live:
         """Write the row and say nothing yet.
@@ -306,7 +313,7 @@ async def _row(event: Event) -> tuple[EventRow, str, bytes]:
 
 def _task(event: Event) -> str | None:
     match event:
-        case TaskEvent(task=task) | ConsoleEvent(task=task):
+        case TaskEvent(task=task) | ConsoleEvent(task=task) | EmittedEvent(task=task):
             return task
         case _:
             return None
@@ -314,7 +321,7 @@ def _task(event: Event) -> str | None:
 
 def _node(event: Event) -> str | None:
     match event:
-        case ConsoleEvent(node=node) | NodeEvent(node=node) | PhaseEvent(node=node):
+        case ConsoleEvent(node=node) | EmittedEvent(node=node) | NodeEvent(node=node) | PhaseEvent(node=node):
             return node
         case _:
             return None

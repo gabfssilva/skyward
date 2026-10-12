@@ -56,6 +56,7 @@ class EventController(Controller):
             "| `node.{state}` — ten of them | `node.state` |\n"
             "| `node.progress` | `node.progress` |\n"
             "| `node.console` | `node.console` |\n"
+            "| `node.emitted` | `node.emitted` |\n"
             "| `node.phase` | `node.phase` |\n"
             "| `node.metrics` | `node.metrics` |\n"
             "| `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |\n\n"
