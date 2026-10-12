@@ -35,7 +35,8 @@ A group is found by listing the project and matching the compute's prefix, never
 by reading the binding back: a group is named for the compute and the node it
 was launched for before Salad is asked for it, so a launch whose reply is lost
 still leaves a group the listing names, and the daemon writes the id down from
-there. The name carries the compute and the claim, and the listing is the record.
+there, or from the retried launch, which Salad answers ``name_conflict``. The name
+carries the compute and the claim, and the listing is the record.
 """
 
 import asyncio
@@ -385,7 +386,11 @@ class SaladProvider:
         """Create one container group, named for the compute and the node.
 
         The name is the identity: it is minted here, so a request whose reply is
-        lost still leaves a group the listing matches. Nothing waits for Salad to
+        lost still leaves a group the listing matches, and the retry of that request
+        is answered ``name_conflict`` (a 400, where a 409 was expected), which names the very group
+        this launch asked for. It is written down from that answer, because Salad's
+        listing has been seen leaving out the group of a create that answered 504,
+        for as long as it ran. Nothing waits for Salad to
         allocate — a group it never places is reported by :meth:`machines` as one
         still waiting, and the control plane's provision deadline is what gives up
         on it.
@@ -398,7 +403,7 @@ class SaladProvider:
                 self._project,
             )
         except ApiError as error:
-            if error.status != 409:
+            if error.status != 409 and _problem(error) != "name_conflict":
                 raise
         return Machine(id=group_name, state="pending", user=SSH_USER, node=node)
 
@@ -498,9 +503,7 @@ class SaladProvider:
         except ApiError as error:
             if error.status != 400:
                 raise
-            body = getattr(error.response, "body", None)
-            reason = _text(body.get("type")) if isinstance(body, Mapping) else None
-            return f"salad refused to start it: {reason or error.message or 'bad request'}"
+            return f"salad refused to start it: {_problem(error) or error.message or 'bad request'}"
         return "starting"
 
     async def _discard(self, group_name: str) -> None:
@@ -782,6 +785,12 @@ def _country_codes(codes: tuple[str, ...]) -> list[CountryCode]:
         return [CountryCode(code) for code in codes]
     except ValueError as error:
         raise CapabilityMismatchError("salad country_codes contains an invalid country code") from error
+
+
+def _problem(error: ApiError) -> str | None:
+    """The problem type Salad answered with, read off the body the sdk kept."""
+    body = getattr(error.response, "body", None)
+    return _text(body.get("type")) if isinstance(body, Mapping) else None
 
 
 def _text(value: object) -> str | None:

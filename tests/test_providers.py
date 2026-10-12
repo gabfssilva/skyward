@@ -141,6 +141,12 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
             self.deleted: list[str] = []
             self.started: list[str] = []
             self.quota_full = False
+            self.refusal: tuple[int, str | None] | None = None
+
+        async def create_container_group(self, body: Any, organization: str, project: str) -> None:
+            if self.refusal:
+                status, problem = self.refusal
+                raise ApiError("Refused", status, SimpleNamespace(body={"type": problem, "status": status} if problem else {}))
 
         async def list_container_groups(self, organization: str, project: str) -> Any:
             mine = [
@@ -221,6 +227,29 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
         await provider.release({"compute_id": "cmp_1"})
 
         assert groups.deleted == ["skyward-cmp-1-aaaa"], "everything of this compute's, and nothing of anybody else's"
+
+    launching = {"compute_id": "cmp_1", "image": "ubuntu:24.04", "public_key": "ssh-ed25519 AAAA"}
+
+    @pytest.mark.parametrize("refusal", [(400, "name_conflict"), (409, None)], ids=["name_conflict", "conflict"])
+    async def it_is_what_a_retried_launch_answers_with(refusal: tuple[int, str | None]) -> None:
+        """A create whose reply is lost is retried, and Salad answers the retry ``400 name_conflict``.
+
+        That group is the one the launch asked for. Refused, the node kept no machine, so deleting
+        the compute deleted nothing: Salad's listing, the only other way to it, did not show it.
+        """
+        provider, groups = _salad({})
+        groups.refusal = refusal
+
+        machine = await provider.launch(launching, "on_demand", "aaaa")
+
+        assert machine.id == "skyward-cmp-1-aaaa", "the group the lost reply would have named, written down by name"
+
+    async def it_is_not_launched_when_salad_refuses_it_for_anything_else() -> None:
+        provider, groups = _salad({})
+        groups.refusal = (400, "created_replicas_quota_exceeded")
+
+        with pytest.raises(ApiError):
+            await provider.launch(launching, "on_demand", "aaaa")
 
 
 def describe_what_a_salad_account_may_buy() -> None:
