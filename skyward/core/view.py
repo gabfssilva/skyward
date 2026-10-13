@@ -24,7 +24,7 @@ from typing import assert_never
 
 import msgspec
 
-from skyward.api.v1 import ComputeResource, ComputeState, NodeResource, NodeState, Page, Ssh, TaskEventState, TaskResource, TaskState
+from skyward.api.v1 import ComputeResource, ComputeState, NodeResource, NodeState, Page, Ssh, TaskCounts, TaskEventState, TaskResource, TaskState
 from skyward.shared import lifecycle
 from skyward.shared.events import (
     ComputeDegraded,
@@ -86,6 +86,8 @@ class NodeView:
     phases: tuple[PhaseView, ...] = ()
     metrics: Mapping[str, tuple[float, ...]] = field(default_factory=lambda: MappingProxyType({}))
     tail: tuple[str, ...] = ()
+    created_at: datetime | None = None
+    """When the daemon asked for the machine: where its provisioning starts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +127,10 @@ class ComputeView:
     maximum: int | None = None
     created_at: datetime | None = None
     cost: float | None = None
+    rate: float | None = None
+    """What the machines cost right now, in dollars per hour."""
+    task_counts: TaskCounts | None = None
+    """Every task of the compute, by state, as of the last read: ``tasks`` is only the most recent of them."""
     nodes_total: int = 0
     errors: tuple[str, ...] = ()
     nodes: tuple[NodeView, ...] = ()
@@ -199,6 +205,8 @@ def refresh(view: ComputeView, compute: ComputeResource) -> ComputeView:
         maximum=compute.spec.nodes.max,
         created_at=compute.created_at,
         cost=compute.cost,
+        rate=compute.rate,
+        task_counts=compute.tasks,
         nodes_total=len(rows),
         nodes=rows,
         tail=tuple(line for line in view.tail if line[0] in kept),
@@ -343,6 +351,7 @@ def _hydrated(node: NodeResource, seen: NodeView) -> NodeView:
         market=node.market,
         error=node.last_error.message if node.last_error else None,
         ssh=node.ssh,
+        created_at=node.created_at,
         progress=node.progress.step if node.progress else seen.progress,
         completion=node.progress.completion if node.progress else seen.completion,
     )
