@@ -1624,7 +1624,15 @@ function seed_all(): void {
 function history(): void {
   const t = now()
   emit('compute.ready', { type: 'compute.ready', compute: C1, nodes_ready: 64, nodes_total: 64, generation: 2, at: iso(t - 13.1e6) })
-  emit('task.failed', { type: 'task.state', compute: C1, task: 'tk_9d1a02', state: 'failed', attempt: 1, at: iso(t - 1.24e6) })
+  emit('task.retrying', {
+    type: 'task.state',
+    compute: C1,
+    task: 'tk_9d1a02',
+    state: 'retrying',
+    attempt: 2,
+    error: 'CUDA out of memory. Tried to allocate 2.44 GiB',
+    at: iso(t - 1.24e6),
+  })
   emit('task.succeeded', { type: 'task.state', compute: C1, task: 'tk_9d1a02', state: 'succeeded', attempt: 2, at: iso(t - 1.1e6) })
   emit('node.bootstrapping', { type: 'node.state', compute: C1, node: nodeId(C1, 37), state: 'bootstrapping', error: null, at: iso(t - 2.2e5) })
   const marks: readonly (readonly [string, string])[] = [
@@ -1648,11 +1656,13 @@ function history(): void {
   emit('compute.cost', { type: 'compute.cost', compute: C2, cost: 100.24, nodes: 282, at: iso(t - 9e4) })
   emit('node.failed', { type: 'node.state', compute: C3, node: nodeId(C3, 6), state: 'failed', error: 'the bid was outrun', at: iso(t - 4.4e5) })
   emit('compute.degraded', { type: 'compute.degraded', compute: C3, error: '6 of 8 nodes ready, floor is 4', at: iso(t - 4.3e5) })
+  emit('task.failed', { type: 'task.state', compute: C3, task: 'tk_a4e9b7', state: 'failed', attempt: 2, error: 'the node was lost mid-execution', at: iso(t - 869e3) })
   emit('task.started', { type: 'task.state', compute: C3, task: 'tk_a4f2e1', state: 'started', attempt: 1, at: iso(t - 3.1e5) })
   emit('task.started', { type: 'task.state', compute: C1, task: 'tk_9d21c4', state: 'started', attempt: 1, at: iso(t - 9.2e4) })
   emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 0), content: 'step 9600 | loss 0.9127 | lr 1.0e-5 | 3.88 s/it', task: 'tk_71b3d0', at: iso(t - 3.52e6) })
   emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 3), content: 'NCCL WARN Net : Connection closed by remote peer 10.0.9.5<46211>', task: 'tk_71b3d0', at: iso(t - 3.41e6) })
   emit('node.console', { type: 'node.console', compute: C5, node: nodeId(C5, 0), content: 'saving checkpoint-9600\nERROR rank 3 stopped answering, the save is retried', task: 'tk_71b0ac', at: iso(t - 3.39e6) })
+  emit('task.failed', { type: 'task.state', compute: C5, task: 'tk_71b0ac', state: 'failed', attempt: 1, error: 'the node was lost mid-execution', at: iso(t - 3.3e6) })
   emit('compute.deleted', { type: 'compute.deleted', compute: C5, nodes_ready: 0, nodes_total: 16, at: iso(t - 1.64e6) })
 }
 

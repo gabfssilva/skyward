@@ -106,8 +106,6 @@ export function Stage() {
   const lowest = live && ready.length >= ENOUGH ? loadByRank(c, nodes, readings).sort((a, b) => a.load - b.load).slice(0, STRAGGLERS) : []
   const cells = nodeCells(c, nodes, readings, progress, new Set(lowest.map((x) => x.rank)))
   const map = fillRoom(cells.length, ROOM, Math.min(TALL[1], Math.max(TALL[0], beside.h || TALL[1])))
-  const trouble = c.status.last_error
-  const since = events.items.find((e) => e.type === 'compute.degraded' || e.type === 'compute.failed')?.at
 
   const remove = async () => {
     await api.deleteCompute(c.id)
@@ -120,7 +118,6 @@ export function Stage() {
         title={name}
         state={<Pill state={c.status.state} />}
         id={c.name ? c.id : undefined}
-        why={trouble ? { message: trouble.message, since: since ? ago(since) : undefined } : null}
         facts={[
           <>
             <b>
@@ -395,7 +392,6 @@ function TasksTable({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; n
           {list.map((t) => {
             const attempt = attemptOf(t)
             const ran = runOf(t)
-            const error = t.executions.find((e) => e.error)?.error?.message
             return (
               <tr key={t.id} data-open="" onClick={() => navigate(`/tasks/${t.id}`)}>
                 <td>
@@ -403,7 +399,6 @@ function TasksTable({ c, tasks, nodes }: { c: Compute; tasks: readonly Task[]; n
                 </td>
                 <td>
                   <Pill state={t.state} />
-                  {error && (t.state === 'failed' || t.state === 'timed_out') ? <span className="err-line">{error}</span> : null}
                 </td>
                 <td className="sub nowrap">
                   {dispatchLine(t, nodes)}

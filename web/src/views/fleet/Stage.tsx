@@ -7,7 +7,6 @@ import { Hive, scaleFor } from '../../ui/comb'
 import { PageHead } from '../../ui/head'
 import { Empty, Pill, useMeasure } from '../../ui/primitives'
 import { openWizard } from '../../sheets'
-import { Attention } from './Attention'
 import { History } from './History'
 import { NoMachines } from './NoMachines'
 
@@ -84,8 +83,6 @@ export function Stage() {
           ) : null}
         </div>
       </PageHead>
-
-      <Attention />
 
       {computes.length ? (
         <>

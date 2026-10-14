@@ -100,8 +100,8 @@ export function Facts({ items }: { items: readonly (ReactNode | null | false)[] 
 }
 
 /**
- * The same head on every route: where you are, what it is called, how it is doing, why it is not, what it is
- * made of, and what can be done to it.
+ * The same head on every route: where you are, what it is called, how it is doing, what it is made of, and what
+ * can be done to it. Why something is not well is the notifications' to say.
  *
  * A page under a bar item carries no title — the bar already says Computes — so ``title`` is left out there
  * and the page opens on its summary instead. A breadcrumb is only for a level the bar cannot show, which is
@@ -113,7 +113,6 @@ export function PageHead({
   version,
   state,
   id,
-  why,
   when,
   facts,
   primary,
@@ -125,8 +124,6 @@ export function PageHead({
   version?: number | null
   state?: ReactNode
   id?: string
-  /** what is wrong, and since when */
-  why?: { message: string; since?: string } | null
   when?: string
   facts?: readonly (ReactNode | null | false)[]
   primary?: Action
@@ -155,12 +152,6 @@ export function PageHead({
         {children}
         <Actions primary={primary} rest={rest} />
       </div>
-      {why ? (
-        <div className="why">
-          {why.message}
-          {why.since ? <span>{why.since}</span> : null}
-        </div>
-      ) : null}
       {facts ? <Facts items={facts} /> : null}
     </div>
   )

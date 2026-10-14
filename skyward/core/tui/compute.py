@@ -17,6 +17,10 @@ Writes — kill a node, scale, delete — are asked in a dialog and sent from a
 worker, so the screen keeps repainting while the daemon answers. The one that
 succeeds triggers a read at once rather than waiting for the poll.
 
+What failed lately on the compute and is not yet seen is listed under the
+header (:class:`~skyward.core.tui.notifications.Notifications`); nothing else on
+the screen repeats an error.
+
 The nodes are drawn as the Claude Code panel draws them: one block per node, a
 line saying what it is and how long it has been up, its load under it, and an
 arrow that opens the block on its trends — the last ten minutes of cpu and gpu as
@@ -25,7 +29,9 @@ number of blocks can be open at once, and they stay open across reads. The arrow
 keys walk the blocks for a keyboard and enter opens the one under the cursor;
 ``l`` and ``k`` act on that one. The cursor is a band behind the block, drawn
 only while the list has the focus: the band says where the keys go, and the
-tasks under it have a cursor of their own.
+tasks under it have a cursor of their own. The list holds the nodes still alive;
+the machines that ended — a rank replaced five times leaves five — are listed by
+picking their group, ``stopped`` or ``failed``, on the title, or with ``g``.
 
 Everything a key does can be clicked: the words that name an action on the
 screen are links to it (:class:`~skyward.core.tui.cells.Links`), and they run
@@ -55,6 +61,7 @@ from skyward.api.v1 import ComputeResource, NodeBounds, NodeResource, NodeState
 from skyward.core import history, writes
 from skyward.core.client import FAILURES, Client
 from skyward.core.history import NODE_GROUPS, NodeGroup, Snapshot
+from skyward.core.notifications import Seen
 from skyward.core.tui.cells import (
     ERROR_STYLE,
     MOVING,
@@ -75,6 +82,7 @@ from skyward.core.tui.cells import (
 )
 from skyward.core.tui.dialogs import Confirm, Scale
 from skyward.core.tui.log import Log
+from skyward.core.tui.notifications import Notifications
 from skyward.core.tui.tasks import Tasks
 from skyward.core.widgets import (
     _PHASE_LABELS,
@@ -92,6 +100,7 @@ class ComputeScreen(Screen[None]):
     DEFAULT_CSS = """
     ComputeScreen #actions { height: auto; margin: 1 2 0 2; }
     ComputeScreen #header { height: auto; margin: 1 2 0 2; }
+    ComputeScreen Notifications { margin: 1 2 0 2; }
     ComputeScreen #groups { height: auto; margin: 1 2 0 2; }
     ComputeScreen #nodes { height: auto; margin: 0 2; }
     ComputeScreen Tasks { height: auto; margin: 1 1 0 1; }
@@ -107,12 +116,14 @@ class ComputeScreen(Screen[None]):
         Binding("k", "kill", "kill"),
         Binding("s", "scale", "scale"),
         Binding("d", "delete", "delete"),
+        Binding("a", "seen_all", "mark all seen"),
     ]
 
-    def __init__(self, client: Client, compute_id: str) -> None:
+    def __init__(self, client: Client, compute_id: str, seen: Seen) -> None:
         super().__init__()
         self._client = client
         self._compute = compute_id
+        self._seen = seen
         self._tick = 0
         self._snapshot: Snapshot | None = None
         self._failure: str | None = None
@@ -125,6 +136,7 @@ class ComputeScreen(Screen[None]):
         with VerticalScroll(id="page", can_focus=False):
             yield Links(id="actions")
             yield Static(id="header")
+            yield Notifications(self._client, self._seen, self._compute)
             yield Links(id="groups")
             nodes = Links(id="nodes")
             nodes.can_focus = True
@@ -221,6 +233,9 @@ class ComputeScreen(Screen[None]):
 
         self.app.push_screen(Scale(_minimum(compute.spec.nodes), _maximum(compute.spec.nodes)), scaled)
 
+    def action_seen_all(self) -> None:
+        self.query_one(Notifications).action_seen_all()
+
     def action_delete(self) -> None:
         if self._snapshot is None or not history.deletable(self._snapshot.compute):
             return
@@ -290,7 +305,7 @@ class ComputeScreen(Screen[None]):
         if self._selected not in {node.id for node in listed}:
             self._selected = listed[0].id if listed else None
         if not listed:
-            self.query_one("#nodes", Static).update(Text("no nodes" if self._group is None else f"no {self._group} nodes", style=DIM))
+            self.query_one("#nodes", Static).update(Text("no live nodes" if self._group is None else f"no {self._group} nodes", style=DIM))
             return
         logging = self.query_one(Log).node_id
         band = Style(bgcolor=self.app.theme_variables.get("panel"))
@@ -377,8 +392,6 @@ def _summary(snapshot: Snapshot, frame: str) -> list[Text]:
         lines.append(Text(f"avg {averages}", style=DIM))
     if idleness := _idleness(snapshot):
         lines.append(idleness)
-    if error := compute.status.last_error:
-        lines.append(Text(error.message, style=ERROR_STYLE))
     lines.append(Text(dots(compute.id, f"updated {clock(snapshot.at)}"), style=DIM))
     return lines
 
@@ -460,7 +473,7 @@ def _title(compute: ComputeResource, selected: NodeGroup | None) -> Text:
 
 
 def _listed(compute: ComputeResource, group: NodeGroup | None) -> tuple[NodeResource, ...]:
-    shown = (node for node in compute.nodes if group is None or history.group(node) == group)
+    shown = history.alive(compute) if group is None else (node for node in compute.nodes if history.group(node) == group)
     return tuple(sorted(shown, key=lambda node: (node.terminated_at is not None, node.rank, node.created_at)))
 
 
@@ -469,8 +482,6 @@ def _block(node: NodeResource, snapshot: Snapshot, frame: str, shown: _Shown, ba
     lines = [_head(node, snapshot.at, frame, shown)]
     if shown.selected:
         lines[0].stylize(band)
-    if node.last_error is not None:
-        lines.append(Text(f"{_INDENT}{node.last_error.message}", style=ERROR_STYLE))
     if not terminated:
         lines.extend(line for line in (_load(node), *((_cpu_line(snapshot, node), _gpu_line(snapshot, node)) if shown.open else ())) if line is not None)
     if shown.open:

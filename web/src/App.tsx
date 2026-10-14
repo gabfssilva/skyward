@@ -12,7 +12,8 @@ import { Tip } from './ui/primitives'
 import { pulse } from './ui/charts'
 import { Logo } from './ui/comb'
 import { useStore } from './state/store'
-import { money, rateOf } from './state/model'
+import { ago, money, rateOf } from './state/model'
+import { described, useNotices } from './state/notices'
 import { api } from './api/client'
 import { MOCK } from './api/mock'
 import { applyStoredTheme, setTheme, type Theme } from './theme'
@@ -67,6 +68,62 @@ function FleetTag() {
   )
 }
 
+/**
+ * What failed lately and is not yet seen, behind a bell in the bar on every page.
+ *
+ * A notice opens what it is about: the task, for a task that failed, else the compute. Seen takes it off the
+ * list at once; a failure that happens again is a notice again.
+ */
+function Notices() {
+  const navigate = useNavigate()
+  const { notices, see } = useNotices()
+  const computes = useStore((s) => s.computes)
+  const history = useStore((s) => s.history)
+  const learn = useStore((s) => s.learn)
+  const names = new Map([...computes, ...history].map((c) => [c.id, c.name ?? c.id]))
+  const unknown = [...new Set(notices.map((n) => n.compute))].filter((id) => !names.has(id))
+  useEffect(() => {
+    if (unknown.length) void learn(unknown)
+  }, [unknown.join(), learn])
+  const open = (n: (typeof notices)[number]) => {
+    document.getElementById('notices')?.hidePopover()
+    navigate(n.kind.startsWith('task.') && n.subject ? `/tasks/${n.subject}` : `/computes/${n.compute}`)
+  }
+  return (
+    <>
+      <button className="iconbtn notices-btn" popoverTarget="notices" title="Notifications" aria-label={notices.length ? `Notifications, ${notices.length}` : 'Notifications'}>
+        <Icon name="bell" />
+        {notices.length ? <i className="count">{notices.length}</i> : null}
+      </button>
+      <div className="notices" id="notices" popover="auto">
+        <div className="chead">
+          <span className="h">Notifications</span>
+          {notices.length ? (
+            <button className="btn ghost sm spread" onClick={() => see(notices.flatMap((n) => n.ids))}>
+              Mark all seen
+            </button>
+          ) : null}
+        </div>
+        {notices.length ? null : <div className="sub">Nothing failed in the last day that is not seen.</div>}
+        {notices.map((n) => (
+          <div className="notice" key={n.ids[0]}>
+            <i className="sev" />
+            <button className="what trunc" onClick={() => open(n)}>
+              <b>{names.get(n.compute) ?? n.compute}</b> {described(n.kind)}
+              {n.ids.length > 1 ? ` ×${n.ids.length}` : ''}
+            </button>
+            <span className="sub nowrap">{ago(n.at)}</span>
+            <button className="btn sm" onClick={() => see(n.ids)}>
+              Seen
+            </button>
+            {n.reason ? <div className="reason">{n.reason}</div> : null}
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
 function Bar() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
@@ -96,6 +153,7 @@ function Bar() {
       </nav>
       <div className="bar-end">
         {pathname === '/' ? null : <FleetTag />}
+        <Notices />
         <div className="bar-status" id="bar-status" popover="auto">
           {MOCK ? <span className="tag proto">example data</span> : null}
           <span className="tag" id="daemon-tag" title={version ? `v${version}` : undefined}>

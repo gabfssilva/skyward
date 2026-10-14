@@ -18,6 +18,11 @@ const DRAINABLE = new Set(['requested', 'provisioning', 'connecting', 'bootstrap
 const TASKS_PER_PAGE = 5
 const WRITE_ATTEMPTS = 5
 const NAME_WIDTH = 16
+// The frame names of the events that are a failure, and how far back and how many of them are read.
+const FAILURES = ['compute.degraded', 'compute.deletion_failed', 'node.lost', 'node.failed', 'task.failed', 'task.timed_out']
+const FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000
+const FAILURE_SAMPLE = 200
+const SEEN_KEY = 'seen'
 const MARQUEE_MS = 250
 const MARQUEE_PAUSE_FRAMES = 8
 
@@ -35,7 +40,6 @@ type Compute = {
   createdAt: number
   ended: boolean
   cost: number | null
-  lastError: string | null
   bounds: Bounds
   /** Each node's newest reading of each metric, keyed node/name — present when the read asked for it. */
   latest: Map<string, number>
@@ -63,7 +67,13 @@ type LogLine = { at: number; node: string | null; type: string; text: string; er
 type LogFilter = { node: string | null; task: string | null; term: string; cursors: readonly string[] }
 type LogPage = { path: string; lines: LogLine[]; next: string | null }
 
-// `node`, `startedAt` and `error` come from the latest attempt.
+type Failure = { sequence: number; compute: string; kind: string; reason: string | null; at: number }
+// The failures of one kind on one compute for one reason, the newest first: a rank lost five times is one notice.
+type Notice = { compute: string; kind: string; reason: string | null; sequences: number[]; at: number }
+// What was seen, by sequence, and when it was: what was seen a window ago failed earlier still, and is forgotten.
+type Seen = ReadonlyMap<number, number>
+
+// `node` and `startedAt` come from the latest attempt.
 type Task = {
   id: string
   sha: string
@@ -74,7 +84,6 @@ type Task = {
   submittedAt: number
   startedAt: number | null
   finishedAt: number | null
-  error: string | null
 }
 
 type TaskOrder = 'state' | 'submitted' | 'finished'
@@ -105,6 +114,7 @@ type Detail = {
   sparks: Map<string, (number | null)[]>
   tasks: TaskPage
   log: LogPage
+  failures: Failure[]
 }
 
 type DetailView = { kind: 'detail'; id: string; page: number; group: NodeGroup | null; expanded: ReadonlySet<string>; tasks: TaskQuery; log: LogFilter }
@@ -120,12 +130,13 @@ type Writes = {
   remove: (id: string) => Promise<void>
   scale: (c: Compute, min: number, max: number) => Promise<void>
   drain: (compute: string, node: string) => Promise<void>
+  seen: (seen: Seen) => Promise<void>
 }
 
 type Snapshot =
   | { kind: 'loading' }
   | { kind: 'down'; reason: string }
-  | { kind: 'list'; live: Compute[]; recent: Compute[]; at: number }
+  | { kind: 'list'; live: Compute[]; recent: Compute[]; failures: Failure[]; at: number }
   | { kind: 'detail'; detail: Detail; at: number }
 
 const STATE_COLORS = new Map([
@@ -222,7 +233,6 @@ function parseCompute(item: unknown): Compute | undefined {
     rate: num(at(item, 'rate')) ?? 0,
     ended: time(at(item, 'ended', 'at')) !== null,
     cost: num(at(item, 'cost')) ?? null,
-    lastError: str(at(item, 'status', 'last_error', 'message')) ?? null,
     bounds: { initial, min: num(at(item, 'spec', 'nodes', 'min')) ?? initial, max: num(at(item, 'spec', 'nodes', 'max')) ?? initial },
     latest: new Map(
       list(at(item, 'nodes')).flatMap((node) => {
@@ -296,9 +306,39 @@ function parseTask(item: unknown): Task | undefined {
     attempts: executions.length,
     startedAt: time(at(latest, 'started_at')),
     finishedAt: time(at(item, 'finished_at')),
-    error: str(at(latest, 'error', 'message')) ?? null,
   }
 }
+
+function parseFailure(item: unknown): Failure | undefined {
+  const sequence = num(at(item, 'sequence'))
+  const kind = str(at(item, 'type'))
+  const when = time(at(item, 'at'))
+  const compute = str(at(item, 'data', 'compute'))
+  if (sequence === undefined || kind === undefined || when === null || compute === undefined) return undefined
+  return { sequence, kind, compute, at: when, reason: str(at(item, 'data', 'error')) ?? null }
+}
+
+// Failures arrive newest first, so the first of each group is its newest.
+function unseen(failures: Failure[], seen: Seen): Notice[] {
+  const groups = new Map<string, Notice>()
+  for (const f of failures) {
+    if (seen.has(f.sequence)) continue
+    const key = JSON.stringify([f.compute, f.kind, f.reason])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, { compute: f.compute, kind: f.kind, reason: f.reason, sequences: [f.sequence], at: f.at })
+    else group.sequences.push(f.sequence)
+  }
+  return [...groups.values()].sort((a, b) => b.at - a.at)
+}
+
+const described = (kind: string): string => kind.replace(/^compute\./, '').replace(/[._]/g, ' ')
+
+const seenOf = (stored: unknown): Seen =>
+  new Map(
+    Object.entries(typeof stored === 'object' && stored !== null ? stored : {}).flatMap(([sequence, when]): [number, number][] =>
+      typeof when === 'number' && /^\d+$/.test(sequence) ? [[Number(sequence), when]] : [],
+    ),
+  )
 
 const age = (ms: number): string => {
   if (ms < 60_000) return `${Math.max(0, Math.floor(ms / 1000))}s`
@@ -339,7 +379,8 @@ const nodeGroup = (n: Node): NodeGroup => {
       return n.lastError !== null ? 'failed' : n.state === 'deleted' ? 'stopped' : 'stopping'
   }
 }
-const inGroup = (nodes: Node[], group: NodeGroup | null): Node[] => (group === null ? nodes : nodes.filter((n) => nodeGroup(n) === group))
+// Without a group the list is the nodes still alive; the machines that ended are listed by picking their group.
+const inGroup = (nodes: Node[], group: NodeGroup | null): Node[] => nodes.filter((n) => (group === null ? n.terminatedAt === null : nodeGroup(n) === group))
 // The group filtered on is kept at zero, so the one way back to every node stays drawn.
 const nodeCounts = (nodes: Node[], filtered: NodeGroup | null): (readonly [NodeGroup, number])[] =>
   NODE_GROUPS.map((group) => [group, inGroup(nodes, group).length] as const).filter(([group, count]) => count > 0 || group === filtered)
@@ -439,9 +480,16 @@ async function getJson($: EngineInterface, path: string): Promise<unknown> {
   return body
 }
 
+async function loadFailures($: EngineInterface, compute?: string): Promise<Failure[]> {
+  const types = FAILURES.map((type) => `&types=${type}`).join('')
+  const body = await getJson($, `/v1/events/log?limit=${FAILURE_SAMPLE}${types}${compute === undefined ? '' : `&compute=${compute}`}`)
+  const since = Date.now() - FAILURE_WINDOW_MS
+  return items(body, parseFailure).filter((f) => f.at >= since)
+}
+
 async function loadList($: EngineInterface): Promise<Snapshot> {
-  const [live, recent] = await Promise.all([getJson($, '/v1/computes?live=true'), getJson($, '/v1/computes?live=false&limit=5')])
-  return { kind: 'list', live: items(live, parseCompute), recent: items(recent, parseCompute), at: Date.now() }
+  const [live, recent, failures] = await Promise.all([getJson($, '/v1/computes?live=true'), getJson($, '/v1/computes?live=false&limit=5'), loadFailures($)])
+  return { kind: 'list', live: items(live, parseCompute), recent: items(recent, parseCompute), failures, at: Date.now() }
 }
 
 const logPath = (id: string, filter: LogFilter): string => {
@@ -487,10 +535,11 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
   // The log is append-only, so a page behind a cursor never changes and only the newest page is fetched again.
   const unchanged = target.log.cursors.length > 0 && shown?.path === path ? shown : undefined
   // One read is the compute, the node holding each rank, the ones replaced before them, and each node's newest gauges.
-  const [computeBody, tasks, log] = await Promise.all([
+  const [computeBody, tasks, log, failures] = await Promise.all([
     getJson($, `${base}?include=nodes.replaced,nodes.metrics`),
     loadTasks($, id, target.tasks),
     unchanged ?? loadLog($, path),
+    loadFailures($, id),
   ])
   const compute = parseCompute(computeBody)
   if (compute === undefined) throw new Error(`unexpected compute payload for ${id}`)
@@ -552,7 +601,11 @@ async function loadDetail($: EngineInterface, target: DetailView, shown: LogPage
     idle,
   }
 
-  return { kind: 'detail', detail: { compute, fleet, nodes, group: target.group, listed, page, pageCount, latest, sparks, tasks, log }, at: Date.now() }
+  return {
+    kind: 'detail',
+    detail: { compute, fleet, nodes, group: target.group, listed, page, pageCount, latest, sparks, tasks, log, failures },
+    at: Date.now(),
+  }
 }
 
 // The reconciler's own writes also move the revision, so a refused If-Match is read again and sent again, under the same
@@ -597,6 +650,7 @@ export const register: Register = (on) => {
   let notice: string | undefined
   let scrolling = false
   let action: Action | undefined
+  let seen: Seen = new Map()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'sky', description: 'Skyward computes panel' })
@@ -609,6 +663,7 @@ export const register: Register = (on) => {
       return { text: 'Skyward panel hidden' }
     }
     await $.ui.open({ id: PANE_ID, title: 'Skyward' })
+    seen = seenOf(await $.store.get(SEEN_KEY))
     const tick = async () => {
       const target = view
       if (loading === target) return
@@ -627,6 +682,7 @@ export const register: Register = (on) => {
       remove: (id) => deleteCompute($, id),
       scale: (c, min, max) => scaleCompute($, c, min, max),
       drain: (compute, node) => drainNode($, compute, node),
+      seen: (next) => $.store.set(SEEN_KEY, Object.fromEntries(next)),
     }
     timers = [
       $.clock.every(REFRESH_MS, refresh),
@@ -662,6 +718,20 @@ export const register: Register = (on) => {
       action = undefined
       refresh?.()
       $.ui.invalidate('ui.render')
+    }
+
+    const open = (id: string) =>
+      show({ kind: 'detail', id, page: 0, group: null, expanded: new Set(), tasks: { order: 'state', fn: null, cursors: [] }, log: { node: null, task: null, term: '', cursors: [] } }, 'back')
+
+    // Drawn at once rather than at the next read; the ring goes to what is left of the section, or out of it.
+    const markSeen = (sequences: number[], focus: string | undefined) => {
+      const daemon = writes
+      if (daemon === undefined) return
+      const since = now - FAILURE_WINDOW_MS
+      seen = new Map([...[...seen].filter(([, when]) => when >= since), ...sequences.map((sequence): [number, number] => [sequence, now])])
+      focusKey = focus
+      $.ui.invalidate('ui.render')
+      void daemon.seen(seen)
     }
 
     // Keeps the current snapshot on screen until the page arrives, and both buttons drawn so the focus ring stays put.
@@ -819,13 +889,12 @@ export const register: Register = (on) => {
       return (
         <Box flexDirection="column">
           {tableRow(
-            <Button key={c.id} plain label={marquee(name, NAME_WIDTH, now)} dimColor={c.ended} onPress={() => show({ kind: 'detail', id: c.id, page: 0, group: null, expanded: new Set(), tasks: { order: 'state', fn: null, cursors: [] }, log: { node: null, task: null, term: '', cursors: [] } }, 'back')} />,
+            <Button key={c.id} plain label={marquee(name, NAME_WIDTH, now)} dimColor={c.ended} onPress={() => open(c.id)} />,
             columns.map((column) => {
               const { text, color } = column.cell(c)
               return cell(column, text, { color: c.ended ? undefined : color, dim: c.ended })
             }),
           )}
-          {c.lastError !== null && !c.ended ? <Text color="red" wrap="truncate">{`  ${c.lastError}`}</Text> : null}
         </Box>
       )
     }
@@ -849,6 +918,38 @@ export const register: Register = (on) => {
         {recent.length === 0 ? null : [<Text> </Text>, tableRow(<Text dimColor>recent</Text>, []), ...recent.map(computeRow)]}
       </Box>
     )
+
+    // `names` is given on the list, where each notice says its compute and opens it; a compute's own leaves it out.
+    // `after` is where the ring goes once the last notice is seen.
+    const noticesSection = (failures: Failure[], names: Map<string, string> | null, after: string | undefined): RenderElement | null => {
+      const notices = unseen(failures, seen)
+      if (notices.length === 0) return null
+      const rest = notices.length > 1 ? 'notices-all' : after
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={2}>
+            <Text bold>{`Notifications (${notices.length})`}</Text>
+            <Button key="notices-all" plain label="mark all seen" onPress={() => markSeen(notices.flatMap((n) => n.sequences), after)} />
+          </Box>
+          {notices.map((n) => (
+            <Box flexDirection="column">
+              <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+                <Text color="red">✗</Text>
+                {names === null ? null : <Button key={`notice-open:${n.sequences[0]}`} plain label={names.get(n.compute) ?? n.compute} onPress={() => open(n.compute)} />}
+                <Text color="red">{`${described(n.kind)}${n.sequences.length > 1 ? ` ×${n.sequences.length}` : ''}`}</Text>
+                <Text dimColor>{`${age(now - n.at)} ago`}</Text>
+                <Button key={`notice-seen:${n.sequences[0]}`} plain label="seen" onPress={() => markSeen(n.sequences, rest)} />
+              </Box>
+              {n.reason === null ? null : (
+                <Box paddingLeft={2}>
+                  <Text wrap="wrap">{n.reason}</Text>
+                </Box>
+              )}
+            </Box>
+          ))}
+        </Box>
+      )
+    }
 
     const computeHeader = (c: Compute, f: Fleet): RenderElement => {
       const means = averaged(f)
@@ -882,7 +983,6 @@ export const register: Register = (on) => {
           </Text>
           {means === '' ? null : <Text dimColor wrap="truncate">{`avg ${means}`}</Text>}
           {idleness === null ? null : <Text color={idleness.color} wrap="truncate">{idleness.text}</Text>}
-          {c.lastError !== null ? <Text color="red" wrap="truncate">{c.lastError}</Text> : null}
         </Box>
       )
     }
@@ -960,7 +1060,6 @@ export const register: Register = (on) => {
             </Box>
           ) : null}
           {killing?.step === 'failed' ? <Text color="red">{`    kill failed: ${killing.reason}`}</Text> : null}
-          {n.lastError !== null ? <Text color="red">{`    ${n.lastError}`}</Text> : null}
           {terminated
             ? null
             : stats([
@@ -999,13 +1098,16 @@ export const register: Register = (on) => {
               <Text dimColor>sky server start</Text>
             </Box>
           )
-        case 'list':
+        case 'list': {
+          const listed = [...snapshot.live, ...snapshot.recent]
           return (
             <Box flexDirection="column" gap={1}>
               <Text dimColor>{`${DAEMON} · updated ${clock(snapshot.at)}`}</Text>
+              {noticesSection(snapshot.failures, new Map(listed.map((c) => [c.id, c.name ?? c.id])), listed[0]?.id)}
               {computeTable(snapshot.live, snapshot.recent)}
             </Box>
           )
+        }
         case 'detail': {
           const d = snapshot.detail
           const ranks = new Map(d.nodes.map((n) => [n.id, n.rank]))
@@ -1027,6 +1129,7 @@ export const register: Register = (on) => {
                 {computeHeader(d.compute, d.fleet)}
                 <Text dimColor>{`${d.compute.id} · updated ${clock(snapshot.at)}`}</Text>
               </Box>
+              {noticesSection(d.failures, null, 'back')}
               <Box flexDirection="column">
                 <Box flexDirection="row" gap={2}>
                   {counts.length === 0 ? (
@@ -1049,7 +1152,7 @@ export const register: Register = (on) => {
                     </Box>
                   ) : null}
                 </Box>
-                {d.listed.length === 0 ? <Text dimColor>{d.group === null ? 'no nodes' : `no ${d.group} nodes`}</Text> : pageNodes.map((n) => nodeBlock(n, d, sparkStart, view.kind === 'detail' && view.expanded.has(n.id), view.kind === 'detail' && view.log.node === n.id))}
+                {d.listed.length === 0 ? <Text dimColor>{d.group === null ? 'no live nodes' : `no ${d.group} nodes`}</Text> : pageNodes.map((n) => nodeBlock(n, d, sparkStart, view.kind === 'detail' && view.expanded.has(n.id), view.kind === 'detail' && view.log.node === n.id))}
               </Box>
               {view.kind === 'detail' ? tasksSection(d, view, ranks) : null}
               {view.kind === 'detail' ? logSection(d, view, ranks) : null}
@@ -1094,11 +1197,6 @@ export const register: Register = (on) => {
               </Box>
             )}
           </Box>
-          {t.error === null ? null : (
-            <Box paddingLeft={RANK_WIDTH + 3}>
-              <Text color="red" wrap="wrap">{t.error}</Text>
-            </Box>
-          )}
         </Box>
       )
     }
@@ -1159,8 +1257,8 @@ export const register: Register = (on) => {
           $.ui.invalidate('ui.render')
           return
         }
-        // A node the state filter hides is shown by dropping the filter.
-        const group = target.group === null || nodeGroup(node) === target.group ? target.group : null
+        // A node the list hides, filtered or ended, is shown under its own group.
+        const group = inGroup(d.nodes, target.group).includes(node) ? target.group : nodeGroup(node)
         filterLog({ ...filter, node: node.id, cursors: [] }, { page: Math.floor(inGroup(d.nodes, group).indexOf(node) / NODES_PER_PAGE), group })
       }
       // Mobile has no Input; there each node's logs button is the node filter. A field empties on Enter and is only

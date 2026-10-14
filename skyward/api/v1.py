@@ -849,6 +849,7 @@ class TaskStateEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="t
     task: str
     state: TaskEventState
     attempt: int = 1
+    error: str | None = None
 
 
 type Event = (

@@ -18,6 +18,7 @@ from textual.theme import Theme
 
 from skyward.core.client import Client
 from skyward.core.fleet import FleetObserver
+from skyward.core.notifications import SEEN, Seen
 from skyward.core.tui.fleet import FleetScreen
 from skyward.core.widgets import _DARK
 
@@ -52,6 +53,8 @@ class Dashboard(App[None]):
     FleetScreen #page, FleetScreen #page > VerticalScroll, #summary, #computes {{ width: auto; }}
     #summary {{ height: 1; margin: 1 2 1 2; }}
     #computes {{ height: auto; margin: 0 2; }}
+    FleetScreen Notifications {{ width: auto; margin: 0 2 1 2; }}
+    FleetScreen Notifications > Links {{ width: auto; max-width: 100%; }}
     DataTable > .datatable--header {{ color: $text-muted; background: transparent; text-style: none; }}
     DataTable > .datatable--cursor {{ background: $panel; }}
     """
@@ -65,10 +68,11 @@ class Dashboard(App[None]):
         self._client = client
         self._fleet = FleetObserver(client)
         self._url = url
+        self._seen = Seen(SEEN, url)
 
     def on_mount(self) -> None:
         self.run_worker(self._fleet.follow(), exclusive=True)
-        self.push_screen(FleetScreen(self._fleet, self._url, self._client))
+        self.push_screen(FleetScreen(self._fleet, self._url, self._client, self._seen))
 
 
 __all__ = ["LIGHT", "WIDTH", "Dashboard"]

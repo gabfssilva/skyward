@@ -33,6 +33,19 @@
 .tag.fleet small{font-weight:600;color:var(--muted)}
 @media (hover:hover){.tag.fleet:hover{background:var(--sunk)}}
 .tag.fleet:empty{display:none}
+.notices-btn{position:relative}
+.notices-btn .count{position:absolute;top:3px;right:2px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--bad);color:#fff;
+  font-size:10px;font-weight:700;font-style:normal;line-height:16px;text-align:center}
+.notices{display:none}
+.notices:popover-open{display:grid;position:fixed;inset:60px var(--gutter-r) auto auto;margin:0;border:0;width:min(460px,calc(100vw - 32px));
+  max-height:min(70vh,600px);overflow:auto;padding:14px;border-radius:14px;color:inherit;background:var(--panel);box-shadow:0 0 0 1px var(--line),var(--shadow)}
+.notices .chead{margin-bottom:4px}
+.notice{display:grid;grid-template-columns:8px minmax(0,1fr) auto auto;gap:4px 10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
+.notice>.sev{width:8px;height:8px;border-radius:50%;background:var(--bad)}
+.notice>.what{text-align:left;color:var(--ink)}
+.notice>.what b{font-weight:600}
+@media (hover:hover){.notice>.what:hover b{text-decoration:underline}}
+.notice>.reason{grid-column:2/-1;font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 .theme{display:flex;gap:2px}
 
 /* ---------- the page ---------- */
@@ -67,8 +80,6 @@
 .facts .mono{font-size:11.5px}
 
 /* Why something is wrong, under the title it is wrong on. */
-.why{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10px;font-size:12.5px;color:var(--bad);font-weight:600}
-.why span{color:var(--muted);font-weight:500}
 
 /* The summary a list page opens with: one number at 34, the rest at text size. */
 .sum{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 24px;font-size:15px;color:var(--muted);min-width:0}

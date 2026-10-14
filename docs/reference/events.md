@@ -108,7 +108,7 @@ Console output goes straight to the log rather than through the daemon's interna
 | `task.timed_out` | It waited or ran past the time it was given |
 | `task.indeterminate` | Its outcome cannot be established — the node is gone and the result never arrived, or the process running the function died under it |
 
-Each carries `compute`, `task`, the `state` its name says, and `attempt`, which counts the task's executions from one. They are an attempt's, not the task's: a broadcast ends once per node, and the task has ended once the last of them has. An ending is recorded after the task's verdict is written, so a reader that hears one and reads the task finds the verdict it led to.
+Each carries `compute`, `task`, the `state` its name says, and `attempt`, which counts the task's executions from one; an attempt that ended without succeeding also carries `error`, why it ended. They are an attempt's, not the task's: a broadcast ends once per node, and the task has ended once the last of them has. An ending is recorded after the task's verdict is written, so a reader that hears one and reads the task finds the verdict it led to.
 
 ## Reading it
 

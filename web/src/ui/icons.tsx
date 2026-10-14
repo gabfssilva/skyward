@@ -16,6 +16,7 @@ export const ICON = {
   more: '<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0112 0v5l2 2H4z"/><path d="M10 21h4"/>',
   refresh: '<path d="M20 12a8 8 0 01-14 5.3M4 12a8 8 0 0114-5.3"/><path d="M4 4v5h5M20 20v-5h-5"/>',
   run: '<path d="M7 5l12 7-12 7z"/>',
   next: '<path d="M9 6l6 6-6 6"/>',

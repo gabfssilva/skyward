@@ -292,6 +292,11 @@ def describe_reading_a_task() -> None:
         assert {task["id"] for task in page["items"]} == {plane.running, plane.succeeded, plane.failed}
         assert all(task["compute"]["name"] == "training" and task["function"]["name"] == "train" for task in page["items"])
 
+    async def the_log_says_why_one_failed_and_nothing_of_one_that_did_not(http: AsyncTestClient, plane: Plane) -> None:
+        page = await _read(http, f"/v1/events/log?compute={plane.compute}&types=task.failed&types=task.succeeded")
+
+        assert {entry["data"]["task"]: entry["data"]["error"] for entry in page["items"]} == {plane.failed: "ZeroDivisionError", plane.succeeded: None}
+
 
 def describe_creating_a_compute() -> None:
     async def what_was_left_out_is_what_the_daemon_took(http: AsyncTestClient) -> None:

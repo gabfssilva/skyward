@@ -3888,6 +3888,16 @@
           "compute": {
             "type": "string"
           },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "enum": [
               "started",

@@ -78,7 +78,6 @@ export function Stage() {
         title={`rank ${n.rank}`}
         state={<Pill state={n.state} />}
         id={n.id}
-        why={n.last_error ? { message: n.last_error.message } : null}
         facts={[
           n.address ? <b>{n.address}</b> : null,
           <>
@@ -187,7 +186,6 @@ function RanHere({ rows }: { rows: readonly { t: Task; x: ExecRow }[] }) {
               </td>
               <td>
                 <Pill state={x.state} />
-                {x.error ? <span className="err-line">{x.error}</span> : null}
               </td>
               <td>{x.ordinal}</td>
               <td className="right nowrap">{dur(x.ms)}</td>

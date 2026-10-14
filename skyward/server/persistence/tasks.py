@@ -322,7 +322,9 @@ class TaskStore:
         settled = await self.settle(row.task_id)
         if (said := _said(state, again)) is not None:
             attempt = row.ordinal + 1 if again else row.ordinal
-            await self._events.record(TaskEvent(compute=settled.compute_id, task=row.task_id, state=said, attempt=attempt))
+            await self._events.record(
+                TaskEvent(compute=settled.compute_id, task=row.task_id, state=said, attempt=attempt, error=error.message if error else None),
+            )
         return True
 
     async def release(self, execution_id: str) -> None:

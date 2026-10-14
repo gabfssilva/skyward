@@ -89,7 +89,7 @@ function useQueue() {
   }, [watched])
 }
 
-/** One task of the feed: the freshest copy the store has of it, and the error that made it stop. */
+/** One task of the feed: the freshest copy the store has of it. */
 function Row({ task, named }: { task: Task; named: boolean }) {
   const navigate = useNavigate()
   const t = useStore((s) => freshest(s, task))
@@ -98,7 +98,6 @@ function Row({ task, named }: { task: Task; named: boolean }) {
   const live = useStore((s) => s.computes.some((x) => x.id === task.compute.id))
   const attempt = attemptOf(t)
   const ran = runOf(t)
-  const error = t.executions.find((e) => e.error)?.error?.message
   return (
     <tr data-open="" onClick={() => navigate(`/tasks/${t.id}`)}>
       {named ? (
@@ -108,7 +107,6 @@ function Row({ task, named }: { task: Task; named: boolean }) {
       ) : null}
       <td data-cell={named ? 'state' : 'fn'} style={{ maxWidth: 300 }}>
         <Pill state={t.state} />
-        {error && (t.state === 'failed' || t.state === 'timed_out') ? <span className="err-line">{error}</span> : null}
       </td>
       <td data-cell="where" className="nowrap">
         <b style={{ fontWeight: 600 }}>{c?.name ?? task.compute.name ?? task.compute.id}</b>

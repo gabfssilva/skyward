@@ -2092,6 +2092,7 @@ export interface components {
             /** @default 1 */
             attempt: number;
             compute: string;
+            error?: string | null;
             /** @enum {string} */
             state: "started" | "retrying" | "succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate";
             task: string;

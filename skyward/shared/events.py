@@ -295,12 +295,15 @@ class TaskEvent(Struct, frozen=True, tag_field="type", tag="task.state"):
     ended — so a reader can tell a first run from a second without the task. An
     ending is recorded once the task is settled, so a reader told of one reads the
     task's verdict already written: the task's own, once its last attempt has ended.
+    ``error`` is why the attempt ended when it did not succeed, as ``node.state``
+    carries why a machine did, so the log says what went wrong without the task.
     """
 
     compute: str
     task: str
     state: TaskEventState
     attempt: int = 1
+    error: str | None = None
 
 
 type Event = (

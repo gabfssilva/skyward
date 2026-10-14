@@ -14,8 +14,8 @@ is no longer the one wanted. The poll does not: a tick that finds a read still
 out waits for it, or a daemon slower than the poll would never be heard.
 
 Each task is drawn as the Claude Code panel draws it: a glyph for its state, the
-node it ran on, its function, how it went and, at the end of the line, ``logs``;
-its error, whole, on the line under it. The function's name is a link that
+node it ran on, its function, how it went and, at the end of the line, ``logs``.
+Why one failed is the compute's notifications' to say. The function's name is a link that
 narrows the list to that function, and ``logs`` opens the log on that task. The
 arrow keys walk the lines for a keyboard, and enter and ``l`` act on the one
 under the cursor — a band drawn only while the lines have the focus, so that it
@@ -49,7 +49,7 @@ ORDERS: tuple[TaskOrder, ...] = ("state", "submitted", "finished")
 
 
 class Tasks(Vertical):
-    """A page of a compute's tasks, each on a line of its own with its error under it."""
+    """A page of a compute's tasks, each on a line of its own."""
 
     DEFAULT_CSS = """
     Tasks { height: auto; }
@@ -235,16 +235,14 @@ class Tasks(Vertical):
         now = datetime.now(UTC)
         band = Style(bgcolor=self.app.theme_variables.get("panel"))
         cursor = self._selected if self.query_one("#rows").has_focus else None
-        lines: list[Text] = []
-        for task in items:
+
+        def drawn(task: TaskResource) -> Text:
             head = self._head(task, now)
             if task.id == cursor:
                 head.stylize(band)
-            lines.append(head)
-            latest = _latest(task)
-            if latest is not None and latest.error is not None:
-                lines.append(Text(f"{_INDENT}{latest.error.message}", style=ERROR_STYLE))
-        return Text("\n").join(lines)
+            return head
+
+        return Text("\n").join(drawn(task) for task in items)
 
     def _head(self, task: TaskResource, now: datetime) -> Text:
         latest = _latest(task)
@@ -268,10 +266,6 @@ class Tasks(Vertical):
         if latest is None or latest.node_id is None:
             return Text(" " * 4)
         return rank_badge(self._ranks.get(latest.node_id))
-
-
-_INDENT = " " * 7
-"""What the error under a task is set in by: the glyph, the badge and the spaces between them."""
 
 
 def _latest(task: TaskResource) -> ExecutionResource | None:

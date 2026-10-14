@@ -82,6 +82,16 @@ for (const screen of SCREENS) {
       }
     })
 
+    test('the notifications open inside the screen', async ({ page }) => {
+      await open(page, '/')
+      await page.getByRole('button', { name: /^Notifications/ }).click()
+      const box = await page.locator('#notices').boundingBox()
+      expect(box).not.toBeNull()
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(screen.width)
+      expect(await sideways(page)).toBe(0)
+    })
+
     test("the daemon's log scrolls sideways in neither of its views", async ({ page }) => {
       await open(page, '/activity')
       await page.getByRole('tab', { name: 'Daemon' }).click()
@@ -242,7 +252,7 @@ test.describe('phone', () => {
 
   test('a finger gets 44px targets and 16px fields', async ({ page }) => {
     await open(page, COMPUTE)
-    const target = await page.locator('.btn').first().evaluate((btn) => getComputedStyle(btn, '::after').height)
+    const target = await page.locator('.btn:visible').first().evaluate((btn) => getComputedStyle(btn, '::after').height)
     expect(parseFloat(target)).toBeGreaterThanOrEqual(44)
     await open(page, '/activity')
     expect(await page.getByPlaceholder('filter lines').evaluate((input) => getComputedStyle(input).fontSize)).toBe('16px')
@@ -302,6 +312,39 @@ test.describe('ipad lying down', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
     await page.keyboard.press('Escape')
     await expect(page.locator('#daemon-tag')).toBeHidden()
+  })
+})
+
+test.describe('notifications', () => {
+  test.use(DESKTOP)
+
+  const bell = (page: Page) => page.getByRole('button', { name: /^Notifications/ })
+
+  test('what failed is behind the bell, one line per kind of failure, and nothing of it on the pages', async ({ page }) => {
+    await open(page, '/')
+    await expect(page.getByText('Needs attention')).toHaveCount(0)
+    await expect(bell(page)).toHaveAccessibleName(/^Notifications, \d+$/)
+    await bell(page).click()
+    await expect(page.locator('#notices .notice').first()).toBeVisible()
+    await expect(page.locator('#notices .notice', { hasText: 'task failed' }).first()).toContainText('the node was lost mid-execution')
+  })
+
+  test('seen takes a line away, mark all seen takes the rest, and both outlast a reload', async ({ page }) => {
+    await open(page, '/')
+    await bell(page).click()
+    const lines = page.locator('#notices .notice')
+    const before = await lines.count()
+    expect(before).toBeGreaterThan(1)
+
+    await lines.first().getByRole('button', { name: 'Seen' }).click()
+    await expect(lines).toHaveCount(before - 1)
+
+    await page.getByRole('button', { name: 'Mark all seen' }).click()
+    await expect(lines).toHaveCount(0)
+    await expect(bell(page)).toHaveAccessibleName('Notifications')
+
+    await open(page, '/')
+    await expect(bell(page)).toHaveAccessibleName('Notifications')
   })
 })
 

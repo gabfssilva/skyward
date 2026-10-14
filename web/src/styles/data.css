@@ -28,32 +28,9 @@ td.err,.codebox.err{color:var(--bad)}
   .tasklist tr{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"fn state" "where took" "why why"}
   .tasklist td[data-cell="fn"]{grid-area:fn}
   .tasklist td[data-cell="state"]{grid-area:state;justify-self:end;max-width:none!important}
-  .tasklist td[data-cell="state"]:has(.err-line){grid-area:why;justify-self:stretch;display:flex!important;gap:10px;align-items:baseline}
-  .tasklist td[data-cell="state"]:has(.err-line) .err-line{margin-top:0;min-width:0}
   .tasklist td[data-cell="where"]{grid-area:where}
   .tasklist td[data-cell="took"]{grid-area:took;justify-self:end}
   .tasklist td[data-cell="hide"]{display:none}
-}
-
-/* ---------- needs attention ---------- */
-.att{display:grid}
-.arow{display:grid;grid-template-columns:8px minmax(0,300px) minmax(0,1fr) 16px;gap:4px 14px;align-items:center;
-  width:100%;padding:10px 0;border-top:1px solid var(--line);text-align:left;font-size:13px}
-.att>.arow:first-of-type{border-top:0}
-.arow>.sev{width:8px;height:8px;border-radius:50%;align-self:center}
-.arow>.sev.bad{background:var(--bad)}
-.arow>.sev.warn{background:var(--warn)}
-.arow b{font-weight:600}
-.arow .what{color:var(--muted)}
-.arow .detail{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arow>svg{font-size:16px;color:var(--faint);align-self:center}
-@media (hover:hover){.arow:hover b{text-decoration:underline}}
-@container stage (max-width:760px){
-  .arow{grid-template-columns:8px minmax(0,1fr) 16px}
-  .arow>.sev{grid-column:1;grid-row:1/3;align-self:start;margin-top:5px}
-  .arow>.trunc{grid-column:2;grid-row:1}
-  .arow>.detail{grid-column:2;grid-row:2;white-space:normal}
-  .arow>svg{grid-column:3;grid-row:1/3}
 }
 
 /* ---------- the fleet's tiles: one compute each, all cells on one scale ---------- */

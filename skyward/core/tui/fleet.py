@@ -3,8 +3,9 @@
 It is the list the Claude Code panel opens on, drawn the same way: one line per
 compute — its name, a glyph for its state and how many of its machines are up,
 the accelerator, the provider, what it costs an hour and what it has cost, its
-age — a total under the live ones, and the last few that ended below, dim. A
-compute with an error says it on the line after its own.
+age — a total under the live ones, and the last few that ended below, dim.
+What failed lately and is not yet seen is listed above them
+(:class:`~skyward.core.tui.notifications.Notifications`).
 
 The observer folds the event stream; this screen only draws, on a timer rather
 than per event — a compute streaming gauges from eight machines would otherwise
@@ -19,7 +20,7 @@ keyboard: enter opens the one under the cursor.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -36,8 +37,10 @@ from skyward.api.v1 import ComputeResource
 from skyward.core import history
 from skyward.core.client import FAILURES, Client, address
 from skyward.core.fleet import Fleet, FleetObserver
+from skyward.core.notifications import Seen
 from skyward.core.tui.cells import BILLING, ERROR_STYLE, REFRESH, Links, aware, dots, link, money
 from skyward.core.tui.compute import ComputeScreen
+from skyward.core.tui.notifications import Notifications
 from skyward.core.view import ComputeView
 from skyward.core.widgets import DIM, _accelerator_label
 
@@ -63,7 +66,6 @@ class Row:
     rate: float | None
     cost: float | None
     age: float
-    error: str | None
     ended: bool
 
 
@@ -80,15 +82,17 @@ class FleetScreen(Screen[None]):
 
     BINDINGS = [
         Binding("enter", "open", "open compute", priority=True),
+        Binding("a", "seen_all", "mark all seen"),
         Binding("up", "move(-1)", "up", show=False),
         Binding("down", "move(1)", "down", show=False),
     ]
 
-    def __init__(self, fleet: FleetObserver, url: str, client: Client) -> None:
+    def __init__(self, fleet: FleetObserver, url: str, client: Client, seen: Seen) -> None:
         super().__init__()
         self._fleet = fleet
         self._url = url
         self._client = client
+        self._seen = seen
         self._selected: str | None = None
         self._tick = 0
         self._recent: tuple[ComputeResource, ...] = ()
@@ -102,6 +106,7 @@ class FleetScreen(Screen[None]):
         with Vertical(id="page"):
             yield Static(id="summary")
             with VerticalScroll(can_focus=False):
+                yield Notifications(self._client, self._seen, names=self._names)
                 yield Links(id="computes")
         yield Footer()
 
@@ -124,9 +129,15 @@ class FleetScreen(Screen[None]):
     async def on_links_pressed(self, message: Links.Pressed) -> None:
         await self.run_action(message.action)
 
+    def on_notifications_open(self, message: Notifications.Open) -> None:
+        self.action_open(message.compute_id)
+
     def action_open(self, compute_id: str | None = None) -> None:
         if (opened := compute_id or self._selected) is not None:
-            self.app.push_screen(ComputeScreen(self._client, opened))
+            self.app.push_screen(ComputeScreen(self._client, opened, self._seen))
+
+    def action_seen_all(self) -> None:
+        self.query_one(Notifications).action_seen_all()
 
     def action_move(self, step: int) -> None:
         keys = [row.id for row in self._rows()]
@@ -150,6 +161,9 @@ class FleetScreen(Screen[None]):
             self._failure = None
         self._loaded = True
 
+    def _names(self) -> Mapping[str, str]:
+        return {row.id: row.name for row in self._rows()}
+
     def _rows(self) -> list[Row]:
         now = datetime.now(UTC)
         fleet = self._fleet.views
@@ -170,6 +184,7 @@ class FleetScreen(Screen[None]):
         rows = self._rows()
         if self._selected not in {row.id for row in rows}:
             self._selected = rows[0].id if rows else None
+        self.query_one(Notifications).styles.max_width = _width(_columns(rows))
         self.query_one("#computes", Static).update(self._page(rows))
 
     def _page(self, rows: list[Row]) -> Text:
@@ -179,33 +194,26 @@ class FleetScreen(Screen[None]):
             return Text("loading…", style=DIM)
         band = Style(bgcolor=self.app.theme_variables.get("panel"))
         columns = _columns(rows)
-        width = sum(column.width for column in columns) + GAP * (len(columns) - 1)
-        rule = Text("─" * width, style=DIM)
+        rule = Text("─" * _width(columns), style=DIM)
         live = [row for row in rows if not row.ended]
         ended = [row for row in rows if row.ended]
         lines = [_line(columns, tuple(Text(column.title, style=DIM) for column in columns)), rule]
         if not live:
             lines.append(Text("no live computes", style=DIM))
-        for row in live:
-            lines.extend(self._lines(columns, row, band))
+        lines.extend(self._row(columns, row, band) for row in live)
         if live:
             lines.extend((rule, _line(columns, _totals(columns, live))))
         if ended:
-            lines.extend((Text(""), Text("recent", style=DIM)))
-            for row in ended:
-                lines.extend(self._lines(columns, row, band))
+            lines.extend((Text(""), Text("recent", style=DIM), *(self._row(columns, row, band) for row in ended)))
         return Text("\n").join(lines)
 
-    def _lines(self, columns: tuple[Column, ...], row: Row, band: Style) -> list[Text]:
+    def _row(self, columns: tuple[Column, ...], row: Row, band: Style) -> Text:
         line = _line(columns, tuple(column.cell(row) for column in columns))
         if row.ended:
             line.stylize(DIM)
         if row.id == self._selected:
             line.stylize(band)
-        lines = [line]
-        if row.error is not None and not row.ended:
-            lines.append(Text(f"  {row.error}", style=ERROR_STYLE))
-        return lines
+        return line
 
 
 def where(url: str) -> str:
@@ -258,7 +266,6 @@ def _live(view: ComputeView, now: datetime) -> Row:
         rate=rate(view),
         cost=view.cost,
         age=(now - aware(view.created_at)).total_seconds() if view.created_at else 0.0,
-        error=view.errors[-1] if view.errors else None,
         ended=False,
     )
 
@@ -278,7 +285,6 @@ def _ended(compute: ComputeResource, now: datetime) -> Row:
         rate=None,
         cost=compute.ended.cost if compute.ended else compute.cost,
         age=(now - aware(compute.created_at)).total_seconds(),
-        error=compute.status.last_error.message if compute.status.last_error else None,
         ended=True,
     )
 
@@ -317,6 +323,10 @@ def _columns(rows: list[Row]) -> tuple[Column, ...]:
         Column("COST", 7, True, lambda row: Text(money(row.cost))),
         Column("AGE", 4, True, lambda row: Text(age(row.age))),
     )
+
+
+def _width(columns: tuple[Column, ...]) -> int:
+    return sum(column.width for column in columns) + GAP * (len(columns) - 1)
 
 
 def _totals(columns: tuple[Column, ...], live: list[Row]) -> tuple[Text, ...]:
