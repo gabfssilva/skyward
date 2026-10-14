@@ -46,6 +46,7 @@ from skyward.core.view import ComputeView
 from skyward.shared import codec
 from skyward.shared.events import ConsoleEvent, Event
 from skyward.shared.observability import notice
+from skyward.shared.retry import Retry
 from skyward.shared.schemas import (
     ComputeCreate,
     ComputeSpec,
@@ -647,16 +648,26 @@ async def _performed(client: Client, compute: str, script: Script, where: Where)
     """Run what the file declares, print what a function returned, and answer with the worst status."""
     match script.work:
         case Whole(argv):
-            statuses = await _remotely(client, compute, partial(execute, script.source, argv, script.includes), script.source, script.path.name, where)
+            work = partial(execute, script.source, argv, script.includes)
+            statuses = await _remotely(client, compute, work, script.source, script.path.name, where, retry=script.app.retry)
             return max(statuses, default=0)
         case Call(entry, arguments):
             work = partial(invoke, script.source, str(script.path), entry, arguments, script.includes)
-            outcomes = await _remotely(client, compute, work, script.source, entry, where)
+            outcomes = await _remotely(client, compute, work, script.source, entry, where, retry=script.app.retry)
             _answered(outcomes, where)
             return max((_exit(outcome) for outcome in outcomes), default=0)
 
 
-async def _remotely[R](client: Client, ref: str, work: Callable[[], R], excerpt: str, name: str, where: Where) -> list[R]:
+async def _remotely[R](
+    client: Client,
+    ref: str,
+    work: Callable[[], R],
+    excerpt: str,
+    name: str,
+    where: Where,
+    *,
+    retry: Retry | None | msgspec.UnsetType = msgspec.UNSET,
+) -> list[R]:
     """Submit ``work``, print what it prints, and answer with what each node returned, by rank.
 
     The compute is read first for its id: a task takes a reference, and the event
@@ -669,7 +680,7 @@ async def _remotely[R](client: Client, ref: str, work: Callable[[], R], excerpt:
     is told the task is done and left to drain until the log goes quiet.
     """
     compute = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
-    task = await _submit(client, compute.id, work, excerpt, name, where)
+    task = await _submit(client, compute.id, work, excerpt, name, where, retry)
 
     settled = asyncio.Event()
     printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled))
@@ -688,16 +699,29 @@ async def _remotely[R](client: Client, ref: str, work: Callable[[], R], excerpt:
     return await _results(client, task.id, codec.Pickle[R]())
 
 
-async def _submit(client: Client, compute: str, work: Callable[[], object], excerpt: str, name: str, where: Where) -> TaskResource:
+async def _submit(
+    client: Client, compute: str, work: Callable[[], object], excerpt: str, name: str, where: Where, retry: Retry | None | msgspec.UnsetType
+) -> TaskResource:
     """``work`` as a task: :mod:`skyward.worker.script` bound to the file's text.
 
     The text is also the function's excerpt, so the console shows the file that
-    ran rather than the few lines that ran it.
+    ran rather than the few lines that ran it. ``retry`` is the task's own
+    decision, stored as a blob as a pool stores its own; unset leaves the task the
+    compute's.
     """
     blob = await codec.payload.encode(work)
     function = await codec.digest(blob)
     await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": name})
     await client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=excerpt)))
+
+    decision: str | None | msgspec.UnsetType
+    match retry:
+        case None | msgspec.UnsetType():
+            decision = retry
+        case _:
+            stored = await codec.payload.encode(retry)
+            decision = await codec.digest(stored)
+            await client.upload(f"/v1/blobs/{decision}", stored)
 
     dispatch: Dispatch
     match where:
@@ -719,6 +743,7 @@ async def _submit(client: Client, compute: str, work: Callable[[], object], exce
                 dispatch=dispatch,
                 args_inline=await codec.payload.encode(((), {})),
                 rank=rank,
+                retry=decision,
             ),
         ),
         headers={"Idempotency-Key": uuid.uuid4().hex},

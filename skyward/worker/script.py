@@ -86,9 +86,13 @@ def call(source: str, path: str, entry: str, arguments: bytes, includes: bytes |
     The arguments are the ones the command line was parsed into, encoded as
     msgpack by name, and each is converted back to what its parameter is annotated
     with. The answer is JSON; a value JSON has no form for is written as its
-    ``str``, since what reads it is a person or a pipe, not a Python. Exiting and
-    raising end the call as they end :func:`run`, and ``includes`` is there as it
-    is there for :func:`run`.
+    ``str``, since what reads it is a person or a pipe, not a Python. Exiting ends
+    the call as it ends :func:`run`, and ``includes`` is there as it is there for
+    :func:`run`.
+
+    Raising is printed as :func:`run` prints it, and then goes through: a function
+    that raised is a failed task, as a ``sky.function`` that raised is, and the
+    worker asks the task's retry decision about the exception it holds.
     """
     with _unpacked(includes):
         try:
@@ -102,7 +106,7 @@ def call(source: str, path: str, entry: str, arguments: bytes, includes: bytes |
             return Exited(_status(stop))
         except Exception:
             traceback.print_exc()
-            return Exited(1)
+            raise
 
 
 @contextmanager

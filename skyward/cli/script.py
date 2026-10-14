@@ -137,7 +137,8 @@ class Script:
         machines already bought. ``nodes`` is left out — a size is the one thing a
         compute changes in place, so a new one resizes this compute rather than
         naming a second — and so is ``delete_on_exit``, which is what a run does on
-        its way out rather than what the machines are.
+        its way out rather than what the machines are. So is ``retry``, which each
+        run's task takes and the machines never see.
 
         A mutable image is state the compute changes in place, so it is left out too:
         a script that changes its ``pip`` changes the compute its name stands for

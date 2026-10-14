@@ -438,6 +438,8 @@ def describe_the_compute_a_script_is_named_after() -> None:
                 App(provider=AWS(), nodes=8),
                 App(provider=AWS(), delete_on_exit=False),
                 App(provider=AWS(), options=Options(ready_timeout=1800)),
+                App(provider=AWS(), retry=None),
+                App(provider=AWS(), retry=lambda reason, attempt: attempt < 3),
             ],
         )
         def what_is_not_the_machines_is_not_part_of_it(tmp_path: Path, other: App) -> None:
@@ -576,10 +578,14 @@ def describe_calling_a_function_on_a_node() -> None:
 
         assert call(source, "fit.py", "fit", msgspec.msgpack.encode({})) == Returned(b'{"model":"a model"}')
 
-    @pytest.mark.parametrize(("body", "status"), [("sys.exit(3)", 3), ("sys.exit()", 0), ("raise ValueError('bad shard')", 1)])
-    def exiting_and_raising_end_it_as_they_end_a_script(capsys: pytest.CaptureFixture[str], body: str, status: int) -> None:
-        assert call(entry(f"def fail() -> None:\n    {body}"), "fail.py", "fail", msgspec.msgpack.encode({})) == Exited(status)
-        assert status != 1 or "ValueError: bad shard" in capsys.readouterr().err
+    @pytest.mark.parametrize(("body", "status"), [("sys.exit(3)", 3), ("sys.exit()", 0)])
+    def exiting_ends_it_as_it_ends_a_script(body: str, status: int) -> None:
+        assert call(entry(f"def leave() -> None:\n    {body}"), "leave.py", "leave", msgspec.msgpack.encode({})) == Exited(status)
+
+    def raising_is_printed_and_goes_through_to_the_worker_whose_retry_decision_asks_about_it(capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(ValueError, match="bad shard"):
+            call(entry("def fail() -> None:\n    raise ValueError('bad shard')"), "fail.py", "fail", msgspec.msgpack.encode({}))
+        assert "ValueError: bad shard" in capsys.readouterr().err
 
     def a_stop_goes_through_to_the_worker_that_raised_it() -> None:
         with pytest.raises(Stop):
@@ -632,8 +638,10 @@ def declared(nodes: int, delete_on_exit: bool) -> str:
 
 
 def entries(nodes: int, delete_on_exit: bool) -> str:
-    """A file on local containers whose functions say where they ran and what they were given."""
+    """A file on local containers whose functions say where they ran and what they were given, and fail on purpose."""
     return textwrap.dedent(f"""
+        import dataclasses
+
         import skyward as sky
 
         local = sky.app(
@@ -644,6 +652,7 @@ def entries(nodes: int, delete_on_exit: bool) -> str:
             image=sky.Image(python="{PYTHON}", skyward="local"),
             delete_on_exit={delete_on_exit},
         )
+        retrying = dataclasses.replace(local, retry=lambda reason, attempt: isinstance(reason, ValueError) and attempt < 2)
 
 
         @local
@@ -656,6 +665,15 @@ def entries(nodes: int, delete_on_exit: bool) -> str:
         @local
         def fail() -> None:
             raise ValueError("on purpose")
+
+
+        @retrying
+        def flaky() -> int:
+            attempts = sky.counter("flaky")
+            attempts.add()
+            if attempts.get() == 1:
+                raise ValueError("the first attempt")
+            return attempts.get()
     """).lstrip()
 
 
@@ -728,11 +746,18 @@ def describe_sky_run() -> None:
             assert sorted(lines) == ["0 │ rank 0 shouting", "1 │ rank 1 shouting"], "a node runs the file with no httpx, sky.app and all"
             assert json.loads(answer) == [{"rank": 0, "said": "hihi"}, {"rank": 1, "said": "hihi"}], "every node's answer, by rank, after the lines"
 
+            retried = cli("run", "--url", daemon, str(path), "flaky")
+
+            assert retried.code == 0, retried.err
+            assert "ValueError: the first attempt" in retried.out
+            assert retried.out.splitlines()[-1] == "2", "the app's retry ran the function again after it raised, on the same compute"
+
             path.write_text(entries(nodes=2, delete_on_exit=True))
             failed = cli("run", "--url", daemon, "--node", "1", str(path), "fail")
 
             assert failed.code == 1, failed.err
             assert "ValueError: on purpose" in failed.out
+            assert "task_failed" in failed.err, "a function that raised is a failed task, not a status"
             assert all(line.startswith("1 │") for line in failed.out.splitlines()), "a function that raised answers nothing"
             assert httpx.get(f"{daemon}/v1/computes/{name}").json()["status"]["state"] == "deleted"
         finally:
