@@ -20,6 +20,7 @@ from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
 from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
 from skyward.providers.salad import SaladProvider
+from skyward.providers.tensordock import TensorDockProvider
 from skyward.server.application import market
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.providers import ProviderStore
@@ -418,6 +419,66 @@ def describe_what_a_salad_account_may_buy() -> None:
         _, resources = await _requested(provider, offer, spec)
 
         assert (resources.cpu, resources.memory) == (8, 16384), "the CPU-only alternative does not size the GPU node"
+
+
+def describe_what_a_tensordock_account_may_buy() -> None:
+    """TensorDock bills a VM by its parts, so every size is its own offer and the spec picks one."""
+
+    location = {
+        "id": "loc-1",
+        "country": "United States",
+        "tier": 1,
+        "gpus": [
+            {
+                "v0Name": "geforcertx4090-pcie-24gb",
+                "displayName": "GeForce RTX 4090 PCIe 24GB",
+                "max_count": 1,
+                "price_per_hr": 0.35,
+                "resources": {"max_vcpus": 4, "max_ram_gb": 8, "max_storage_gb": 500},
+                "pricing": {"per_vcpu_hr": 0.003, "per_gb_ram_hr": 0.002, "per_gb_storage_hr": 0.0001},
+            },
+        ],
+    }
+
+    @pytest.fixture
+    def provider(monkeypatch: pytest.MonkeyPatch) -> TensorDockProvider:
+        client = httpx.AsyncClient
+        transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"data": {"locations": [location]}}))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **options: client(transport=transport, **options))
+        return TensorDockProvider.create("prv_td", "tensordock", {"api_token": "not-a-token"}, {})
+
+    async def _offered(provider: TensorDockProvider) -> tuple[Offer, ...]:
+        return tuple([offer async for offer in provider.offers()])
+
+    async def it_offers_every_size_a_vm_of_that_gpu_may_claim(provider: TensorDockProvider) -> None:
+        sizes = {(offer.cpus, offer.memory_gb) for offer in await _offered(provider)}
+
+        assert len(sizes) == 4 * 8, "every vCPU count up to max_vcpus, with every GB up to max_ram_gb"
+        assert {(1, 1), (3, 5), (4, 8)} <= sizes
+
+    async def it_prices_a_size_by_what_it_is_made_of(provider: TensorDockProvider) -> None:
+        priced = {(offer.cpus, offer.memory_gb): offer.on_demand_price for offer in await _offered(provider)}
+
+        assert priced[(2, 4)] == pytest.approx(0.35 + 2 * 0.003 + 4 * 0.002 + 100 * 0.0001), "the GPU, the vCPUs, the RAM and the disk"
+
+    async def it_creates_the_vm_at_the_size_the_spec_asked_for(provider: TensorDockProvider) -> None:
+        offers = await _offered(provider)
+
+        class Shelf:
+            async def list(self, **query: Any) -> Page[Offer]:
+                return Page(items=offers, total=len(offers))
+
+        spec = ComputeSpec(
+            specs=(Spec(provider=ProviderRef(kind="tensordock"), accelerator="rtx4090", cpus=3, memory_gb=5),),
+            nodes=NodeBounds(initial=1),
+            image=Image(python="3.13"),
+            worker=Worker(concurrency=1, executor="thread"),
+        )
+
+        bought, _ = await market.pick(spec, Shelf())
+        binding = await provider.initialize("cmp_1", spec, bought, "on_demand", "ssh-ed25519 AAAA")
+
+        assert (binding["vcpus"], binding["ram_gb"]) == (3, 5), "the cheapest size that fits is the spec's own"
 
 
 def describe_a_pod_the_cloud_refuses_to_deploy() -> None:

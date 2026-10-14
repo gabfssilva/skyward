@@ -28,12 +28,17 @@ class TensorDockProvider:
     of somebody else's fleet, not a reservation.
 
     Pricing is à la carte — TensorDock bills a per-GPU rate plus per-vCPU,
-    per-GB-RAM and per-GB-storage rates. An Offer here is the *whole* available
-    slice of one GPU model at one location: all ``max_count`` GPUs, the maximum
-    vCPU and RAM a VM of that shape may claim, and ``storage_gb`` of disk. Its
+    per-GB-RAM and per-GB-storage rates. An Offer here is one size of one GPU
+    model at one location: all ``max_count`` GPUs, a number of vCPUs and whole GB
+    of RAM up to what a VM of that shape may claim, and ``storage_gb`` of disk. Its
     ``on_demand_price`` is the sum of those four line items, so the price, the
     ``accelerator_count``, the ``cpus`` and the ``memory_gb`` of an Offer all
     describe the same single machine.
+
+    Every size is offered, because a VM is created at whatever size it is asked
+    for and each size is its own price: the market picks the cheapest that fits
+    the spec, which is the spec's own size, and a size left off the shelf is one
+    nobody could buy.
     """
 
     kind: ClassVar[str] = "tensordock"
@@ -84,53 +89,53 @@ class TensorDockProvider:
 
                 resources = gpu.get("resources") or {}
                 pricing = gpu.get("pricing") or {}
-                cpus = self._config.min_vcpus or 4
-                memory_gb = float(self._config.min_ram_gb or 16)
-                if cpus > int(resources.get("max_vcpus") or 0) or memory_gb > float(resources.get("max_ram_gb") or 0):
-                    continue
                 if storage_gb > int(resources.get("max_storage_gb") or 0):
                     continue
                 disk_gb = float(storage_gb)
-
-                price = (
-                    count * float(gpu.get("price_per_hr") or 0)
-                    + cpus * float(pricing.get("per_vcpu_hr") or 0)
-                    + memory_gb * float(pricing.get("per_gb_ram_hr") or 0)
-                    + disk_gb * float(pricing.get("per_gb_storage_hr") or 0)
+                fixed = count * float(gpu.get("price_per_hr") or 0) + disk_gb * float(pricing.get("per_gb_storage_hr") or 0)
+                sizes = (
+                    (cpus, memory_gb)
+                    for cpus in range(1, int(resources.get("max_vcpus") or 0) + 1)
+                    for memory_gb in range(1, int(float(resources.get("max_ram_gb") or 0)) + 1)
                 )
 
-                yield Offer(
-                    id=f"{location['id']}:{model}",
-                    provider_id=self._id,
-                    provider_name=self._name,
-                    kind=self.kind,
-                    billing_unit="second",
-                    instance_type=str(gpu.get("displayName") or model),
-                    accelerator=_accelerator(model),
-                    accelerator_count=count,
-                    cpus=cpus,
-                    memory_gb=memory_gb,
-                    region=_region(location),
-                    disk_gb=disk_gb,
-                    spot_price=None,
-                    on_demand_price=price,
-                    available=count,
-                    fetched_at=now,
-                    expires_at=expires_at,
-                    specific={
-                        "location_id": location["id"],
-                        "gpu_model": model,
-                        "tier": location.get("tier"),
-                        "price_per_gpu_hr": gpu.get("price_per_hr"),
-                        "per_vcpu_hr": pricing.get("per_vcpu_hr"),
-                        "per_gb_ram_hr": pricing.get("per_gb_ram_hr"),
-                        "per_gb_storage_hr": pricing.get("per_gb_storage_hr"),
-                        "max_vcpus": resources.get("max_vcpus"),
-                        "max_ram_gb": resources.get("max_ram_gb"),
-                        "max_storage_gb": resources.get("max_storage_gb"),
-                        "network_features": gpu.get("network_features"),
-                    },
-                )
+                for cpus, memory_gb in sizes:
+                    yield Offer(
+                        id=f"{location['id']}:{model}:{cpus}x{memory_gb}",
+                        provider_id=self._id,
+                        provider_name=self._name,
+                        kind=self.kind,
+                        billing_unit="second",
+                        instance_type=f"{gpu.get('displayName') or model} {cpus}c{memory_gb}g",
+                        accelerator=_accelerator(model),
+                        accelerator_count=count,
+                        cpus=cpus,
+                        memory_gb=float(memory_gb),
+                        region=_region(location),
+                        disk_gb=disk_gb,
+                        spot_price=None,
+                        on_demand_price=(
+                            fixed
+                            + cpus * float(pricing.get("per_vcpu_hr") or 0)
+                            + memory_gb * float(pricing.get("per_gb_ram_hr") or 0)
+                        ),
+                        available=count,
+                        fetched_at=now,
+                        expires_at=expires_at,
+                        specific={
+                            "location_id": location["id"],
+                            "gpu_model": model,
+                            "tier": location.get("tier"),
+                            "price_per_gpu_hr": gpu.get("price_per_hr"),
+                            "per_vcpu_hr": pricing.get("per_vcpu_hr"),
+                            "per_gb_ram_hr": pricing.get("per_gb_ram_hr"),
+                            "per_gb_storage_hr": pricing.get("per_gb_storage_hr"),
+                            "max_vcpus": resources.get("max_vcpus"),
+                            "max_ram_gb": resources.get("max_ram_gb"),
+                            "max_storage_gb": resources.get("max_storage_gb"),
+                            "network_features": gpu.get("network_features"),
+                        },
+                    )
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         """Resolve the machine TensorDock was priced for, and remember it.

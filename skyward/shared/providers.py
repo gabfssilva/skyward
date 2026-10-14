@@ -348,8 +348,6 @@ class TensorDock(Provider, frozen=True, kw_only=True):
     operating_system: str = "ubuntu2404"
     instance_timeout: int = 300
     request_timeout: int = 120
-    min_ram_gb: int | None = None
-    min_vcpus: int | None = None
 
 
 class VastAI(Provider, frozen=True, kw_only=True):

@@ -586,8 +586,8 @@ with sky.Compute(
 | `operating_system` | `str` | `"ubuntu2404"` | OS image ID (e.g. `"ubuntu2404"`, `"ubuntu2204"`). |
 | `instance_timeout` | `int` | `300` | Auto-shutdown in seconds. |
 | `request_timeout` | `int` | `120` | HTTP request timeout in seconds. |
-| `min_ram_gb` | `int or None` | `None` | Minimum RAM per VM in GB. |
-| `min_vcpus` | `int or None` | `None` | Minimum vCPUs per VM. |
+
+TensorDock bills a VM per GPU, per vCPU, per GB of RAM and per GB of disk, and creates it at whatever size it is asked for. Every size a location's GPU allows is offered at its own price, so the VM is created at the compute's `cpus` and `memory_gb`; a compute that names neither gets the smallest, 1 vCPU and 1 GB.
 
 ## JarvisLabs
 
