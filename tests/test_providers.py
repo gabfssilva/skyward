@@ -274,10 +274,6 @@ def describe_what_a_salad_account_may_buy() -> None:
                     name=spec.get("name", "RTX 3060"),
                     gpu_count=1,
                     max_storage=50 * 1024**3,
-                    min_vcpu=spec.get("min_vcpu", 1),
-                    max_vcpu=spec.get("max_vcpu", 0),
-                    min_ram=spec.get("min_ram", 1024),
-                    max_ram=spec.get("max_ram", 0),
                     gpu_class_type="gpu",
                     prices=[SimpleNamespace(price=spec.get("price", "0.047"), priority="low")],
                 )
@@ -314,16 +310,16 @@ def describe_what_a_salad_account_may_buy() -> None:
             worker=Worker(concurrency=1, executor="thread"),
         )
 
-    async def _requested(provider: SaladProvider, offer: Offer) -> tuple[Mapping[str, Any], Any]:
+    async def _requested(provider: SaladProvider, offer: Offer, spec: ComputeSpec | None = None) -> tuple[Mapping[str, Any], Any]:
         """The binding an offer leads to, and the resources Salad is asked for with it."""
-        binding = await provider.initialize("cmp_1", _spec(), offer, "on_demand", "ssh-ed25519 AAAA")
+        binding = await provider.initialize("cmp_1", spec or _spec(), offer, "on_demand", "ssh-ed25519 AAAA")
         container = provider._group_body("skyward-cmp-1-aaaa", binding).container
         assert container is not None
         return binding, container.resources
 
     async def it_sells_a_node_without_a_gpu_to_a_compute_that_asked_for_none() -> None:
         """What the CPU-only shelf is for: before it, this compute could only be sold a GPU."""
-        provider = _salad(_classes(), cpus=8, memory_gb=16)
+        provider = _salad(_classes())
 
         bought, _ = await market.pick(_spec(cpus=4, memory_gb=8), await _shelf(provider))
 
@@ -339,7 +335,7 @@ def describe_what_a_salad_account_may_buy() -> None:
         asked for. Paying less is not the only cost: a GPU class places on the machines
         that have that GPU, which is a smaller pool than the one a CPU node runs on.
         """
-        provider = _salad(_classes({"price": "0.015"}), cpus=8, memory_gb=16)
+        provider = _salad(_classes({"price": "0.015"}))
 
         bought, _ = await market.pick(_spec(cpus=8, memory_gb=16), await _shelf(provider))
 
@@ -347,16 +343,23 @@ def describe_what_a_salad_account_may_buy() -> None:
         assert bought.price == pytest.approx(8 * 0.005 + 16 * 0.001), "the CPU node, dearer than the GPU class it was not sold"
 
     async def it_still_sells_the_gpu_to_a_compute_that_wants_one() -> None:
-        provider = _salad(_classes(), cpus=8, memory_gb=16)
+        provider = _salad(_classes())
 
         bought, _ = await market.pick(_spec(accelerator="rtx3060"), await _shelf(provider))
 
         assert bought.accelerator == "rtx-3060", "the CPU sizes are alongside the GPU classes, not instead of them"
         assert bought.price == 0.047, "a GPU class quotes the whole node: Salad bills no vCPU or RAM beside it"
 
+    async def it_sells_the_gpu_to_a_spec_that_sizes_it() -> None:
+        provider = _salad(_classes())
+
+        bought, _ = await market.pick(_spec(accelerator="rtx3060", cpus=16, memory_gb=32), await _shelf(provider))
+
+        assert bought.accelerator == "rtx-3060", "a GPU class is published at the largest group, so any size up to it fits"
+
     async def it_offers_every_cpu_size_salad_would_take() -> None:
         """Salad sizes a container group from the request, so there is no size to leave out."""
-        provider = _salad(_classes(), cpus=4, memory_gb=16)
+        provider = _salad(_classes())
 
         sizes = {(offer.cpus, offer.memory_gb) for offer in await _offered(provider) if offer.accelerator is None}
 
@@ -371,39 +374,50 @@ def describe_what_a_salad_account_may_buy() -> None:
         assert priced[(4, 4)] == pytest.approx(0.024), "four vCPU-hours and four GB-hours"
         assert priced[(16, 32)] == pytest.approx(0.112), "and the largest is the same arithmetic"
 
-    async def it_leaves_out_a_gpu_class_the_account_is_too_small_for() -> None:
-        """A floor above the account's size is a class that would be bought and then refused at creation."""
-        provider = _salad(_classes({"id": "big", "name": "H100", "min_vcpu": 16}), cpus=4, memory_gb=16)
-
-        offered = await _offered(provider)
-
-        assert not [offer for offer in offered if offer.accelerator is not None], "nothing to buy that cannot be created"
-        assert offered, "the CPU sizes are unaffected by a GPU class nobody can have"
-
-    async def it_holds_a_gpu_class_to_its_own_ceiling() -> None:
-        provider = _salad(_classes({"max_vcpu": 2, "max_ram": 8192}), cpus=8, memory_gb=16)
-
-        gpu = next(offer for offer in await _offered(provider) if offer.accelerator is not None)
-
-        assert (gpu.cpus, gpu.memory_gb) == (2, 8), "the class's ceiling trims the account's size rather than being exceeded"
-
-    async def it_creates_the_group_at_the_size_that_was_bought() -> None:
-        provider = _salad(_classes(), cpus=16, memory_gb=16)
+    async def it_creates_a_cpu_group_at_the_size_that_was_bought() -> None:
+        provider = _salad(_classes())
         offer = next(offer for offer in await _offered(provider) if (offer.cpus, offer.memory_gb) == (2, 4))
 
         binding, resources = await _requested(provider, offer)
 
-        assert (binding["cpu"], binding["memory"]) == (2, 4096), "the offer sized the node, not the account's ceiling"
+        assert (binding["cpu"], binding["memory"]) == (2, 4096), "the offer the market picked is the size"
         assert (resources.cpu, resources.memory) == (2, 4096)
         assert not hasattr(resources, "gpu_classes"), "no gpu class is asked for, which is what makes it a CPU-only group"
 
-    async def it_asks_for_the_gpu_class_of_a_gpu_offer() -> None:
-        provider = _salad(_classes({"id": "gpu-uuid"}), cpus=4, memory_gb=16)
+    async def it_creates_a_gpu_group_at_the_size_the_spec_asked_for() -> None:
+        """A GPU class is one offer for every size, so the size can only be the spec's."""
+        provider = _salad(_classes({"id": "gpu-uuid"}))
         offer = next(offer for offer in await _offered(provider) if offer.accelerator is not None)
 
-        _, resources = await _requested(provider, offer)
+        _, resources = await _requested(provider, offer, _spec(accelerator="rtx3060", cpus=8, memory_gb=16))
 
         assert resources.gpu_classes == ["gpu-uuid"], "the class travels from the offer to the request that creates the group"
+        assert (resources.cpu, resources.memory) == (8, 16384), "the spec's size, not the offer's"
+
+    async def it_creates_a_gpu_group_the_spec_left_unsized_at_the_largest_size() -> None:
+        provider = _salad(_classes())
+        offer = next(offer for offer in await _offered(provider) if offer.accelerator is not None)
+
+        _, resources = await _requested(provider, offer, _spec(accelerator="rtx3060", cpus=4))
+
+        assert (resources.cpu, resources.memory) == (4, 32768), "what the spec leaves out is the offer's, which costs nothing more"
+
+    async def it_sizes_a_gpu_group_by_the_alternative_that_wants_a_gpu() -> None:
+        provider = _salad(_classes())
+        offer = next(offer for offer in await _offered(provider) if offer.accelerator is not None)
+        spec = ComputeSpec(
+            specs=(
+                Spec(provider=ProviderRef(kind="salad"), cpus=2, memory_gb=2),
+                Spec(provider=ProviderRef(kind="salad"), accelerator="rtx3060", cpus=8, memory_gb=16),
+            ),
+            nodes=NodeBounds(initial=1),
+            image=Image(python="3.13"),
+            worker=Worker(concurrency=1, executor="thread"),
+        )
+
+        _, resources = await _requested(provider, offer, spec)
+
+        assert (resources.cpu, resources.memory) == (8, 16384), "the CPU-only alternative does not size the GPU node"
 
 
 def describe_a_pod_the_cloud_refuses_to_deploy() -> None:

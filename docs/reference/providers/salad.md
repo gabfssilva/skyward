@@ -27,13 +27,13 @@ The base image is a CUDA runtime image unless `image` or `Image(base=...)` names
 
 Salad sells nodes with a GPU and nodes without, and prices only the first. The adapter offers both.
 
-A **GPU class** carries its own price, one per container priority, and Salad bills no vCPUs or RAM beside it — the quoted price is the whole node. A class is offered at `cpus` × `memory_gb`, trimmed to the class's own maximum, and a class whose *minimum* is above `cpus` or `memory_gb` is left out rather than offered and refused at creation.
+A **GPU class** carries its own price, one per container priority, and Salad bills no vCPUs or RAM beside it — the quoted price is the whole node, at any size. A class is therefore one offer, published at the largest group the adapter sells (16 vCPUs, 32 GiB) so that a compute asking for any size up to it is sold the class.
 
 A **CPU-only node** is the same container group without a GPU class, billed per vCPU-hour and per GB-hour. Salad sizes a container group from the request that creates it and quotes no CPU catalog over its API, so every size between 1 and 16 vCPUs and between 1 and 32 GiB is offered — 512 of them, priced `cpus × vcpu_price + memory_gb × memory_price`. Nothing is rounded to a list of sizes somebody chose: asking for 5 vCPUs and 7 GiB buys 5 vCPUs and 7 GiB. The default rates are Salad's published ones as of September 2026; **check them against your account**, since nothing in the API quotes them back.
 
 `priority` selects a GPU class's price. Salad's published CPU-only rates do not vary by priority, and its pricing page states CPU-only groups run at the lowest tier; whether an account is ever billed a different CPU rate per priority is not something the API answers, so `vcpu_price` and `memory_price` are single values.
 
-The container is created at the size of the offer that was bought, whichever shelf it came from.
+The container is created at the compute's `cpus` and `memory_gb`. What the compute leaves out comes from the offer that was bought: on the CPU-only shelf the size the market picked, which is the cheapest that fits and for a compute that names neither is 1 vCPU and 1 GiB; on a GPU class the largest size, which costs nothing more.
 
 A compute that names no accelerator is sold a CPU node, even where a GPU class would be cheaper — and on Salad one often is, since a class bundles its vCPUs and RAM. The saving is not the whole price: a GPU class places only on machines carrying that GPU, a smaller pool than a CPU node runs on. Name `accelerator` to buy one deliberately.
 

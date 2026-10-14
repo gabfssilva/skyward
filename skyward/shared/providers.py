@@ -232,18 +232,6 @@ class Salad(Provider, frozen=True, kw_only=True):
     priority: Literal["high", "medium", "low", "batch"] = "low"
     country_codes: str | Sequence[str] | None = None
     image: str | None = None
-    cpus: int = 4
-    memory_gb: int = 16
-    """What a node *with a GPU* is given, in vCPUs and whole GiB.
-
-    Salad quotes no size with a GPU class and bills no vCPUs or RAM beside one, so
-    the size of such a node is neither priced nor chosen by the spec — it is the
-    account's to name, held to the bounds the class itself declares. A spec asking
-    for more than this is a spec no GPU offer of this account fits.
-
-    A CPU-only node is not sized from here: it is paid for by the vCPU and by the
-    GB, so every size is its own offer and the spec picks one.
-    """
     storage_gb: int = 50
     vcpu_price: float = 0.005
     memory_price: float = 0.001

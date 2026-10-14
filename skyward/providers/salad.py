@@ -77,9 +77,9 @@ DEFAULT_IMAGE = "saladtechnologies/misc:ubuntu24-dev"
 GATEWAY_PORT = 8888
 WEBSOCAT_URL = "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl"
 
-CPU_MAX_VCPUS = 16
-CPU_MAX_MEMORY_GB = 32
-CPU_SIZES = tuple((cpus, memory_gb) for cpus in range(1, CPU_MAX_VCPUS + 1) for memory_gb in range(1, CPU_MAX_MEMORY_GB + 1))
+MAX_VCPUS = 16
+MAX_MEMORY_GB = 32
+CPU_SIZES = tuple((cpus, memory_gb) for cpus in range(1, MAX_VCPUS + 1) for memory_gb in range(1, MAX_MEMORY_GB + 1))
 """Every CPU-only node the account may be sold, in vCPUs and whole GiB.
 
 A container group is sized by the request that creates it, so a CPU-only node has
@@ -89,9 +89,9 @@ all of them — the market picks one offer and the node is created at its size, 
 size that is not on the shelf is a size nobody can buy, and every arbitrary one is
 a size Salad would have taken.
 
-The bounds are Salad's own for CPU-only groups. Enumerating between them is what
-makes 5 vCPUs and 7 GB a thing to ask for rather than something rounded up to the
-next entry in a list somebody chose.
+The bounds are the largest group this adapter sells, with a GPU or without one.
+Enumerating between them is what makes 5 vCPUs and 7 GB a thing to ask for rather
+than something rounded up to the next entry in a list somebody chose.
 """
 
 APT_LIST = "/tmp/skyward-apt.list"
@@ -290,10 +290,10 @@ class SaladProvider:
 
         Two shelves out of one endpoint, because Salad prices only the first, and
         the two are sized quite differently. A GPU class bills no vCPUs or RAM
-        beside it, so its size is not something to choose between — it is whatever
-        the account asked for, held to the class's own bounds, at one price. A
-        CPU-only node is paid for by the vCPU and by the GB, so every size is a
-        different price and the shelf carries all of them.
+        beside it, so every size of it is one price and one offer, published at the
+        largest so that any spec within it fits: the size is the spec's, read when
+        the compute is initialized. A CPU-only node is paid for by the vCPU and by
+        the GB, so every size is a different price and the shelf carries all of them.
         """
         catalog = await self._sdk.organization_data.list_gpu_classes(self._organization)
         now = datetime.now(UTC)
@@ -308,10 +308,8 @@ class SaladProvider:
                 ),
                 None,
             )
-            size = _sized(gpu_class, self._config.cpus, self._config.memory_gb)
-            if price is None or size is None:
+            if price is None:
                 continue
-            cpus, memory_gb = size
             gpu_class_id = _required_text(getattr(gpu_class, "id_", None), "GPU class id")
             gpu_class_name = _required_text(getattr(gpu_class, "name", None), "GPU class name")
 
@@ -323,8 +321,8 @@ class SaladProvider:
                 instance_type=gpu_class_name,
                 accelerator=gpu_class_name,
                 accelerator_count=_integer(getattr(gpu_class, "gpu_count", None), 1),
-                cpus=cpus,
-                memory_gb=memory_gb,
+                cpus=MAX_VCPUS,
+                memory_gb=MAX_MEMORY_GB,
                 disk_gb=_integer(getattr(gpu_class, "max_storage", None)) / 1024**3,
                 spot_price=None,
                 on_demand_price=price,
@@ -361,15 +359,26 @@ class SaladProvider:
             )
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
-        """What it takes to create this compute's groups, sized by the offer that was bought.
+        """What it takes to create this compute's groups, at the size the spec asked for.
 
-        The size travels on the offer rather than being read off the account again:
-        the account bounds what is offered, and which of those sizes was picked is
-        the market's answer, not this one's. A GPU class id is how the two shelves
-        are told apart — an offer without one is a CPU-only node.
+        The spec's alternative is the one from this account with the shelf the offer
+        came from. What it leaves out is the offer's size: on the CPU-only shelf the
+        one the market picked, on a GPU class the largest, which costs nothing more
+        since Salad bills no vCPU or RAM beside a GPU. A GPU class id is how the two
+        shelves are told apart — an offer without one is a CPU-only node.
         """
         image = spec.image.base or self._config.image or DEFAULT_IMAGE
         gpu_class_id = _text(offer.specific.get("gpu_class_id"))
+        cpus, memory_gb = next(
+            (
+                (wanted.cpus or offer.cpus, wanted.memory_gb or offer.memory_gb)
+                for wanted in spec.specs
+                if wanted.provider.kind == self.kind
+                and wanted.provider.name in (None, self._name)
+                and (wanted.accelerator is None) == (gpu_class_id is None)
+            ),
+            (offer.cpus, offer.memory_gb),
+        )
 
         return {
             "compute_id": compute_id,
@@ -377,8 +386,8 @@ class SaladProvider:
             "priority": self._priority,
             "image": image.format(python=spec.image.python or "3.13"),
             "public_key": public_key,
-            "cpu": offer.cpus,
-            "memory": int(offer.memory_gb * 1024),
+            "cpu": cpus,
+            "memory": int(memory_gb * 1024),
             "storage": max(1024**3, self._config.storage_gb * 1024**3),
         }
 
@@ -706,26 +715,6 @@ def _completion(instance: object) -> float | None:
         return None
     pulled = _number(getattr(instance, "pulling_progress", None))
     return None if pulled is None else round(pulled if pulled <= 1 else pulled / 100, 2)
-
-
-def _sized(gpu_class: object, cpus: int, memory_gb: int) -> tuple[int, int] | None:
-    """The account's size as this GPU class will take it, or nothing if it will not.
-
-    A class quotes a floor and a ceiling for both vCPUs and RAM. The ceiling trims
-    the request, since a group above it is refused at creation; a floor above what
-    the account allows is a class that cannot be had at all here, and an offer for
-    it would only be picked and then refused on the way out.
-    """
-    minimum_cpus = _integer(getattr(gpu_class, "min_vcpu", None))
-    minimum_memory_gb = _integer(getattr(gpu_class, "min_ram", None)) / 1024
-    if minimum_cpus > cpus or minimum_memory_gb > memory_gb:
-        return None
-    maximum_cpus = _integer(getattr(gpu_class, "max_vcpu", None))
-    maximum_memory_gb = _integer(getattr(gpu_class, "max_ram", None)) // 1024
-    return (
-        min(cpus, maximum_cpus) if maximum_cpus else cpus,
-        min(memory_gb, maximum_memory_gb) if maximum_memory_gb else memory_gb,
-    )
 
 
 def _required(value: str | None, key: str, provider: str) -> str:
