@@ -35,7 +35,7 @@ COMPUTE = ComputeView(
 
 
 def describe_the_panel() -> None:
-    def when_machines_are_still_being_bought() -> None:
+    def describe_when_machines_are_still_being_bought() -> None:
         def it_leaves_the_time_to_the_header() -> None:
             view = with_nodes(*(node(rank, "requested") for rank in range(4)))
 
@@ -45,7 +45,7 @@ def describe_the_panel() -> None:
             assert drawn[1] == "⠋ provision  0/4 machines"
             assert len(drawn) == 2, "nothing runs before a machine is up"
 
-    def when_nodes_bootstrap() -> None:
+    def describe_when_nodes_bootstrap() -> None:
         def it_closes_the_provision_and_lists_each_node_still_setting_up() -> None:
             seen = advance(Seen(), with_nodes(*(node(rank, "requested") for rank in range(4))), T0)
             seen = advance(seen, with_nodes(*(node(rank, "bootstrapping") for rank in range(4))), T0 + 38)
@@ -62,24 +62,42 @@ def describe_the_panel() -> None:
             assert drawn[2].startswith("⠋ bootstrap  2/4 ready") and drawn[2].endswith("1:20"), "timed from the first node to begin it"
             assert drawn[3:] == ["    1  install deps  Resolved 84 packages in 1.2s", "    3  create venv   Using CPython 3.12.7"]
 
-    def when_the_compute_runs() -> None:
+        def it_names_the_step_a_node_last_began_while_it_moves_to_the_next() -> None:
+            seen = advance(Seen(), with_nodes(node(0, "bootstrapping"), node(1, "bootstrapping")), T0)
+            between = replace(node(1, "bootstrapping", said="+ numpy==2.5.3"), phases=(PhaseView("deps", started=True, finished=True),))
+            view = with_nodes(node(0, "ready"), between)
+
+            drawn = draw(view, advance(seen, view, T0 + 30), T0 + 30)
+
+            assert drawn[2:] == ["    1  install deps  + numpy==2.5.3"]
+
+    def describe_when_the_last_node_is_ready_before_the_compute_is() -> None:
+        def it_draws_the_run_with_nothing_on_it_yet() -> None:
+            seen = advance(Seen(), with_nodes(node(0, "bootstrapping")), T0)
+            view = with_nodes(node(0, "ready"))
+
+            drawn = draw(view, advance(seen, view, T0 + 60), T0 + 61)
+
+            assert drawn[1:] == ["· idle"], "rather than a header with nothing under it"
+
+    def describe_when_the_compute_runs() -> None:
         def it_shows_the_tasks_and_the_gauges_across_the_nodes() -> None:
             view = running()
 
             drawn = draw(view, advance(Seen(), view, T0), T0 + 304)
 
-            assert drawn[1] == "⠋ run        12 running · 140 done · 2 failed"
-            assert drawn[2] == "             gpu 86% 80–92   vram 48/80 GB 46–49   cpu 33%   mem 41%"
+            assert drawn[1] == "⠋ 12 running · 140 done · 2 failed"
+            assert drawn[2] == "  gpu 86% 80–92   vram 48/80 GB 46–49   cpu 33%   mem 41%"
             assert drawn[0].startswith("skyward · train · 4× A100 80GB spot · aws us-east-1 · $5.16/h")
 
-    def when_a_node_goes_away_while_it_runs() -> None:
+    def describe_when_a_node_goes_away_while_it_runs() -> None:
         def it_draws_the_replacement_beside_the_run() -> None:
             _, view, seen = lost_and_asked_again()
 
             drawn = draw(view, seen, T0 + 461)
 
             assert drawn[1].startswith("⠋ provision  3/4 machines · replacing node 2") and drawn[1].endswith("0:11")
-            assert drawn[2].startswith("⠋ run        ")
+            assert drawn[2].startswith("⠋ 12 running")
 
         def it_adds_the_bootstrap_once_the_replacement_has_a_machine() -> None:
             ran, view, seen = lost_and_asked_again()
@@ -90,7 +108,7 @@ def describe_the_panel() -> None:
             assert drawn[1].startswith("✓ provision  4/4 machines · node 2 replaced") and drawn[1].endswith("40s")
             assert drawn[2].startswith("⠋ bootstrap  3/4 ready") and drawn[2].endswith("0:36")
             assert drawn[3] == "    2  install deps  Resolved 84 packages"
-            assert drawn[4].startswith("⠋ run        ")
+            assert drawn[4].startswith("⠋ 12 running")
 
         def it_leaves_only_the_run_once_the_replacement_is_ready() -> None:
             ran, view, seen = lost_and_asked_again()
@@ -100,10 +118,10 @@ def describe_the_panel() -> None:
 
             drawn = draw(back, seen, T0 + 570)
 
-            assert drawn[1].startswith("⠋ run        ")
-            assert len(drawn) == 3, "the header, the run and its gauges"
+            assert drawn[1].startswith("⠋ 12 running")
+            assert len(drawn) == 3, "the header, the tasks and the gauges"
 
-    def when_more_nodes_bootstrap_than_it_lists() -> None:
+    def describe_when_more_nodes_bootstrap_than_it_lists() -> None:
         def it_groups_them_by_step_and_names_the_slowest() -> None:
             steps = ("venv", "deps", "deps", "deps", "deps", "worker")
             setting = tuple(node(10 + index, "bootstrapping", id=f"nod_s{index}", step=step, said=f"from {10 + index}") for index, step in enumerate(steps))
@@ -167,7 +185,7 @@ def describe_the_scrollback() -> None:
 
 
 def describe_the_end() -> None:
-    def when_the_compute_is_deleted() -> None:
+    def describe_when_the_compute_is_deleted() -> None:
         def it_leaves_a_summary_where_the_panel_was() -> None:
             out = StringIO()
             console = RichConsole(out)
@@ -182,7 +200,7 @@ def describe_the_end() -> None:
             assert "tasks      12 running · 140 done · 2 failed" in printed
             assert "detached" not in printed
 
-    def when_the_console_stops_watching_a_compute_still_up() -> None:
+    def describe_when_the_console_stops_watching_a_compute_still_up() -> None:
         def it_says_the_compute_keeps_running() -> None:
             out = StringIO()
             console = RichConsole(out)

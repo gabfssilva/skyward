@@ -32,7 +32,7 @@ import skyward as sky
 
 
 @sky.app(
-    provider=sky.Salad(priority="high"),
+    provider=sky.RunPod(),
     accelerator=sky.accelerators.RTX_3090(),
     image=sky.Image(pip=["torch", "numpy"]),
 )

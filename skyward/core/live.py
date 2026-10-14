@@ -2,10 +2,11 @@
 
 The panel is redrawn every frame and says where the compute is now. A header
 names it — what it is made of, where, what it costs — and under it comes one line
-per stage under way: ``provision`` and ``bootstrap`` while machines come up,
-``run`` once the compute has been ready, each with its own timer. A node that goes
-away while the compute runs brings the setup stages back beside ``run`` until its
-replacement is ready, so recovering and running are drawn as one picture.
+per setup stage under way, ``provision`` and ``bootstrap``, each with its own
+timer, and once the compute has been ready, its tasks and the gauges across its
+nodes. A node that goes away while the compute runs brings the setup stages back
+above the tasks until its replacement is ready, so recovering and running are
+drawn as one picture.
 
 A stage lists the nodes it is waiting on, one line each, up to :data:`LISTED`.
 Past that it groups them by the step they are on and names only the slowest, so a
@@ -311,8 +312,6 @@ _GAUGES = frozenset({"gpu_util", "gpu_mem_mb", "gpu_mem_total_mb", "cpu", "mem",
 _LABEL = 11
 """The width of a stage's name, so that every stage's detail starts on the same column."""
 
-_INDENT = 2 + _LABEL
-
 _HUES = ("cyan", "magenta", "yellow", "blue", "green", "bright_cyan", "bright_magenta", "bright_yellow", "bright_blue", "bright_green")
 """One colour per rank, so that the lines of a broadcast stay told apart."""
 
@@ -374,13 +373,14 @@ def _bootstrap(view: ComputeView, seen: Seen, now: float, width: int) -> tuple[T
 
 
 def _run(view: ComputeView, seen: Seen, now: float, width: int) -> tuple[Text, ...]:
-    if not seen.ran:
+    live = _live(view)
+    if not (seen.ran or (live and not seen.setup and all(node.state in _UP for node in live))):
         return ()
     counts = view.task_counts or _counted(view.tasks)
     busy = counts.running + counts.queued > 0
-    head = _stage(_spinning(now) if busy else _IDLE, "run", _tally(counts) or Text("idle"), "", width, active=busy)
+    head = _fit(Text.assemble(_spinning(now) if busy else _IDLE, _tally(counts) or Text("idle")), width)
     gauges = _gauges(tuple(_latest(node) for node in view.nodes if node.state in _UP))
-    return (head,) if gauges is None else (head, _fit(Text.assemble(" " * _INDENT, gauges), width))
+    return (head,) if gauges is None else (head, _fit(Text.assemble("  ", gauges), width))
 
 
 def _waiting(view: ComputeView, seen: Seen, waiting: Sequence[NodeView], now: float, width: int) -> tuple[Text, ...]:
@@ -444,7 +444,7 @@ def _note(members: Sequence[NodeView], seen: Seen, *, under_way: bool) -> Text:
 
 def _title(view: ComputeView, seen: Seen) -> Text:
     where = " ".join(part for part in (view.provider, view.region) if part)
-    return _dotted(Text("skyward", style="bold"), Text(view.name or view.id, style="bold bright_white"), Text(_described(view, seen.fleet)), Text(where))
+    return _dotted(Text("skyward", style="bold"), Text(view.name or view.id, style="bold"), Text(_described(view, seen.fleet)), Text(where))
 
 
 def _described(view: ComputeView, fleet: Fleet) -> str:
@@ -624,8 +624,8 @@ def _percent(completion: float | None) -> str:
 def _step(node: NodeView) -> str:
     if node.state == "connecting":
         return _PHASE_LABELS["connecting"]
-    active = next((phase.name for phase in reversed(node.phases) if phase.started and not phase.finished), None)
-    return _PHASE_LABELS.get(active, active) if active else "waiting"
+    latest = next((phase.name for phase in reversed(node.phases) if phase.started), None)
+    return _PHASE_LABELS.get(latest, latest) if latest else "waiting"
 
 
 def _said(node: NodeView) -> str:

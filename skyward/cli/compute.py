@@ -476,7 +476,7 @@ def run_script(
     where = _where(node)
     source = script.read_text()
     work = partial(execute, source, (str(script), *(args or ())))
-    if status := max(_call(lambda client: _remotely(client, ref, work, source, script.name, where), url=url), default=0):
+    if status := max(_call(lambda client: _remotely(client, ref, work, source, script.name, where, echo=True), url=url), default=0):
         raise SystemExit(status)
 
 
@@ -503,6 +503,10 @@ def run_declared(
     What the image includes goes with each run, not with the machines: they are
     built without it, so a node never holds a copy older than the one it runs.
 
+    On a terminal the compute is drawn as a script against the SDK would draw it:
+    a panel under what the nodes print. Piped, it is a line per event on stderr and
+    the script's output alone on stdout.
+
     Exits with the worst node's status. Given no file, prints this.
     """
     if script is None:
@@ -516,8 +520,10 @@ def run_declared(
     app = declared.app
     daemon = resolve(url)
     standing = _call(lambda client: _standing(client, declared), url=daemon)
+    drawn = sys.stdout.isatty() and sys.stderr.isatty()
+    callbacks = () if drawn else (_progress,)
     pool = (
-        Compute.attached(declared.name, url=daemon, console=False, callbacks=(_progress,), delete_on_exit=app.delete_on_exit)
+        Compute.attached(declared.name, url=daemon, console=drawn, callbacks=callbacks, delete_on_exit=app.delete_on_exit)
         if standing
         else Compute(
             provider=app.provider,
@@ -533,18 +539,18 @@ def run_declared(
             name=declared.name,
             url=daemon,
             delete_on_exit=app.delete_on_exit,
-            console=False,
-            callbacks=(_progress,),
+            console=drawn,
+            callbacks=callbacks,
         )
     )
 
     try:
         with pool:
-            status = pool.loop.run(_performed(pool.client, pool.id, declared, where))
+            status = pool.loop.run(_performed(pool.client, pool.id, declared, where, echo=not drawn))
     except SkywardError as error:
         raise SystemExit(f"{error.code}: {error.message}") from None
 
-    if not app.delete_on_exit:
+    if not app.delete_on_exit and not drawn:
         notice("WARNING", f"{declared.name} is still up")
     if status:
         raise SystemExit(status)
@@ -644,16 +650,16 @@ def _where(node: str) -> Where:
             raise SystemExit(f"--node takes all, any or a rank, not {node!r}")
 
 
-async def _performed(client: Client, compute: str, script: Script, where: Where) -> int:
+async def _performed(client: Client, compute: str, script: Script, where: Where, *, echo: bool) -> int:
     """Run what the file declares, print what a function returned, and answer with the worst status."""
     match script.work:
         case Whole(argv):
             work = partial(execute, script.source, argv, script.includes)
-            statuses = await _remotely(client, compute, work, script.source, script.path.name, where, retry=script.app.retry)
+            statuses = await _remotely(client, compute, work, script.source, script.path.name, where, echo=echo, retry=script.app.retry)
             return max(statuses, default=0)
         case Call(entry, arguments):
             work = partial(invoke, script.source, str(script.path), entry, arguments, script.includes)
-            outcomes = await _remotely(client, compute, work, script.source, entry, where, retry=script.app.retry)
+            outcomes = await _remotely(client, compute, work, script.source, entry, where, echo=echo, retry=script.app.retry)
             _answered(outcomes, where)
             return max((_exit(outcome) for outcome in outcomes), default=0)
 
@@ -666,6 +672,7 @@ async def _remotely[R](
     name: str,
     where: Where,
     *,
+    echo: bool,
     retry: Retry | None | msgspec.UnsetType = msgspec.UNSET,
 ) -> list[R]:
     """Submit ``work``, print what it prints, and answer with what each node returned, by rank.
@@ -683,7 +690,7 @@ async def _remotely[R](
     task = await _submit(client, compute.id, work, excerpt, name, where, retry)
 
     settled = asyncio.Event()
-    printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled))
+    printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled, echo=echo))
     try:
         while await client.blob(f"/v1/tasks/{task.id}/result", wait=WAIT) is None:
             continue
@@ -795,7 +802,7 @@ def _progress(event: Event, _: ComputeView) -> None:
                 print(line, file=sys.stderr, flush=True)
 
 
-async def _console(client: Client, compute: str, task: str, settled: asyncio.Event) -> None:
+async def _console(client: Client, compute: str, task: str, settled: asyncio.Event, *, echo: bool) -> None:
     """The lines this task's nodes wrote, as they write them.
 
     The log replays from its start, so subscribing after the task was submitted
@@ -810,6 +817,10 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
     broadcast arrive interleaved; without it neither can be told apart. The ranks
     are read off the compute, and read again for a node they do not know yet — one
     a resize brought in after the first read.
+
+    Without ``echo`` the pool's own console prints them, above its panel, and this
+    only waits for them to stop coming, so that what the function returned is
+    printed after the last of them.
     """
     ranks: dict[str, int] = {}
     async with aclosing(client.events(compute, types=("node.console",))) as stream:
@@ -822,7 +833,7 @@ async def _console(client: Client, compute: str, task: str, settled: asyncio.Eve
                 return
 
             line = json.loads(payload)
-            if line.get("task") != task:
+            if line.get("task") != task or not echo:
                 continue
             node = line.get("node", "")
             if node not in ranks:
