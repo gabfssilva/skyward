@@ -1,7 +1,7 @@
-"""What a watcher of the daemon changes: delete a compute, resize it, drain a node.
+"""What a watcher of the daemon changes: delete a compute, resize it, drain a node, cancel a task.
 
 Each one is a single request to the daemon, and each is safe to send again. A
-delete or a drain carries a fresh ``Idempotency-Key``, so a request the link
+delete, a drain or a cancel carries a fresh ``Idempotency-Key``, so a request the link
 dropped under is asked once more without doing it twice. The writes against a
 compute go through :func:`conditional`, which is also what the CLI and the pool
 use: the loop that keeps a stale revision from refusing a change exists once.
@@ -16,7 +16,7 @@ import uuid
 
 import msgspec
 
-from skyward.api.v1 import ComputeResource, NodeBounds, NodeResource, UpdateComputeResource
+from skyward.api.v1 import ComputeResource, NodeBounds, NodeResource, TaskResource, UpdateComputeResource
 from skyward.core.client import Client
 from skyward.core.errors import SkywardError
 
@@ -65,4 +65,9 @@ async def drain(client: Client, compute_id: str, node_id: str) -> None:
     await client.call("DELETE", f"/v1/computes/{compute_id}/nodes/{node_id}", NodeResource, headers={"Idempotency-Key": uuid.uuid4().hex})
 
 
-__all__ = ["WRITE_ATTEMPTS", "conditional", "delete", "drain", "scale"]
+async def cancel(client: Client, task_id: str) -> TaskResource:
+    """The task as the cancel left it: an attempt that had started is ``cancel_requested`` until its worker lets go."""
+    return await client.call("DELETE", f"/v1/tasks/{task_id}", TaskResource, headers={"Idempotency-Key": uuid.uuid4().hex})
+
+
+__all__ = ["WRITE_ATTEMPTS", "cancel", "conditional", "delete", "drain", "scale"]

@@ -203,6 +203,15 @@ def deletable(compute: ComputeResource) -> bool:
     return compute.ended is None and compute.status.state not in ("deleting", "deleted")
 
 
+def cancelling(task: TaskResource) -> bool:
+    """Its cancel was taken while an attempt ran: that attempt's worker was asked to stop it, and has not said it did."""
+    return any(execution.state == "cancel_requested" for execution in task.executions)
+
+
+def cancellable(task: TaskResource) -> bool:
+    return task.state in ("queued", "running") and not cancelling(task)
+
+
 def _window(now: datetime) -> int:
     return (int(now.timestamp() * 1000) // SPARK_STEP_MS - (SPARK_BUCKETS - 1)) * SPARK_STEP_MS
 
@@ -257,6 +266,8 @@ __all__ = [
     "Snapshot",
     "TaskPage",
     "alive",
+    "cancellable",
+    "cancelling",
     "deletable",
     "group",
     "log",

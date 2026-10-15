@@ -14,13 +14,16 @@ is no longer the one wanted. The poll does not: a tick that finds a read still
 out waits for it, or a daemon slower than the poll would never be heard.
 
 Each task is drawn as the Claude Code panel draws it: a glyph for its state, the
-node it ran on, its function, how it went and, at the end of the line, ``logs``.
-Why one failed is the compute's notifications' to say. The function's name is a link that
-narrows the list to that function, and ``logs`` opens the log on that task. The
-arrow keys walk the lines for a keyboard, and enter and ``l`` act on the one
-under the cursor — a band drawn only while the lines have the focus, so that it
-says where the keys go. The status line is links as well: sorting, filtering and
-paging are a click as well as a key.
+node it ran on, its function, how it went and, at the end of the line, ``logs``,
+then ``cancel`` while it is queued or running. Why one failed is the compute's
+notifications' to say. The function's name is a link that narrows the list to
+that function, ``logs`` opens the log on that task, and ``cancel`` asks before it
+sends; it has no key. A cancel taken while the task ran leaves it running until
+its worker lets go, and the line says ``cancelling…`` meanwhile. The arrow keys
+walk the lines for a keyboard, and enter and ``l`` act on the one under the
+cursor — a band drawn only while the lines have the focus, so that it says where
+the keys go. The status line is links as well: sorting, filtering and paging are
+a click as well as a key.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 
 from rich.style import Style
 from rich.text import Text
@@ -39,10 +43,10 @@ from textual.widgets import Static
 from textual.worker import Worker
 
 from skyward.api.v1 import ExecutionResource, TaskOrder, TaskResource
-from skyward.core import history
+from skyward.core import history, writes
 from skyward.core.client import FAILURES, Client
 from skyward.core.tui.cells import ERROR_STYLE, POLL, TASK_GLYPHS, TASK_STYLES, Links, aware, dots, link, rank_badge
-from skyward.core.tui.dialogs import Ask
+from skyward.core.tui.dialogs import Ask, Confirm
 from skyward.core.widgets import DIM, _format_duration
 
 ORDERS: tuple[TaskOrder, ...] = ("state", "submitted", "finished")
@@ -151,10 +155,30 @@ class Tasks(Vertical):
             self._selected = task.id
             self.post_message(self.Logs(task.id))
 
+    def action_cancel(self, task_id: str) -> None:
+        task = self._named(task_id)
+        if task is None or not history.cancellable(task):
+            return
+        note = "it never runs" if task.state == "queued" else "it is asked to stop where it runs, and ends cancelled once it lets go"
+        question = f"cancel {task.function.name or task.function.sha256[:12]}?"
+        self.app.push_screen(Confirm(question, "yes, cancel", note=note, refuse="no"), partial(self._answered, task.id))
+
     def _filtered(self, text: str | None) -> None:
         if text is not None:
             self._function = text or None
             self._restart()
+
+    def _answered(self, task_id: str, confirmed: bool | None) -> None:
+        if confirmed:
+            self.run_worker(self._cancel(task_id), group="write")
+
+    async def _cancel(self, task_id: str) -> None:
+        try:
+            await writes.cancel(self._client, task_id)
+        except FAILURES as error:
+            self.notify(f"cancel failed: {str(error) or type(error).__name__}", severity="error")
+            return
+        self._reload()
 
     def _restart(self) -> None:
         self._cursors = ()
@@ -260,6 +284,11 @@ class Tasks(Vertical):
         if task.state != "queued":
             text.append("  ")
             text.append_text(link("logs ✕" if self._logging() == task.id else "logs", f"logs('{task.id}')"))
+        if history.cancelling(task):
+            text.append("  cancelling…", style=DIM)
+        elif history.cancellable(task):
+            text.append("  ")
+            text.append_text(link("cancel", f"cancel('{task.id}')"))
         return text
 
     def _rank(self, latest: ExecutionResource | None) -> Text:

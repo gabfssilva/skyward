@@ -29,7 +29,7 @@ import msgspec
 from cyclopts import Parameter
 
 from skyward import api
-from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource
+from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource, TaskState
 from skyward.cli import app as cli
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call, resolve
@@ -72,6 +72,7 @@ type Where = Literal["all", "any"] | int
 
 COMPUTE_COLUMNS = ("id", "name", "state", "ready", "total", "generation", "created")
 NODE_COLUMNS = ("id", "rank", "state", "desired", "machine", "address", "accelerator", "$/h")
+TASK_COLUMNS = ("id", "compute", "function", "state", "attempts", "submitted")
 IMAGE_COLUMNS = ("image", "value")
 RAN_COLUMNS = ("node", "exit", "error")
 WRITTEN_COLUMNS = ("node", "error")
@@ -478,6 +479,42 @@ def run_script(
     work = partial(execute, source, (str(script), *(args or ())))
     if status := max(_call(lambda client: _remotely(client, ref, work, source, script.name, where, echo=True), url=url), default=0):
         raise SystemExit(status)
+
+
+@compute_app.command(name="tasks")
+def list_tasks(
+    ref: str,
+    *,
+    state: Annotated[TaskState | None, Parameter(help="Only tasks in this state")] = None,
+    limit: Annotated[int, Parameter(help="How many to show")] = 20,
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+    output: Annotated[Output, Parameter(help="table or json")] = "table",
+) -> None:
+    """List a compute's tasks: the running ones, then the queued, then the latest to finish.
+
+    A compute keeps every call it was given, so the list is the first ``--limit``
+    of them in that order — what is in flight comes before any history.
+    """
+    page = _call(lambda client: client.call("GET", "/v1/tasks", Page[TaskResource], compute=ref, state=state, limit=limit, order="state"), url=url)
+    render(TASK_COLUMNS, [_task_row(task) for task in page.items], output=output)
+
+
+@compute_app.command(name="cancel")
+def cancel_task(
+    task: str,
+    *,
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+    output: Annotated[Output, Parameter(help="table or json")] = "table",
+) -> None:
+    """Cancel a task, by the id ``tasks`` lists it under.
+
+    One no machine has started never runs. One that is running is asked to stop
+    where it runs, so the cancel is accepted, not done: its attempt is
+    ``cancel_requested`` until the worker says it let go, and ``cancelled`` after.
+    One that finished first keeps its outcome.
+    """
+    cancelled = _call(lambda client: writes.cancel(client, task), url=url)
+    render(TASK_COLUMNS, [_task_row(cancelled)], output=output)
 
 
 def run_declared(
@@ -905,6 +942,12 @@ def _node_row(node: NodeResource) -> tuple[object, ...]:
     return (node.id, node.rank, node.state, node.desired, node.machine, node.address, node.accelerator, node.price_per_hour)
 
 
+def _task_row(task: TaskResource) -> tuple[object, ...]:
+    attempts = ", ".join(execution.state for execution in task.executions)
+    function = task.function.name or task.function.sha256[:12]
+    return (task.id, task.compute.name or task.compute.id, function, task.state, attempts, task.submitted_at)
+
+
 async def _register(client: Client, account: Provider) -> None:
     """Make sure the daemon has an account of this kind to log in with."""
     name = account.name or account.kind
@@ -931,6 +974,7 @@ def _call[T](work: Work[T], *, url: str | None = None) -> T:
 
 
 __all__ = [
+    "cancel_task",
     "create_compute",
     "delete_compute",
     "download_path",
@@ -938,6 +982,7 @@ __all__ = [
     "get_compute",
     "list_computes",
     "list_path",
+    "list_tasks",
     "pairs",
     "remove_path",
     "run_declared",

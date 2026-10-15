@@ -22,7 +22,7 @@ import pytest
 
 import skyward as sky
 from skyward.shared import codec
-from tests.conftest import SKY, Build, cli, rows
+from tests.conftest import SKY, Build, cli, once_started, rows
 
 pytest.importorskip("cyclopts", reason="the sky CLI needs: pip install 'skyward[cli]'")
 
@@ -51,6 +51,14 @@ def serve(port: int) -> str:
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     return sky.instance_info().node
+
+
+@sky.function(retry=None)
+def lingering(seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+    return "finished"
 
 
 def describe_running_a_command_on_the_machines() -> None:
@@ -117,6 +125,23 @@ def describe_running_a_script_on_the_machines() -> None:
         listed = httpx.get(f"{daemon}/v1/functions", params={"latest": "true", "limit": 500}, timeout=30)
         assert listed.status_code == 200, listed.text
         assert [function["excerpt"] for function in listed.json()["items"] if function["name"] == "kept.py"] == [script.read_text()]
+
+
+def describe_cancelling_a_task() -> None:
+    def it_finds_the_call_a_machine_is_running_and_stops_it(pool: sky.Compute, daemon: str) -> None:
+        future = lingering(60) > pool
+        task = once_started(daemon, "lingering")
+
+        running = rows("compute", "tasks", pool.id, "--state", "running", "--url", daemon)
+        assert [row["id"] for row in running if row["function"] == "lingering"] == [task], "the listing names the call by the id cancel takes"
+
+        [row] = rows("compute", "cancel", task, "--url", daemon)
+
+        assert row["id"] == task
+        assert row["attempts"] in ("cancel_requested", "cancelled"), "the cancel was taken, whether or not the worker let go yet"
+        with pytest.raises(sky.TaskFailedError) as raised:
+            future.result(timeout=30)
+        assert raised.value.details["state"] == "cancelled"
 
 
 def describe_a_terminal_on_a_machine() -> None:

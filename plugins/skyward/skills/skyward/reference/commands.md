@@ -126,11 +126,15 @@ sky compute delete REF
 ```
 sky compute exec REF COMMAND... [--node all]
 sky compute run  REF SCRIPT [ARGS...] [--node any]
+sky compute tasks  REF [--state S] [--limit 20]
+sky compute cancel TASK
 ```
 
 - `exec` runs in the **machine's shell** — questions about the node, and it reaches a node whose worker is busy. Quote a command carrying flags, or put it after `--`: `sky compute exec training --node 0 -- df -h`.
 - `run` submits a **task**: the local script travels the path a `@sky.function` takes, landing in a worker with the image, plugins and runtime API around it. Its output streams back over the compute's event log as it prints. `--node all` broadcasts, `--node N` runs it on rank N; the default, `any`, is one node with a slot free. Each line is printed after the rank that wrote it (`0 │ ...`). A declaration in the file (a PEP 723 header, `sky.app`) is not read — that is `sky run`.
 - Both exit with the worst node's status.
+- `tasks` lists a compute's calls, running first, then queued, then the latest to finish, up to `--limit`; `--state` asks for one state. Columns: id, compute, function, state, attempts, submitted.
+- `cancel` takes a task id (the first column of `tasks`), not a compute. A task not yet started never runs; a running one is stopped on its node, so the row that comes back reads `cancel_requested` until the worker lets go. A task that finished first keeps its outcome.
 
 ### Files
 

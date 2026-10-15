@@ -122,6 +122,17 @@ def describe_creating_a_compute() -> None:
             assert rows("compute", "list", "--url", alone) == []
 
 
+def describe_the_tasks_of_a_compute() -> None:
+    def describe_when_the_one_named_is_not_there() -> None:
+        @pytest.mark.parametrize(("verb", "ref"), [("tasks", "absent"), ("cancel", "task_absent")])
+        def it_is_refused_rather_than_raising_a_traceback(alone: str, verb: str, ref: str) -> None:
+            ran = cli("compute", verb, ref, "--url", alone)
+
+            assert ran.code != 0
+            assert "not_found" in ran.err
+            assert "Traceback" not in ran.err, "a refusal is an answer, not a crash"
+
+
 def describe_asking_for_a_terminal() -> None:
     def a_compute_nobody_has_is_a_sentence(alone: str) -> None:
         ran = cli("compute", "ssh", "cmp_nowhere", "--url", alone)

@@ -260,14 +260,31 @@ async def held(client: Client, name: str) -> ComputeResource:
 
 def cancel_once_started(daemon: str, function: str) -> str:
     """Cancel the call of ``function`` once a machine has started it, as ``DELETE /v1/tasks/{id}`` does; its id."""
+    task = once_started(daemon, function)
+    httpx.delete(f"{daemon}/v1/tasks/{task}", headers={"Idempotency-Key": uuid.uuid4().hex}, timeout=10).raise_for_status()
+    return task
+
+
+def once_started(daemon: str, function: str) -> str:
+    """The id of a call of ``function``, once a machine has started it."""
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         page = httpx.get(f"{daemon}/v1/tasks", params={"function": function, "state": "running"}, timeout=10).json()
         if started := [task["id"] for task in page["items"] if any(attempt["state"] == "started" for attempt in task["executions"])]:
-            httpx.delete(f"{daemon}/v1/tasks/{started[0]}", headers={"Idempotency-Key": uuid.uuid4().hex}, timeout=10).raise_for_status()
             return started[0]
         time.sleep(0.2)
     raise TimeoutError(f"no call of {function} started within a minute")
+
+
+def ended(daemon: str, function: str, timeout: float = 30) -> str:
+    """The state a call of ``function`` ended in, once one has — for a function called once."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        tasks = httpx.get(f"{daemon}/v1/tasks", params={"function": function}, timeout=10).json()["items"]
+        if finished := [task["state"] for task in tasks if task["finished_at"] is not None]:
+            return finished[0]
+        time.sleep(0.2)
+    raise TimeoutError(f"no call of {function} ended within {timeout:.0f}s")
 
 
 def machine(node_id: str, rank: int, now: datetime, state: str = "ready", **fields: object) -> NodeResource:

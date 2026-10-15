@@ -147,6 +147,18 @@ sky compute run research train.py --node all
 
 `ls`, `rm`, and `upload` target every node by default where the command allows it. `download` reads one node and defaults to rank `0`. `exec` runs a shell command on the selected nodes. `run` sends a local Python script through the worker path; `--node` places it: `any` (the default, one node with a slot free), `all`, or a rank.
 
+### Tasks
+
+```bash
+sky compute tasks research
+sky compute tasks research --state running
+sky compute cancel tsk_9d21f0
+```
+
+`tasks` lists a compute's calls: the running ones, then the queued, then the latest to finish, the first `--limit` of them (20 by default). A compute keeps every call it was given, so in-flight work comes first and history after it. `--state` asks for one state.
+
+`cancel` takes a task's id, the one `tasks` lists in its first column. A task no machine has started never runs. One that is running is asked to stop where it runs, so the cancel is accepted, not done: the row that comes back shows its attempt `cancel_requested` until the worker says it let go, and `cancelled` after. A task that finished before the cancel keeps its outcome.
+
 ## `sky log`
 
 `sky log` replays a compute's recorded events. Without `--follow`, it stops after the replay is quiet.

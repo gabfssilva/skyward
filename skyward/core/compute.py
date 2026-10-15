@@ -30,7 +30,7 @@ from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
 from skyward.core.console import Observer, Watcher, watcher
 from skyward.core.endings import Endings
-from skyward.core.errors import SkywardError, TaskFailedError
+from skyward.core.errors import SkywardError, TaskFailedError, UnexpectedResponseError
 from skyward.core.excerpt import defined, excerpt
 from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
@@ -41,6 +41,7 @@ from skyward.core.view import EventCallback, decoded
 from skyward.shared import codec, lifecycle, retry
 from skyward.shared.events import Event
 from skyward.shared.frames import Chunk, Failed, Frame
+from skyward.shared.observability import notice
 from skyward.shared.schemas import (
     Allocation,
     ComputeCreate,
@@ -271,6 +272,8 @@ class Compute:
         self._active_token: Token[context.Pool | None] | None = None
         self._functions: dict[str, asyncio.Task[None]] = {}
         """The upload of each digest this pool has sent: in flight, or done. The daemon keeps a function once."""
+        self._cancels: set[asyncio.Task[None]] = set()
+        """The cancels of the calls whose futures were cancelled, still on their way to the daemon."""
 
     @classmethod
     def attached(
@@ -696,6 +699,7 @@ class Compute:
                 self.loop.run(proxy.stop())
         self._proxies = []
         try:
+            self.loop.run(self._cancelled())
             self._client_stack.close()
             if self._spec.delete_on_exit and self._id:
                 self.loop.run(self._destroy())
@@ -750,8 +754,43 @@ class Compute:
         raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
 
     async def _one[T](self, pending: Pending[T]) -> T:
-        task = await self._submit(pending, dispatch="one")
-        return await codec.Pickle[T]().decode(await self._settled(task.id))
+        """One call's value. A future cancelled meanwhile cancels the task on the daemon as well.
+
+        The submission is shielded from the cancel: one that lands on the POST cannot
+        tell whether the daemon has the task, so the submission goes through, and the
+        task it made is the one :meth:`_cancel` cancels.
+        """
+        submitting = asyncio.create_task(self._submit(pending, dispatch="one"))
+        try:
+            task = await asyncio.shield(submitting)
+            blob = await self._settled(task.id)
+        except asyncio.CancelledError:
+            cancelling = asyncio.create_task(self._cancel(submitting))
+            self._cancels.add(cancelling)
+            cancelling.add_done_callback(self._cancels.discard)
+            raise
+        return await codec.Pickle[T]().decode(blob)
+
+    async def _cancel(self, submitting: asyncio.Task[TaskResource]) -> None:
+        """Cancel the task a cancelled call submitted, once its submission is through.
+
+        Nobody waits on this — the future was cancelled the moment it was asked to be
+        — so a cancel the daemon did not take is said on stderr: the task it was for
+        goes on running. A submission that failed made no task to cancel.
+        """
+        await asyncio.wait((submitting,))
+        if submitting.exception() is not None:
+            return
+        task = submitting.result()
+        try:
+            await writes.cancel(self.client, task.id)
+        except (SkywardError, UnexpectedResponseError, httpx.TransportError) as error:
+            notice("WARNING", f"task {task.id} goes on running: the daemon did not take its cancel ({error})")
+
+    async def _cancelled(self) -> None:
+        """Let every cancel still on its way reach the daemon, before the client closes under it."""
+        if self._cancels:
+            await asyncio.wait(self._cancels)
 
     async def _all[T](self, pending: Pending[T]) -> list[T]:
         """Every node's answer, in rank order.

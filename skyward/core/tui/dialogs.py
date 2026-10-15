@@ -39,16 +39,17 @@ def _css(name: str) -> str:
 
 
 class Confirm(ModalScreen[bool]):
-    """A question in red, and two buttons; focus starts on ``cancel``."""
+    """A question in red, and two buttons; focus starts on the one that refuses, ``cancel`` unless named."""
 
     DEFAULT_CSS = _css("Confirm")
     BINDINGS = [Binding("escape", "cancel", "cancel")]
 
-    def __init__(self, question: str, confirm: str, note: str = "") -> None:
+    def __init__(self, question: str, confirm: str, note: str = "", refuse: str = "cancel") -> None:
         super().__init__()
         self._question = question
         self._confirm = confirm
         self._note = note
+        self._refuse = refuse
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -57,7 +58,7 @@ class Confirm(ModalScreen[bool]):
                 yield Label(self._note, classes="note")
             with Horizontal(classes="buttons"):
                 yield Button(self._confirm, id="confirm", variant="error")
-                yield Button("cancel", id="cancel")
+                yield Button(self._refuse, id="cancel")
 
     def on_mount(self) -> None:
         self.query_one("#cancel", Button).focus()

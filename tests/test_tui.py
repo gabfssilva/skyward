@@ -163,20 +163,25 @@ def _canned(monkeypatch: pytest.MonkeyPatch, template: ComputeResource) -> dict[
     return held_nodes
 
 
-def _task(task_id: str, name: str, state: str, error: str | None = None) -> TaskResource:
-    """One task as the API tells it, run once on ``nod_a`` a minute before ``NOW``."""
+def _task(task_id: str, name: str, state: str, error: str | None = None, attempt: str | None = None) -> TaskResource:
+    """One task as the API tells it, run once on ``nod_a`` a minute before ``NOW``.
+
+    One still queued or running has not finished: its attempt is ``attempt``, else
+    ``created`` for a queued one and ``started`` for a running one.
+    """
     failure = None if error is None else {"code": "task_failed", "message": error, "retryable": False, "request_id": None, "details": None}
+    live = state in ("queued", "running")
     execution = {
         "id": f"exe_{task_id}",
         "rank": 0,
         "ordinal": 1,
-        "state": state,
+        "state": attempt or {"queued": "created", "running": "started"}.get(state, state),
         "node_id": "nod_a",
         "retry_of": None,
         "result_sha256": None,
         "error": failure,
-        "started_at": NOW - timedelta(minutes=1),
-        "finished_at": NOW,
+        "started_at": None if state == "queued" else NOW - timedelta(minutes=1),
+        "finished_at": None if live else NOW,
         "deadline_at": None,
         "stopping": False,
     }
@@ -192,7 +197,7 @@ def _task(task_id: str, name: str, state: str, error: str | None = None) -> Task
             "retry": None,
             "executions": (execution,),
             "submitted_at": NOW - timedelta(minutes=1),
-            "finished_at": NOW,
+            "finished_at": None if live else NOW,
             "rank": None,
             "correlation_id": None,
             "queue_timeout_seconds": None,
@@ -728,6 +733,60 @@ def describe_the_tasks_section() -> None:
 
             await _click(pilot, rows, "boom")
             await _until(pilot, lambda: "function: boom" in _said(tasks, "#status"))
+
+
+def describe_cancelling_a_task() -> None:
+    async def a_running_one_is_cancelled_from_its_line_once_confirmed(client: Client, monkeypatch: pytest.MonkeyPatch, seen: Seen) -> None:
+        nodes = _canned(monkeypatch, await held(client, "training"))
+        nodes["nodes"] = (machine("nod_a", 0, NOW),)
+        _paged(monkeypatch, (_task("tsk_run", "train", "running"), _task("tsk_done", "nap", "succeeded")))
+        cancelled: list[str] = []
+
+        async def cancel(client: Client, task_id: str) -> None:
+            cancelled.append(task_id)
+
+        monkeypatch.setattr("skyward.core.writes.cancel", cancel)
+        screen = ComputeScreen(client, "cmp_any", seen)
+        async with _opened(screen) as pilot:
+            tasks = screen.query_one(Tasks)
+            rows = tasks.query_one("#rows", Static)
+            await _until(pilot, lambda: "train" in _said(tasks, "#rows"))
+
+            await _click(pilot, rows, "cancel", row=0)
+            await _until(pilot, lambda: isinstance(pilot.app.screen, Confirm))
+            assert "cancel train?" in _said(pilot.app.screen, ".question")
+            await pilot.press("enter")
+            await _until(pilot, lambda: pilot.app.screen is screen)
+            await _settled(pilot)
+            assert cancelled == [], "the focus starts on no"
+
+            await _click(pilot, rows, "cancel", row=0)
+            await _until(pilot, lambda: isinstance(pilot.app.screen, Confirm))
+            await pilot.press("tab", "enter")
+            await _until(pilot, lambda: cancelled == ["tsk_run"])
+
+    async def only_one_queued_or_running_offers_it_and_one_already_asked_to_stop_says_so(client: Client, monkeypatch: pytest.MonkeyPatch, seen: Seen) -> None:
+        nodes = _canned(monkeypatch, await held(client, "training"))
+        nodes["nodes"] = (machine("nod_a", 0, NOW),)
+        _paged(
+            monkeypatch,
+            (
+                _task("tsk_wait", "wait", "queued"),
+                _task("tsk_stop", "stop", "running", attempt="cancel_requested"),
+                _task("tsk_done", "nap", "succeeded"),
+                _task("tsk_gone", "gone", "cancelled"),
+            ),
+        )
+        screen = ComputeScreen(client, "cmp_any", seen)
+        async with _opened(screen) as pilot:
+            tasks = screen.query_one(Tasks)
+            await _until(pilot, lambda: "gone" in _said(tasks, "#rows"))
+            waiting, stopping, done, gone = _said(tasks, "#rows").split("\n")
+
+            assert waiting.endswith("  cancel"), waiting
+            assert stopping.endswith("logs  cancelling…"), stopping
+            assert "cancel" not in done
+            assert not gone.endswith("cancel"), gone
 
 
 def describe_a_daemon_slower_than_the_poll() -> None:

@@ -15,6 +15,8 @@ const IDLE_BUCKETS = 4
 const NODE_STAGES = ['requested', 'provisioning', 'connecting', 'bootstrapping', 'ready', 'draining', 'lost', 'deleting', 'deleted', 'failed']
 // The states the daemon counts a node alive in; a node in any other is already on its way out.
 const DRAINABLE = new Set(['requested', 'provisioning', 'connecting', 'bootstrapping', 'ready'])
+// The states a task is still in flight in; a cancel of one that finished is answered and changes nothing.
+const CANCELLABLE = new Set(['queued', 'running'])
 const TASKS_PER_PAGE = 5
 const WRITE_ATTEMPTS = 5
 const NAME_WIDTH = 16
@@ -73,7 +75,8 @@ type Notice = { compute: string; kind: string; reason: string | null; sequences:
 // What was seen, by sequence, and when it was: what was seen a window ago failed earlier still, and is forgotten.
 type Seen = ReadonlyMap<number, number>
 
-// `node` and `startedAt` come from the latest attempt.
+// `node` and `startedAt` come from the latest attempt. `cancelling` is an attempt in `cancel_requested`: its worker was
+// asked to stop it and has not said it did, so the task is still running.
 type Task = {
   id: string
   sha: string
@@ -84,6 +87,7 @@ type Task = {
   submittedAt: number
   startedAt: number | null
   finishedAt: number | null
+  cancelling: boolean
 }
 
 type TaskOrder = 'state' | 'submitted' | 'finished'
@@ -121,15 +125,16 @@ type DetailView = { kind: 'detail'; id: string; page: number; group: NodeGroup |
 type View = { kind: 'list' } | DetailView
 
 type Step = { step: 'asking' } | { step: 'sending' } | { step: 'failed'; reason: string }
-// One confirmation or form is open at a time, so asking for one closes the other. A kill's `id` is the node's; a
-// scale's `min` and `max` are what was typed, empty for the bound it was opened on.
-type Action = ({ kind: 'delete'; id: string } | { kind: 'kill'; id: string } | { kind: 'scale'; id: string; min: string; max: string; invalid: boolean }) & Step
+// One confirmation or form is open at a time, so asking for one closes the other. A kill's `id` is the node's, a
+// cancel's the task's; a scale's `min` and `max` are what was typed, empty for the bound it was opened on.
+type Action = ({ kind: 'delete'; id: string } | { kind: 'kill'; id: string } | { kind: 'cancel'; id: string } | { kind: 'scale'; id: string; min: string; max: string; invalid: boolean }) & Step
 
 // A write outlives the drawing that pressed it, so it goes through the command's engine rather than the render's.
 type Writes = {
   remove: (id: string) => Promise<void>
   scale: (c: Compute, min: number, max: number) => Promise<void>
   drain: (compute: string, node: string) => Promise<void>
+  cancel: (task: string) => Promise<void>
   seen: (seen: Seen) => Promise<void>
 }
 
@@ -306,6 +311,7 @@ function parseTask(item: unknown): Task | undefined {
     attempts: executions.length,
     startedAt: time(at(latest, 'started_at')),
     finishedAt: time(at(item, 'finished_at')),
+    cancelling: executions.some((execution) => str(at(execution, 'state')) === 'cancel_requested'),
   }
 }
 
@@ -639,6 +645,14 @@ async function drainNode($: EngineInterface, compute: string, node: string): Pro
   if (!response.ok) throw refusal(response)
 }
 
+async function cancelTask($: EngineInterface, task: string): Promise<void> {
+  const response = await $.http.fetch(`${DAEMON}/v1/tasks/${task}`, {
+    method: 'DELETE',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+  })
+  if (!response.ok) throw refusal(response)
+}
+
 export const register: Register = (on) => {
   let view: View = { kind: 'list' }
   let snapshot: Snapshot = { kind: 'loading' }
@@ -682,6 +696,7 @@ export const register: Register = (on) => {
       remove: (id) => deleteCompute($, id),
       scale: (c, min, max) => scaleCompute($, c, min, max),
       drain: (compute, node) => drainNode($, compute, node),
+      cancel: (task) => cancelTask($, task),
       seen: (next) => $.store.set(SEEN_KEY, Object.fromEntries(next)),
     }
     timers = [
@@ -790,8 +805,8 @@ export const register: Register = (on) => {
       $.ui.invalidate('ui.render')
     }
 
-    // A deleted compute and a drained node lose their controls once the next read shows it, so those stay in
-    // `sending` until then; a scaled compute keeps its controls and is let go at once.
+    // A deleted compute, a drained node and a cancelled task lose their controls once the next read shows it, so those
+    // stay in `sending` until then; a scaled compute keeps its controls and is let go at once.
     const perform = (sending: Action, focus: string, write: (daemon: Writes) => Promise<void>) => {
       const daemon = writes
       if (daemon === undefined) return
@@ -1172,6 +1187,14 @@ export const register: Register = (on) => {
             ? [took === null ? state : `${state} ${took}`]
             : [took === null ? state : `${state} ${t.state === 'succeeded' ? 'in' : 'after'} ${took}`, `${age(now - t.finishedAt)} ago`]
       const name = t.name
+      // Once sent, the row has no cancel button to keep the ring and a queued one has no logs, so the ring goes to the
+      // sort, which every page draws.
+      const cancelling = action?.kind === 'cancel' && action.id === t.id ? action : undefined
+      const cancel = !CANCELLABLE.has(t.state) ? null : t.cancelling || cancelling?.step === 'sending' ? (
+        <Text dimColor>cancelling…</Text>
+      ) : (
+        <Button key={`task-cancel:${t.id}`} plain label="cancel" dimColor={cancelling?.step !== 'asking'} onPress={() => setAction({ kind: 'cancel', id: t.id, step: 'asking' }, `task-cancel-no:${t.id}`)} />
+      )
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
@@ -1196,7 +1219,17 @@ export const register: Register = (on) => {
                 <Button key={`task-logs:${t.id}`} plain label="logs" dimColor={!logging} onPress={() => toggleLogTask(t.id)} />
               </Box>
             )}
+            {cancel === null ? null : <Box flexShrink={0} paddingLeft={1}>{cancel}</Box>}
           </Box>
+          {cancelling?.step === 'asking' ? (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={1} paddingLeft={4}>
+              <Text color="red">{`cancel ${name ?? t.sha.slice(0, 12)}?`}</Text>
+              <Button key={`task-cancel-yes:${t.id}`} label="yes, cancel" onPress={() => perform({ kind: 'cancel', id: t.id, step: 'sending' }, 'tasks-sort', (daemon) => daemon.cancel(t.id))} />
+              <Button key={`task-cancel-no:${t.id}`} label="no" onPress={() => setAction(undefined, `task-cancel:${t.id}`)} />
+              <Text dimColor>{t.state === 'queued' ? 'it never runs' : 'it is asked to stop where it runs, and ends cancelled once it lets go'}</Text>
+            </Box>
+          ) : null}
+          {cancelling?.step === 'failed' ? <Text color="red">{`    cancel failed: ${cancelling.reason}`}</Text> : null}
         </Box>
       )
     }
@@ -1321,7 +1354,7 @@ export const register: Register = (on) => {
               {shown === undefined ? null : scaleControls(shown)}
               {shown === undefined ? null : removeControls(shown)}
             </Box>
-            {shown !== undefined && deletable(shown) && action?.kind !== 'kill' && action?.step === 'failed' && action.id === shown.id ? (
+            {shown !== undefined && deletable(shown) && (action?.kind === 'delete' || action?.kind === 'scale') && action.step === 'failed' && action.id === shown.id ? (
               <Text color="red">{`${action.kind} failed: ${action.reason}`}</Text>
             ) : null}
           </Box>

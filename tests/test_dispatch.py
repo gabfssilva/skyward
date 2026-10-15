@@ -21,7 +21,7 @@ import pytest
 
 import skyward as sky
 from skyward.shared.schemas import FunctionExcerpt
-from tests.conftest import cancel_once_started
+from tests.conftest import cancel_once_started, ended, once_started
 
 pytestmark = [pytest.mark.compute, pytest.mark.xdist_group("pool")]
 
@@ -71,6 +71,22 @@ def crash() -> None:
 
 @sky.function(retry=None)
 def spinning(seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+    return "finished"
+
+
+@sky.function(retry=None)
+def turning(seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+    return "finished"
+
+
+@sky.function(retry=None)
+def waiting(seconds: float) -> str:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         time.sleep(0.05)
@@ -148,6 +164,23 @@ def describe_dispatching_a_call() -> None:
 
             assert raised.value.details["state"] == "cancelled"
             assert sorted(rank for _, rank in where_am_i() @ pool) == [0, 1], "the node it ran on let go of its slot"
+
+    def describe_when_its_future_is_cancelled() -> None:
+        def it_stops_the_call_on_the_node_and_the_task_ends_cancelled(pool: sky.Compute, daemon: str) -> None:
+            future = turning(60) > pool
+            once_started(daemon, "turning")
+
+            assert future.cancel()
+
+            assert ended(daemon, "turning") == "cancelled", "the daemon heard the cancel, and the worker let go"
+            assert sorted(rank for _, rank in where_am_i() @ pool) == [0, 1], "the node it ran on let go of its slot"
+
+        def it_cancels_a_call_cancelled_the_moment_it_is_sent(pool: sky.Compute, daemon: str) -> None:
+            future = waiting(60) > pool
+
+            assert future.cancel()
+
+            assert ended(daemon, "waiting") == "cancelled", "the submission went through, and the task it made was cancelled"
 
 
 def describe_the_implicit_pool() -> None:

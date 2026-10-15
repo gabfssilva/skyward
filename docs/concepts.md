@@ -169,6 +169,8 @@ result = future.result()  # blocks only when you need the result
 
 The `Future` follows the `concurrent.futures` protocol, so it works with `as_completed()`, `wait()`, and existing executor code.
 
+Cancelling the future cancels the task on the daemon too. `future.cancel()` returns at once, and the cancel follows: a task no machine has started never runs, and one already running is stopped where it runs. The stop is an exception raised inside the function, between two bytecodes, so its `finally` blocks and context managers unwind as they would for any error — a checkpoint written in a `finally` is written. The trade-off is that it is cooperative: a function inside one long native call (a CUDA kernel, a blocking read) stops when that call returns, and one that catches `BaseException` catches the stop with it.
+
 ### `gather()` — dynamic parallelism
 
 `&` works when the number of parallel tasks is known at write time. When it isn't — you're iterating over a dataset, a list of configurations, any dynamic collection — `gather` groups an arbitrary number of computations:
