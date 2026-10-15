@@ -2137,6 +2137,11 @@ export interface components {
             /** @default true */
             read_only: boolean;
             storage_sha256?: string | null;
+            /**
+             * @default mount
+             * @enum {string}
+             */
+            type: "mount" | "sync";
         };
         /**
          * Worker

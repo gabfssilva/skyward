@@ -6,6 +6,7 @@ import shlex
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from skyward.shared import version
 from skyward.shared.schemas import READINGS, Endpoint, Image, MetricSpec, Reading, Volume
 from skyward.worker.journal import SKYWARD_DIR
 
@@ -32,6 +33,15 @@ reproduced from the spec that caused it.
 """
 GEESEFS_BIN = "/usr/local/bin/geesefs"
 FUSE_ROOT = "/mnt/geesefs"
+
+RCLONE = "v1.75.1"
+"""The rclone release a synced volume copies with, pinned for the reason :data:`GEESEFS` is."""
+RCLONE_BIN = "/usr/local/bin/rclone"
+RCLONE_CONFIG = "/etc/skyward-rclone.conf"
+SYNC = f"{SKYWARD_DIR}/sync.sh"
+SYNC_GENERATION = f"{SKYWARD_DIR}/sync.generation"
+SYNC_INTERVAL = 10
+"""Seconds between two passes over the synced volumes: a write on one node reaches the bucket within one, and another node within two."""
 
 _OPENING = """#!/bin/bash
 set -e
@@ -359,7 +369,28 @@ def phase(name: str, *commands: str) -> str:
 
 
 def mounts(volumes: tuple[tuple[Volume, Endpoint], ...]) -> str:
-    """The ``volumes`` phase: install geesefs, mount every bucket, link it where it was asked for.
+    """The ``volumes`` phase: mount the buckets asked to be mounted, copy the ones asked to be synced.
+
+    Parameters
+    ----------
+    volumes : tuple[tuple[Volume, Endpoint], ...]
+        Each volume paired with the endpoint it is reached through.
+
+    Returns
+    -------
+    str
+        A single ``phase`` line. Its commands are chained on success, so the first
+        that fails is what the journal reports.
+    """
+    return phase(
+        "volumes",
+        *_mounted(tuple((volume, endpoint) for volume, endpoint in volumes if volume.type == "mount")),
+        *_synced(tuple((volume, endpoint) for volume, endpoint in volumes if volume.type == "sync")),
+    )
+
+
+def _mounted(volumes: tuple[tuple[Volume, Endpoint], ...]) -> tuple[str, ...]:
+    """Install geesefs, mount every bucket, link it where it was asked for.
 
     One FUSE mount per ``(bucket, endpoint)`` pair rather than per volume, because
     two volumes reading different prefixes of one bucket are one filesystem seen
@@ -375,18 +406,10 @@ def mounts(volumes: tuple[tuple[Volume, Endpoint], ...]) -> str:
     600. An endpoint with no access key is signed for by the machine's own instance
     identity instead, which is why an AWS bucket in the account that bought the
     machine needs no secret to travel anywhere.
-
-    Parameters
-    ----------
-    volumes : tuple[tuple[Volume, Endpoint], ...]
-        Each volume paired with the endpoint it is reached through.
-
-    Returns
-    -------
-    str
-        A single ``phase`` line. Its commands are chained on success, so the first
-        that fails is what the journal reports.
     """
+    if not volumes:
+        return ()
+
     lock = "-o DPkg::Lock::Timeout=-1"
     commands = [
         f"apt-get {lock} install -y -qq ca-certificates curl",
@@ -433,7 +456,88 @@ def mounts(volumes: tuple[tuple[Volume, Endpoint], ...]) -> str:
             commands.append(f"mkdir -p {source}")
         commands.append(f"ln -sfn {source} {volume.mount}")
 
-    return phase("volumes", *commands)
+    return tuple(commands)
+
+
+def _synced(volumes: tuple[tuple[Volume, Endpoint], ...]) -> tuple[str, ...]:
+    """Install rclone, copy every prefix in, and leave a loop keeping the copies and the bucket in step.
+
+    No FUSE and no mount: a copy is the one thing a container that cannot mount can
+    still have. The binary is taken out of the release's ``.deb`` rather than installed
+    from it, because installing waits on the dpkg lock that a freshly booted machine's
+    unattended upgrades hold.
+
+    Each endpoint is one rclone remote, named after its URL as the geesefs credentials
+    are, in one config file at mode 600; an endpoint with no access key signs with the
+    machine's own identity (``env_auth``), as a mount does.
+
+    The first copy happens here, so the worker starts on a directory that is already
+    full. Then every :data:`SYNC_INTERVAL` seconds the loop copies the bucket in and,
+    for a volume that may write, the directory out — both with ``--update``, so the
+    newer side of a file wins either way and a file just written is not overwritten
+    by the older one in the bucket. Nothing is ever deleted: a copy only adds.
+
+    The loop is a script of its own, started with its output on a log, because a
+    background job holding the phase's stdout would hold the phase open. It runs for
+    as long as the generation it was started with is the current one, as the metrics
+    collectors do, so a bootstrap run again on the same machine retires it within a
+    pass rather than starting a second one beside it.
+    """
+    if not volumes:
+        return ()
+
+    def name(endpoint: Endpoint) -> str:
+        return f"e{hashlib.md5(endpoint.url.encode()).hexdigest()[:8]}"
+
+    def remote(volume: Volume, endpoint: Endpoint) -> str:
+        path = f"{volume.bucket}/{volume.prefix}" if volume.prefix else volume.bucket
+        return shlex.quote(f"{name(endpoint)}:{path}")
+
+    def section(endpoint: Endpoint) -> str:
+        signing = (
+            f"access_key_id = {endpoint.access_key}\nsecret_access_key = {endpoint.secret_key}\n"
+            if endpoint.access_key is not None
+            else "env_auth = true\n"
+        )
+        return "".join(
+            (
+                f"[{name(endpoint)}]\n",
+                "type = s3\nprovider = Other\n",
+                f"endpoint = {endpoint.url}\nregion = {endpoint.region}\n",
+                f"force_path_style = {str(endpoint.path_style).lower()}\n",
+                "list_version = 2\nno_check_bucket = true\n",
+                signing,
+            ),
+        )
+
+    copy = f"{RCLONE_BIN} --config {RCLONE_CONFIG} copy --update --use-server-modtime --user-agent skyward/{version.current()}"
+    pulls = tuple(f"{copy} {remote(volume, endpoint)} {shlex.quote(volume.mount)}" for volume, endpoint in volumes)
+    pushes = tuple(f"{copy} {shlex.quote(volume.mount)} {remote(volume, endpoint)}" for volume, endpoint in volumes if not volume.read_only)
+    loop = "\n".join(
+        (
+            "#!/bin/bash",
+            f'while [ "$(cat {SYNC_GENERATION} 2>/dev/null)" = "$1" ]; do',
+            f"    sleep {SYNC_INTERVAL}",
+            *(f"    {command}" for command in (*pulls, *pushes)),
+            "done",
+            "",
+        ),
+    )
+    config = "".join(section(endpoint) for endpoint in {endpoint.url: endpoint for _, endpoint in volumes}.values())
+
+    return (
+        f'curl -fsSL -o /tmp/rclone.deb "https://github.com/rclone/rclone/releases/download/{RCLONE}/rclone-{RCLONE}-linux-$(dpkg --print-architecture).deb"',
+        "dpkg-deb -x /tmp/rclone.deb /tmp/rclone",
+        f"install -m 755 /tmp/rclone/usr/bin/rclone {RCLONE_BIN}",
+        f"printf %s {shlex.quote(config)} > {RCLONE_CONFIG}",
+        f"chmod 600 {RCLONE_CONFIG}",
+        *(f"mkdir -p {shlex.quote(volume.mount)}" for volume, _ in volumes),
+        *pulls,
+        f"printf %s {shlex.quote(loop)} > {SYNC}",
+        "generation=$$.$RANDOM",
+        f'printf "%s\\n" "$generation" > {SYNC_GENERATION}',
+        f'{{ bash {SYNC} "$generation" > /tmp/rclone-sync.log 2>&1 < /dev/null & }}',
+    )
 
 
 def symlinks(volumes: tuple[Volume, ...], base: str) -> str:

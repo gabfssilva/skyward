@@ -189,9 +189,11 @@ buffer=0)` controls task execution per node. Built-in plugins include `Torch`,
 `HuggingFace`, `Jax`, `Keras`, `Accelerate`, `Joblib`, `Sklearn`, `Cuml`, `Mig`,
 and `Mps`.
 
-`Volume(bucket, mount, prefix="", read_only=True, storage=None)` maps storage to
-an absolute path. `Storage` provides synchronous local CRUD operations inside a
-context manager. See [Plugins](plugins/index.md) and [Volumes](volumes.md).
+`Volume(bucket, mount, prefix="", read_only=True, storage=None, type="mount")`
+maps storage to an absolute path. `type="mount"` is a geesefs FUSE mount;
+`type="sync"` is an rclone copy kept in step with the bucket every 10 seconds,
+for machines that cannot mount. `Storage` provides synchronous local CRUD
+operations inside a context manager. See [Plugins](plugins/index.md) and [Volumes](volumes.md).
 
 ## Distributed collections
 

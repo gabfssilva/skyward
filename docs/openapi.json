@@ -4071,6 +4071,14 @@
                 "type": "null"
               }
             ]
+          },
+          "type": {
+            "default": "mount",
+            "enum": [
+              "mount",
+              "sync"
+            ],
+            "type": "string"
           }
         },
         "required": [

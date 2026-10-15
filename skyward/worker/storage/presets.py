@@ -52,6 +52,7 @@ def S3(
         endpoint=f"https://s3.{region}.amazonaws.com",
         access_key=access_key,
         secret_key=secret_key,
+        region=region,
     )
 
 
@@ -92,6 +93,7 @@ def Wasabi(*, region: str = "us-east-1", access_key: Credential, secret_key: Cre
         endpoint=f"https://s3.{region}.wasabisys.com",
         access_key=access_key,
         secret_key=secret_key,
+        region=region,
     )
 
 
@@ -113,6 +115,7 @@ def Backblaze(*, region: str, key_id: Credential, app_key: Credential) -> Storag
         endpoint=f"https://s3.{region}.backblazeb2.com",
         access_key=key_id,
         secret_key=app_key,
+        region=region,
     )
 
 

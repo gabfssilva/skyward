@@ -29,9 +29,43 @@ Fields:
 - `mount`: absolute path on every node;
 - `prefix`: optional subdirectory within the bucket;
 - `read_only`: defaults to `True`;
-- `storage`: optional explicit `sky.Storage` endpoint and credentials.
+- `storage`: optional explicit `sky.Storage` endpoint and credentials;
+- `type`: `"mount"` (default) or `"sync"`; see [Mount or sync](#mount-or-sync).
 
 The constructor rejects relative paths and protected system paths such as `/`, `/root`, `/tmp`, and `/opt`.
+
+## Mount or sync
+
+`type` decides how the bucket reaches the node. Everything else about the volume means the same for both.
+
+| | `type="mount"` | `type="sync"` |
+|---|---|---|
+| Mechanism | geesefs FUSE mount (or the provider's attached volume) | rclone copies; no mount |
+| Machine requirement | FUSE (`/dev/fuse`, `CAP_SYS_ADMIN`) | none |
+| Reads | fetched as they are read | the whole prefix is copied to `mount` before the worker starts |
+| Local disk | cache | must hold the prefix |
+| Writes reach the bucket | asynchronously, guaranteed by `fsync` | within 10 seconds |
+| Writes from other nodes | visible after about a second | visible within 20 seconds |
+| `read_only=True` | mounted read-only | never copied back |
+
+A sync copies both ways every 10 seconds with `rclone copy --update`: the newer side of a file wins. Nothing is deleted on either side, so a file removed locally comes back from the bucket and a file removed from the bucket comes back from a node that still has it. Whatever a node wrote in the last seconds before it is torn down is not copied.
+
+Use `sync` on a provider whose machines cannot mount, such as Salad or a RunPod pod given an S3 bucket:
+
+```python
+runs = sky.Volume(
+    bucket="runs",
+    mount="/out",
+    read_only=False,
+    type="sync",
+    storage=sky.storage.R2(account_id="...", access_key="...", secret_key="..."),
+)
+
+with sky.Compute(provider=sky.Salad(), volumes=[runs]) as compute:
+    ...
+```
+
+`sky.Storage` takes a `region=`, which is the region requests are signed for. AWS refuses a request signed for any region but the bucket's; the `S3`, `Wasabi`, and `Backblaze` presets set it from their own `region=`.
 
 ## Attach volumes to a compute
 
@@ -157,7 +191,7 @@ with sky.Compute(
 
 ## Shared buckets
 
-Multiple volumes can reference the same bucket. The bootstrap deduplicates the underlying FUSE mount and creates one link per `mount`/`prefix` pair. If any volume for that bucket is writable, the shared mount is writable.
+Multiple volumes can reference the same bucket. For mounted volumes, the bootstrap deduplicates the underlying FUSE mount and creates one link per `mount`/`prefix` pair. If any volume for that bucket is writable, the shared mount is writable. Synced volumes are copied independently, one copy per volume.
 
 ```python
 volumes = [

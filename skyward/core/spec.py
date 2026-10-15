@@ -16,6 +16,7 @@ from skyward.core.provider import Provider
 from skyward.shared.accelerators import resolve
 from skyward.shared.architectures import Architecture
 from skyward.shared.schemas import NodeBounds as Nodes
+from skyward.shared.schemas import VolumeType
 
 if TYPE_CHECKING:
     from skyward.worker.api import Info
@@ -257,12 +258,22 @@ again.
 
 @dataclass(frozen=True, slots=True)
 class Volume:
-    """A bucket every node mounts, at a path you choose.
+    """A bucket every node sees as a directory, at a path you choose.
 
     The nodes see a directory: ordinary ``open`` and ``os.listdir`` work, and a
     dataset too big to ship as user code is read straight off object storage
-    instead. It is a network filesystem wearing a directory's clothes, so it is
-    read-heavy by design — ``read_only`` is the default for that reason.
+    instead. ``read_only`` is the default, because a bucket written by several
+    nodes at once is one whose last writer wins.
+
+    ``type`` is how the bucket gets there. ``"mount"`` is a network filesystem
+    wearing a directory's clothes: a read fetches what it reads, and the machine
+    has to be able to mount one — a container without FUSE (Salad, a RunPod pod
+    given an S3 bucket) cannot. ``"sync"`` is a copy: the prefix is copied to
+    ``mount`` before the worker starts, and from then on the copy and the bucket
+    are copied into each other every few seconds, the newer file winning. It needs
+    nothing of the machine, but the node's disk has to hold the prefix, a deletion
+    on either side comes back from the other, and what was written in the last
+    few seconds before a node goes away never leaves it.
 
     Where the credentials come from is what ``storage`` decides. Left ``None``,
     the daemon resolves them from the provider the compute was bought on, and for
@@ -285,14 +296,20 @@ class Volume:
         A subdirectory of the bucket to mount, rather than its root.
     read_only : bool
         Whether writes are refused. Buckets shared by several volumes are mounted
-        writable if any of them asked to write.
+        writable if any of them asked to write. A read-only sync is never copied
+        back.
     storage : Storage | None
         Credentials for buckets the provider cannot reach on its own.
+    type : {"mount", "sync"}
+        Whether the bucket is mounted or copied.
 
     Examples
     --------
     >>> with sky.Compute(provider=sky.AWS(), volumes=[sky.Volume(bucket="training-data", mount="/data")]) as pool:
     ...     train() >> pool  # the node reads /data/*.parquet
+    >>> runs = sky.Volume(bucket="runs", mount="/out", read_only=False, type="sync", storage=sky.storage.R2(...))
+    >>> with sky.Compute(provider=sky.Salad(), volumes=[runs]) as pool:
+    ...     train() >> pool  # what the node writes under /out reaches the bucket
     """
 
     bucket: str
@@ -300,6 +317,7 @@ class Volume:
     prefix: str = ""
     read_only: bool = True
     storage: Storage | None = None
+    type: VolumeType = "mount"
 
     def __post_init__(self) -> None:
         if not self.mount.startswith("/"):

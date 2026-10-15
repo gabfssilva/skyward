@@ -412,7 +412,7 @@ class AWSProvider:
         is no access key to create, none to write to the node's disk, and none to
         revoke when the compute goes away.
         """
-        endpoint = Endpoint(url=f"https://s3.{binding['region']}.amazonaws.com")
+        endpoint = Endpoint(url=f"https://s3.{binding['region']}.amazonaws.com", region=binding["region"])
         return Mount(phases=(bootstrap.mounts(tuple((volume, endpoint) for volume in volumes)),))
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:

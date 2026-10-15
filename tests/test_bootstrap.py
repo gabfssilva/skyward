@@ -11,7 +11,7 @@ import msgspec
 import pytest
 
 import skyward as sky
-from skyward.shared.schemas import READINGS, Image, MetricSpec, Reading
+from skyward.shared.schemas import READINGS, Endpoint, Image, MetricSpec, Reading, Volume
 from skyward.worker import bootstrap
 
 IMAGE = "ghcr.io/gabfssilva/skyward:py3.13"
@@ -223,3 +223,104 @@ def describe_the_include_path_file() -> None:
     @pytest.mark.local
     def it_inserts_the_directory_at_the_front_of_sys_path() -> None:
         assert bootstrap.pth("/x") == "import sys; sys.path.insert(0, '/x')\n"
+
+
+AWS = Endpoint(url="https://s3.us-west-2.amazonaws.com", region="us-west-2")
+
+
+def describe_the_volumes_phase() -> None:
+    @pytest.mark.local
+    def its_commands_are_valid_bash_with_volumes_of_both_types(tmp_path: Path) -> None:
+        phase = bootstrap.mounts(
+            (
+                (Volume(bucket="datasets", mount="/data", prefix="imagenet/"), AWS),
+                (Volume(bucket="runs", mount="/out", read_only=False, type="sync"), AWS),
+                (Volume(bucket="runs", mount="/in", prefix="seed", type="sync"), Endpoint(url="https://r2.example", access_key="k", secret_key="s")),
+            ),
+        )
+        _, _, commands = shlex.split(phase)
+        path = tmp_path / "volumes.sh"
+        path.write_text(commands)
+
+        done = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10, check=False)
+
+        assert done.returncode == 0, done.stderr
+
+    @pytest.mark.local
+    def a_synced_volume_needs_no_fuse() -> None:
+        phase = bootstrap.mounts(((Volume(bucket="runs", mount="/out", type="sync"), AWS),))
+
+        assert "geesefs" not in phase
+        assert "fuse" not in phase
+
+    @pytest.mark.local
+    def a_synced_volume_signs_for_the_region_of_its_endpoint() -> None:
+        phase = bootstrap.mounts(((Volume(bucket="runs", mount="/out", type="sync"), AWS),))
+
+        assert "region = us-west-2" in phase
+
+    @pytest.mark.local
+    def every_copy_compares_upload_times_and_says_it_is_skyward() -> None:
+        phase = bootstrap.mounts(((Volume(bucket="runs", mount="/out", read_only=False, type="sync"), AWS),))
+
+        assert phase.count(" copy ") == phase.count(" copy --update --use-server-modtime --user-agent skyward/") == 3
+
+
+SYNC_RUNNER = """
+cat > /tmp/bootstrap.sh
+curl -fsSL -o /tmp/rclone.deb "https://github.com/rclone/rclone/releases/download/@RCLONE@/rclone-@RCLONE@-linux-$(dpkg --print-architecture).deb"
+dpkg -i /tmp/rclone.deb > /dev/null
+mkdir -p /srv/bucket/runs /srv/bucket/seed
+echo seeded > /srv/bucket/runs/a.txt
+echo seeded > /srv/bucket/seed/a.txt
+rclone serve s3 /srv --addr 127.0.0.1:9000 --auth-key key,secret > /tmp/serve.log 2>&1 &
+sleep 3
+bash /tmp/bootstrap.sh || { cat /opt/skyward/events.jsonl; exit 1; }
+echo ours > /out/b.txt
+echo ours > /in/b.txt
+echo theirs > /tmp/c.txt
+rclone copyto /tmp/c.txt ":s3,provider=Other,endpoint='http://127.0.0.1:9000',access_key_id=key,secret_access_key=secret,force_path_style=true:bucket/runs/c.txt"
+sleep @SETTLE@
+echo "bucket $(ls /srv/bucket/runs | tr '\\n' ' ')"
+echo "out $(ls /out | tr '\\n' ' ')"
+echo "seed $(ls /srv/bucket/seed | tr '\\n' ' ')"
+pgrep -f "/opt/skyward/sync.sh [0-9]" > /dev/null && echo "before running" || echo "before stopped"
+printf 'newer\\n' > /opt/skyward/sync.generation
+sleep @STOP@
+pgrep -f "/opt/skyward/sync.sh [0-9]" > /dev/null && echo "after running" || echo "after stopped"
+"""
+
+
+def describe_a_synced_volume_on_linux() -> None:
+    @pytest.mark.compute
+    @pytest.mark.xdist_group("bootstrap")
+    def it_copies_the_bucket_in_then_keeps_both_sides_in_step_until_a_newer_generation_takes_over() -> None:
+        served = Endpoint(url="http://127.0.0.1:9000", access_key="key", secret_key="secret", path_style=True)
+        phase = bootstrap.mounts(
+            (
+                (Volume(bucket="bucket", mount="/out", prefix="runs", read_only=False, type="sync"), served),
+                (Volume(bucket="bucket", mount="/in", prefix="seed", type="sync"), served),
+            ),
+        )
+        runner = (
+            SYNC_RUNNER.replace("@RCLONE@", bootstrap.RCLONE)
+            .replace("@SETTLE@", str(2 * bootstrap.SYNC_INTERVAL + 5))
+            .replace("@STOP@", str(2 * bootstrap.SYNC_INTERVAL + 5))
+        )
+
+        done = subprocess.run(
+            ["docker", "run", "--rm", "-i", IMAGE, "bash", "-c", runner],
+            input="\n".join((bootstrap.HEADER, phase, bootstrap.FOOTER)),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+
+        assert done.returncode == 0, done.stdout + done.stderr
+        listed = {line.split(" ", 1)[0]: line.split(" ", 1)[1].split() for line in done.stdout.splitlines()}
+        assert listed["bucket"] == ["a.txt", "b.txt", "c.txt"]
+        assert listed["out"] == ["a.txt", "b.txt", "c.txt"]
+        assert listed["seed"] == ["a.txt"]
+        assert listed["before"] == ["running"]
+        assert listed["after"] == ["stopped"]

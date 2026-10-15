@@ -632,7 +632,7 @@ class Compute:
 
         refs: list[VolumeRef] = []
         for volume in self._volumes:
-            ref = VolumeRef(bucket=volume.bucket, mount=volume.mount, prefix=volume.prefix, read_only=volume.read_only)
+            ref = VolumeRef(bucket=volume.bucket, mount=volume.mount, prefix=volume.prefix, read_only=volume.read_only, type=volume.type)
             match volume.storage:
                 case None:
                     refs.append(ref)
@@ -644,6 +644,7 @@ class Compute:
                             access_key=_credential(resolved.access_key),
                             secret_key=_credential(resolved.secret_key),
                             path_style=resolved.path_style,
+                            region=resolved.region,
                         ),
                     )
                     sha = await codec.digest(blob)

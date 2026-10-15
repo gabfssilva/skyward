@@ -101,6 +101,16 @@ delete``, a button. ``abandoned`` is the reconciler's: nobody renewed the lease,
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process", "loky"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
+type VolumeType = Literal["mount", "sync"]
+"""How a volume reaches the nodes.
+
+``mount`` is the bucket itself behind a filesystem — geesefs, or a volume the host
+attached — so a read fetches what it reads, and a machine that cannot mount (no FUSE,
+no ``CAP_SYS_ADMIN``) cannot have one. ``sync`` is a copy: the prefix is copied in at
+bootstrap, and from then on the two sides are copied into each other every few
+seconds, the newer file winning. It needs nothing of the machine, so it is the one a
+container that cannot mount still takes.
+"""
 
 type ErrorCode = Literal[
     "not_found",
@@ -374,6 +384,10 @@ class Volume(Struct, frozen=True):
     in the blob store, and left only the hash here — because a spec is written to
     the compute row and served back by the compute API, and a secret written there
     is a secret published.
+
+    ``type`` is how the bucket reaches the node, and nothing else about the volume
+    changes with it: ``mount`` is the same path for a mount and for a sync, and
+    ``read_only`` on a sync means its copy is never sent back.
     """
 
     bucket: str
@@ -381,6 +395,7 @@ class Volume(Struct, frozen=True):
     prefix: str = ""
     read_only: bool = True
     storage_sha256: str | None = None
+    type: VolumeType = "mount"
 
 
 class Endpoint(Struct, frozen=True):
@@ -390,12 +405,17 @@ class Endpoint(Struct, frozen=True):
     to. ``access_key`` unset means the machine signs with its own instance
     identity, which is how a bucket in the account that bought the machine is
     reached with no credential in flight at all.
+
+    ``region`` is the one requests are signed for. SigV4 puts it in the signature,
+    so a bucket on AWS refuses a request signed for any region but its own; the
+    S3-compatible services that have no regions take ``us-east-1``.
     """
 
     url: str
     access_key: str | None = None
     secret_key: str | None = None
     path_style: bool = False
+    region: str = "us-east-1"
 
 
 class Worker(Struct, frozen=True):
@@ -566,7 +586,7 @@ class ComputeSpec(Struct, frozen=True):
     ``ttl`` seconds is one no daemon is coming back for. ``0`` disables it. Only providers
     that boot the machine from a container entrypoint (RunPod) honor it today."""
     volumes: tuple[Volume, ...] = ()
-    """Buckets every node of the compute mounts.
+    """Buckets every node of the compute mounts or syncs.
 
     On the compute and not on a :class:`Spec`, because the specs are a preference
     list and only one of them is ever bought: a volume named against the spec that

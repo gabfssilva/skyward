@@ -46,6 +46,7 @@ type BillingUnit = Literal["second", "minute", "hour"]
 type DeletionCause = Literal["requested", "abandoned"]
 type Executor = Literal["thread", "process", "loky"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
+type VolumeType = Literal["mount", "sync"]
 type Architecture = Literal["x86_64", "arm64"]
 type PhaseState = Literal["started", "completed", "failed"]
 type TaskEventState = Literal["started", "retrying", "succeeded", "failed", "cancelled", "timed_out", "indeterminate"]
@@ -143,6 +144,8 @@ class Volume(Struct, frozen=True, kw_only=True):
     read_only: bool = True
     storage_sha256: str | None = None
     """The blob holding the bucket's credentials. Null takes them from the provider account."""
+    type: VolumeType = "mount"
+    """``mount`` puts the bucket behind a filesystem on the node; ``sync`` copies it in and keeps the copy and the bucket in step."""
 
 
 class Worker(Struct, frozen=True, kw_only=True):
@@ -1106,6 +1109,7 @@ __all__ = [
     "UpdateComputeResource",
     "Utilization",
     "Volume",
+    "VolumeType",
     "Worker",
     "WriteFunctionResource",
 ]

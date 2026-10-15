@@ -44,12 +44,16 @@ class Storage:
         Secret access key. Same resolution rules as *access_key*.
     path_style
         Use path-style addressing instead of virtual-hosted-style.
+    region
+        The region requests are signed for. AWS refuses a request signed for any
+        region but the bucket's; services without regions take ``us-east-1``.
     """
 
     endpoint: str
     access_key: Credential | None = None
     secret_key: Credential | None = None
     path_style: bool = False
+    region: str = "us-east-1"
 
     async def resolve(self) -> Storage:
         """Return a copy with all callable credentials resolved to strings."""
@@ -207,7 +211,7 @@ async def _open_store(storage: Storage, loop: asyncio.AbstractEventLoop, thread:
 
     kwargs: dict[str, Any] = {
         "endpoint_url": storage.endpoint,
-        "region_name": "us-east-1",
+        "region_name": storage.region,
         "config": Config(request_checksum_calculation="when_required"),
     }
     if ak is not None:
