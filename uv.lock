@@ -1,16 +1,16 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version < '3.13' and sys_platform == 'win32'",
-    "python_full_version < '3.13' and sys_platform == 'emscripten'",
-    "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'emscripten'",
+    "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
 [options]
@@ -357,20 +357,25 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.30.1"
+version = "0.30.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/14/b3/ec9a20276fcf16f338125cbed3a2caf09944aa64564f16d76c77d07a989c/casty-0.30.1.tar.gz", hash = "sha256:14ad22aac56aaf5527b6cbe3967f487ce2ed4dba2da8a4fee80574dee48ed0d9", size = 372621, upload-time = "2026-09-26T02:18:11.95Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/6c/b1a4ac75ef7470d442084aaaaf210b8b0a2745b4bdac1cf74324e6f34699/casty-0.30.2.tar.gz", hash = "sha256:6bb4be50411fb089b35a3299eff5b46bd8b8d32323b482d7ed500de0a659df25", size = 377500, upload-time = "2026-10-14T20:27:39.787Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/f6/903bc10c27f0626922a55cb10377b3f88312ce96c8dfad80ea3f58f87bb4/casty-0.30.1-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:00a429c578e5ef5c30b13a0b55178e18db7d2dfd6b56226afb437baba9447438", size = 2692149, upload-time = "2026-09-26T02:17:55.748Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/5a/44f37eed8af7eb4afc64b9464a99be8884d930a8f9fb567a8b8a5611b0f6/casty-0.30.1-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:a489e61bbcad19a297748f528118a602c99e18207758848f17a53949479a68ca", size = 2458902, upload-time = "2026-09-26T02:17:57.587Z" },
-    { url = "https://files.pythonhosted.org/packages/7c/2b/0d840a8b095885fbe4a7af9944dbadd42df170df367e20a787044dff2fe6/casty-0.30.1-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:14185ce23b835b8a4f393a4f9f9d67fcd3ad43fa30b35be4d45ac6819924b2a3", size = 2704547, upload-time = "2026-09-26T02:17:59.253Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/6e/f82ff8da72f302d614198b0a68a4eff226d0581e412559e5321853c7192a/casty-0.30.1-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2a9e21353f1e3e0c0d9f25d99254a91109c1103dc7c27ea44e4c214c48cd79d8", size = 2855757, upload-time = "2026-09-26T02:18:00.693Z" },
-    { url = "https://files.pythonhosted.org/packages/53/32/a42f4704db8d92c8c15a9cfaae8c727be483acfd28838b6225c24707c7e2/casty-0.30.1-cp312-abi3-win_amd64.whl", hash = "sha256:9746900f8b8117a2a74d0d1616d3ddd81c44a53f3b1a86557293e74d25815fe4", size = 2529796, upload-time = "2026-09-26T02:18:02.603Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/db/5771c270e30c9292441ffc8299cb8c2606b68e9448e8c758523e1ec2fc17/casty-0.30.1-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:be102bc23f57c0354f0cf9d188f78f445f695be3a724ba25d90be0bfd591eca1", size = 2688360, upload-time = "2026-09-26T02:18:04.297Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/c5/ef3286c8255f9d0cda9f5d6e92c4458fc198170df4eecfdd096237c50247/casty-0.30.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:88d12cdacb5c9a9fb448e3bd510495eb34a346df937cde05dabdf05c1145e097", size = 2455944, upload-time = "2026-09-26T02:18:05.759Z" },
-    { url = "https://files.pythonhosted.org/packages/61/17/194adc76811d6c6a3a608edf0ee78835d33c9bee153083018c7e246727df/casty-0.30.1-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:55e6264181b5b6a99aa3ab15e3dd00cdf759eb9e8a3a691622ce8b030ae88b82", size = 2700754, upload-time = "2026-09-26T02:18:07.409Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/c9/75c7e9ac1f622cc447664d0bbcdb8931e13cb46b2eb0ee56c8508a104c37/casty-0.30.1-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:be9794ca184ec3b3bee159fc770168ba49bafe735b5d906b476aaa0c0f3b0b67", size = 2852133, upload-time = "2026-09-26T02:18:08.939Z" },
-    { url = "https://files.pythonhosted.org/packages/00/43/9e9da2803c799d94c2fc66febee9ecfc00f7f5a0ef490326e9613f8d0bfb/casty-0.30.1-cp314-cp314t-win_amd64.whl", hash = "sha256:c1391939352d06c5470e95a0b54775619cc0b9b61368afcf9eeb13dad61c8433", size = 2526510, upload-time = "2026-09-26T02:18:10.385Z" },
+    { url = "https://files.pythonhosted.org/packages/36/19/b499cf64ad710a8d251b931dd003ab2a6a1c59dadbac221a7fe623b9a072/casty-0.30.2-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:517d707aa82bd3d37a034bf3fc3773a64c51d6b52cd6201347c1f106c0a95e4f", size = 4912963, upload-time = "2026-10-14T20:27:07.735Z" },
+    { url = "https://files.pythonhosted.org/packages/48/3a/6d9fe08af11c41f56cac4c7642598bb937d9bd5a762210ad308b58903a8e/casty-0.30.2-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:813b89257954f74dc34106bf66f02a0098ab72a7bf737e9f3840163a48534c7a", size = 4603536, upload-time = "2026-10-14T20:27:09.917Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/ee/9b657744247b4520091a8984078d48edbf25eea9b4de6e6979ebf0815f6e/casty-0.30.2-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:702886844142e36dff5a75abac09b17b5c9f140992ebbccb4682ae665ec6f9e1", size = 4891327, upload-time = "2026-10-14T20:27:11.854Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/b9/c29e5b0aa14297600d7a29532c5457b9290d6075f8404ae825544c922066/casty-0.30.2-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aa52c2b835448f51caec43d82d1ebfa513be8d71bd908416c8cad393b7f12a0d", size = 5169699, upload-time = "2026-10-14T20:27:14.082Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/7f/8d8c247cff048f13c8c3d0dc455f5d317f7b6590b8527da7b0ff0b60f73c/casty-0.30.2-cp312-abi3-win_amd64.whl", hash = "sha256:e6111ec795b07ed5f4e08c0603ddc4af5c142bcf756a4fa4e0d7182bb58a5b5e", size = 4711741, upload-time = "2026-10-14T20:27:16.14Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/c5/d35e398a8612be6a8d9883dd0fe31358baad6ab7e078b5865eba1d57519a/casty-0.30.2-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:73da8054545cd7871e7a3ffe35149eaa90425810d43fc8a2c16ab31f01126efc", size = 4910340, upload-time = "2026-10-14T20:27:18.385Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/ce/b949a385b190ec53202b237aa76e3fab3cc0665b02d7c88211948777cb0d/casty-0.30.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:32cad44077f26ffaa6ae0a2cc5d65132fa9f1f8edfec21b65dfff9f4fb49b33e", size = 4599668, upload-time = "2026-10-14T20:27:20.301Z" },
+    { url = "https://files.pythonhosted.org/packages/28/f6/f908e4eedf32768df7cd863a250daf407f29605c38c767fec7c30e84bf6b/casty-0.30.2-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c608625600ea35560a4b1aec909d0c8247911c763584b5932d3ffbb29bb00986", size = 4886601, upload-time = "2026-10-14T20:27:22.461Z" },
+    { url = "https://files.pythonhosted.org/packages/25/0d/fb8ee238e61b0e006f3a844b664d354ef335cde71cd689249031cd847ea8/casty-0.30.2-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6666c4cb322afc9cd552503b1bc35948128aace54fdf6631aaa936b72af42709", size = 5165848, upload-time = "2026-10-14T20:27:24.697Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/e4/14c014a06f49b8570eeca9a6bf70cac10dd2a013a72541ab2c0d40dba151/casty-0.30.2-cp314-cp314t-win_amd64.whl", hash = "sha256:b953eebe2d9e9a6c350172bb24d11c178899e91c62da4953e885e520cdff0eab", size = 4707212, upload-time = "2026-10-14T20:27:26.633Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/ee/91fdd9ed82aaa6a44ca1e67d705689236e5a6367b886da24bf602ff3478b/casty-0.30.2-cp315-cp315t-macosx_10_12_x86_64.whl", hash = "sha256:66bce511c14deb8c7096c9370c4e0b4480134a3523e43fb3a8aeed4027094ebf", size = 4910774, upload-time = "2026-10-14T20:27:28.727Z" },
+    { url = "https://files.pythonhosted.org/packages/05/ad/706863dea00664077e98cd8cd8aeca85ded91d894d1500da4bebb90c1a2c/casty-0.30.2-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:817fce56fa219eac7011418b7c1ba9731ade8820b471badd12abc190728c2dc9", size = 4599903, upload-time = "2026-10-14T20:27:31.22Z" },
+    { url = "https://files.pythonhosted.org/packages/77/eb/7cae6beb93d8bfa64dacd2a5f04381110d6292c799c27d85a7cd79a2deb5/casty-0.30.2-cp315-cp315t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9962ae056b6d483bb7c81ebd051e31bbced92e1ad6e5835eb7144d9dcec7972c", size = 4885498, upload-time = "2026-10-14T20:27:33.555Z" },
+    { url = "https://files.pythonhosted.org/packages/24/4f/58f1ca128d9f6decc13e15d8c59ab920bd588f6b4b4e86172a2b1754fd78/casty-0.30.2-cp315-cp315t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8faaeee44aeaa1d94ab497449f0929a705a40fe428aeecdcbfaeaf980ca19477", size = 5165939, upload-time = "2026-10-14T20:27:35.685Z" },
+    { url = "https://files.pythonhosted.org/packages/64/fc/64107989bc4c4a7a6fca95cebf5fbdef20d7248245b362ce23185283395e/casty-0.30.2-cp315-cp315t-win_amd64.whl", hash = "sha256:ff52a8dded1bf9bb07ab1753f9d533e4421c2c6a6a646b30257dec52e3f7255f", size = 4707646, upload-time = "2026-10-14T20:27:37.92Z" },
 ]
 
 [[package]]
@@ -2010,7 +2015,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "ptyprocess" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -2910,7 +2915,7 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'storage'", specifier = ">=13.0.0" },
     { name = "asyncssh", marker = "extra == 'all'", specifier = ">=2.22.0" },
     { name = "asyncssh", marker = "extra == 'server'", specifier = ">=2.22.0" },
-    { name = "casty", specifier = ">=0.30.1" },
+    { name = "casty", specifier = ">=0.30.2" },
     { name = "cloudpickle", specifier = ">=3.1" },
     { name = "cryptography", marker = "extra == 'all'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'gcp'", specifier = ">=42" },

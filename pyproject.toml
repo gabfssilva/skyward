@@ -21,7 +21,7 @@ classifiers = [
 
 # What a bare node needs: it runs the worker and nothing else.
 dependencies = [
-    "casty>=0.30.1",
+    "casty>=0.30.2",
     "cloudpickle>=3.1",
     "loky>=3.5",
     "lz4>=4.3",
