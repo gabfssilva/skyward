@@ -5,6 +5,7 @@ written here is what a user writes, which is the only reason a green run means
 anything: the failure these catch is the failure a user would have hit.
 """
 
+import asyncio
 import functools
 import os
 import signal
@@ -175,8 +176,9 @@ def describe_dispatching_a_call() -> None:
             assert ended(daemon, "turning") == "cancelled", "the daemon heard the cancel, and the worker let go"
             assert sorted(rank for _, rank in where_am_i() @ pool) == [0, 1], "the node it ran on let go of its slot"
 
-        def it_cancels_a_call_cancelled_the_moment_it_is_sent(pool: sky.Compute, daemon: str) -> None:
+        def it_cancels_a_call_cancelled_while_it_is_being_sent(pool: sky.Compute, daemon: str) -> None:
             future = waiting(60) > pool
+            pool.loop.run(asyncio.sleep(0))
 
             assert future.cancel()
 
