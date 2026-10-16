@@ -205,16 +205,22 @@ class TaskStore:
 
         An execution that has started is Python already running on a machine. It is
         moved to ``cancel_requested`` and stays there until the worker confirms it
-        stopped — code that may still be running is never declared cancelled.
+        stopped — code that may still be running is never declared cancelled, not by
+        a second cancel either, which finds the request made and leaves it with the
+        worker.
         """
 
         async def request() -> str:
             for execution in await self.attempts(task_id):
-                if execution.state in PENDING:
-                    await self.observe(
-                        execution.id,
-                        "cancel_requested" if execution.state == "started" else "cancelled",
-                    )
+                match execution.state:
+                    case "started":
+                        await self.observe(execution.id, "cancel_requested")
+                    case "cancel_requested":
+                        pass
+                    case state if state in PENDING:
+                        await self.observe(execution.id, "cancelled")
+                    case _:
+                        pass
             return task_id
 
         await once("task.cancel", idempotency_key, None, request)
@@ -638,8 +644,9 @@ class ExecutionStore:
         return await self._tasks.get(task_id)
 
 
-def _latest(attempts: list[ExecutionRow]) -> list[ExecutionRow]:
-    by_rank: dict[int, ExecutionRow] = {}
+def _latest[A: (ExecutionRow, Execution)](attempts: Sequence[A]) -> list[A]:
+    """The last attempt of each rank: a retry supersedes what it retried."""
+    by_rank: dict[int, A] = {}
     for attempt in attempts:
         if attempt.rank not in by_rank or attempt.ordinal > by_rank[attempt.rank].ordinal:
             by_rank[attempt.rank] = attempt
@@ -689,8 +696,7 @@ def _said(state: ExecutionState, again: bool) -> TaskEventState | None:
 
 
 def _reason(task: Task) -> str:
-    errors = [execution.error.message for execution in task.executions if execution.error]
-    return errors[0] if errors else f"task {task.id} is {task.state}"
+    return error.message if (error := _blamed(task)) else f"task {task.id} is {task.state}"
 
 
 def _cause(task: Task) -> dict[str, Any]:
@@ -700,8 +706,21 @@ def _cause(task: Task) -> dict[str, Any]:
     written on the execution. An error that arrives without it tells the caller
     that something broke and nothing about where.
     """
-    errors = [execution.error for execution in task.executions if execution.error]
-    return dict(errors[0].details) if errors and errors[0].details else {}
+    error = _blamed(task)
+    return dict(error.details) if error and error.details else {}
+
+
+def _blamed(task: Task) -> Error | None:
+    """The error behind the verdict.
+
+    Only the last attempt of each rank has a say, as in :func:`_verdict`: a loss that
+    a retry made good is history, not the reason the caller is handed. Among those,
+    the attempt that ended as the task did is the one to blame — a broadcast that
+    failed on one rank and was cancelled on another failed for the first's reason.
+    """
+    latest = _latest(task.executions)
+    errors = [e.error for e in latest if e.error and e.state == task.state] or [e.error for e in latest if e.error]
+    return errors[0] if errors else None
 
 
 async def _tasks(rows: Sequence[TaskRow]) -> tuple[Task, ...]:

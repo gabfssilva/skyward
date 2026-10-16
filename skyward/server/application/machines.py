@@ -118,7 +118,8 @@ class Machines:
 
         The state is read once more after the binding, because a tick that fired
         while the binding was being made has offered the row to somebody who may
-        already have bought on it.
+        already have bought on it. A compute on its way out buys nothing, whatever
+        its rows still ask for: the pass that offered them read it before the delete.
 
         Anything that stops the machine from being bought — an account the cloud will
         not open, a region with no capacity left — is written on the compute and waited
@@ -131,6 +132,9 @@ class Machines:
             log.debug("not buying for another {:.0f}s: the last machine was refused", left)
             return
         compute = await self._computes.get(compute_id)
+        if compute.spec.desired == "deleted":
+            log.debug("not buying: the compute is being deleted")
+            return
         node = await self._nodes.get(compute_id, node_id)
         if node.state != "requested":
             log.debug("not buying: the row is {}", node.state)

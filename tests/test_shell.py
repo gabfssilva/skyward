@@ -102,6 +102,19 @@ def describe_choosing_the_machine() -> None:
         assert refused.value.retryable, "the machine may be minutes from answering"
 
 
+def describe_a_command_on_every_machine() -> None:
+    async def a_machine_whose_link_is_gone_is_one_line_of_the_answer_rather_than_the_end_of_it() -> None:
+        async with _Holding(0, 1, ready=(0, 1)) as runtime:
+            await runtime.nodes["nod_1"]._ssh.close()
+
+            ran = dict(await runtime.run("all", "hostname"))
+
+        assert ran["nod_0"].exit_code == 0
+        assert "rank 0" in ran["nod_0"].stdout
+        assert ran["nod_1"].exit_code == 255, "what ssh itself answers for a machine it cannot reach"
+        assert "channel closed" in ran["nod_1"].stderr
+
+
 def describe_a_compute_with_no_machine_up_yet() -> None:
     async def it_is_told_rather_than_raised_through() -> None:
         runtime = Runtime("cmp_1", "pypi", private_key=KEY)

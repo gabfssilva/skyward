@@ -30,7 +30,7 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.tables import ComputeRow, EventRow, GenerationRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec, frames, retry
-from skyward.shared.errors import TaskIndeterminateError
+from skyward.shared.errors import TaskFailedError, TaskIndeterminateError
 from skyward.shared.events import TaskEvent
 from skyward.shared.frames import Done, Failed, Lookup, Lost, Unknown
 from skyward.shared.provider import Machine
@@ -618,3 +618,21 @@ def describe_a_file_written_under_the_old_vocabulary() -> None:
         mended = await ComputeStore(EventStore(), NodeStore()).get(compute.id)
         assert mended.spec.retry is None, "the counters nobody read are gone, and that reads as no decision"
         assert all(row["kind"] != "object" for row in await GenerationRow.raw("SELECT json_type(spec, '$.retry') AS kind FROM generations").run())
+
+
+def describe_the_reason_a_caller_is_handed() -> None:
+    async def it_is_the_ending_of_the_attempt_that_counts_not_of_one_a_retry_superseded(tmp_path: Path) -> None:
+        plane = await _plane(tmp_path / "skyward.sqlite")
+        task = await plane.submit(retry.default)
+        gone = retry.Lost("node_gone", plane.node_ids[0])
+        await plane.dispatcher._lost(task, task.executions[0], RuntimeError("node nod_gone went away while it held the task"), gone)
+        again = next(e for e in (await plane.tasks.get(task.id)).executions if e.ordinal == 2)
+        await plane.tasks.observe(again.id, "started", node_id=plane.node_ids[1])
+        failure = Error(code="task_failed", message="no such host", retryable=False, details={"traceback": "Traceback: no such host"})
+        await plane.tasks.observe(again.id, "failed", error=failure)
+
+        with pytest.raises(TaskFailedError) as raised:
+            await plane.tasks.result(task.id, wait_seconds=0)
+
+        assert raised.value.message == "no such host"
+        assert raised.value.details["traceback"] == "Traceback: no such host"

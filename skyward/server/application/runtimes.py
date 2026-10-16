@@ -553,10 +553,26 @@ class Runtime:
                 return chosen
 
     async def run(self, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
-        """One command on every targeted node at once, tagged with whose answer it is."""
+        """One command on every targeted node at once, tagged with whose answer it is.
+
+        A machine whose channel is gone — out of reconnects, or let go of — answers
+        as ssh itself does for one it cannot reach: exit 255, the reason on stderr.
+        One line of the answer rather than the end of it, for the reason :meth:`put`
+        gives.
+        """
+
+        def said(outcome: Result | BaseException) -> Result:
+            match outcome:
+                case Result():
+                    return outcome
+                case SshUnavailableError():
+                    return Result(exit_code=255, stdout="", stderr=str(outcome))
+                case _:
+                    raise outcome
+
         selected = self._select(target)
-        results = await asyncio.gather(*(self.nodes[node_id]._ssh.run(command) for node_id in selected))
-        return tuple(zip(selected, results, strict=True))
+        outcomes = await asyncio.gather(*(self.nodes[node_id]._ssh.run(command) for node_id in selected), return_exceptions=True)
+        return tuple((node_id, said(outcome)) for node_id, outcome in zip(selected, outcomes, strict=True))
 
     async def put(self, target: Target, path: str, content: bytes) -> tuple[tuple[str, str | None], ...]:
         """Write the same bytes to every targeted node, and report per node.

@@ -26,7 +26,7 @@ from skyward.server.persistence.tables import ComputeRow, EventRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import TaskFailedError
 from skyward.shared.events import ComputeDeleted
-from skyward.shared.schemas import ComputeCreate, Node, Task, TaskCreate
+from skyward.shared.schemas import Compute, ComputeCreate, ComputeSpecPatch, Node, NodeBounds, Task, TaskCreate
 from tests.conftest import given
 
 pytestmark = pytest.mark.local
@@ -68,6 +68,73 @@ def describe_one_pass() -> None:
         assert (await computes.get(compute)).status.state == "deleted"
         assert compute not in reconciler._locks
         assert not any(node.id in reconciler._idle for node in await nodes.of(compute))
+
+
+def describe_a_pass_that_outlives_a_write() -> None:
+    async def it_acts_on_the_compute_as_it_stands_once_the_provider_has_answered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The listing can take minutes, and a delete written meanwhile is this pass's to act on, not the next one's."""
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)
+        node = await _ready_node(nodes, compute, image=None)
+
+        async def resolve(found: Compute) -> None:
+            await computes.delete(found.id, found.revision, "mid-pass")
+
+        monkeypatch.setattr(reconciler._machines, "resolve", resolve)
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).status.state == "deleting", "not degraded by a pass that read it before the delete"
+        assert (await _node(nodes, compute, node.id)).state == "deleting", "and the delete is acted on by that same pass"
+
+
+def describe_a_deleted_compute_whose_provider_cannot_be_listed() -> None:
+    async def it_lets_go_of_the_machines_its_rows_name_without_waiting_for_the_listing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)
+        node = await _ready_node(nodes, compute, image=None)
+        await computes.delete(compute, (await computes.get(compute)).revision, "delete")
+        monkeypatch.setattr(reconciler._machines, "resolve", _unlisted)
+
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, node.id)).state == "deleting"
+        assert (await computes.get(compute)).status.state == "deleting"
+
+    async def it_is_not_deleted_until_a_listing_has_said_nothing_was_left_behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The listing is also the sweep for a machine no row names; a compute deleted without one could be leaking that machine."""
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)
+        await reconciler.compute(compute)
+        await computes.delete(compute, (await computes.get(compute)).revision, "delete")
+        for node in await nodes.of(compute):
+            await nodes.observe(node.id, "deleted")
+        monkeypatch.setattr(reconciler._machines, "resolve", _unlisted)
+
+        await reconciler.compute(compute)
+        assert (await computes.get(compute)).status.state == "deleting"
+
+        async def listed(*_: object) -> None:
+            return None
+
+        monkeypatch.setattr(reconciler._machines, "resolve", listed)
+        await reconciler.compute(compute)
+        assert (await computes.get(compute)).status.state == "deleted"
+
+
+def describe_a_pool_scaled_down() -> None:
+    async def a_node_idle_since_before_the_resize_leaves_on_the_first_pass_after_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The idle clock runs from the moment a node has nothing to do, not from the moment somebody wants it back."""
+        computes, compute, nodes, reconciler = await _reconciler(tmp_path, monkeypatch)
+        clock = _Clock()
+        monkeypatch.setattr("skyward.server.application.reconciler.monotonic", clock)
+        await _resized(computes, compute, NodeBounds(initial=2, min=2, max=8))
+        kept, spare = await _ready_node(nodes, compute, image=None), await _ready_node(nodes, compute, image=None)
+        await reconciler.compute(compute)
+        assert (await _node(nodes, compute, spare.id)).state == "ready", "two is what the pool is held to"
+
+        await _resized(computes, compute, NodeBounds(initial=2, min=1, max=8))
+        clock.now += (await computes.get(compute)).spec.options.autoscale_idle_timeout + 1
+        await reconciler.compute(compute)
+
+        assert (await _node(nodes, compute, spare.id)).state == "deleting", "idle for longer than the timeout, counted from when it became idle"
+        assert (await _node(nodes, compute, kept.id)).state == "ready"
 
 
 def describe_a_node_running_another_image() -> None:
@@ -250,6 +317,26 @@ async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wake: Wak
     monkeypatch.setattr(machines, "resolve", nothing)
     reconciler = Reconciler(computes, GenerationStore(computes), nodes, TaskStore(computes, nodes, blobs, events), machines, events, wake or Wakeup())
     return computes, compute.id, nodes, reconciler
+
+
+async def _unlisted(*_: object) -> None:
+    """A provider whose listing is not answering: the gateway in front of it timed out."""
+    raise RuntimeError("504 gateway time-out")
+
+
+async def _resized(computes: ComputeStore, compute: str, nodes: NodeBounds) -> None:
+    found = await computes.get(compute)
+    await computes.patch(compute, ComputeSpecPatch(nodes=nodes), found.revision)
+
+
+class _Clock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 def _woken(wake: Wakeup) -> list[tuple[str, str | None]]:

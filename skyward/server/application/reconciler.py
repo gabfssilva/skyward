@@ -46,7 +46,7 @@ from skyward.shared.events import (
     NodeEvent,
 )
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Compute, ComputeSpec, Error, Node, NodeState
+from skyward.shared.schemas import Compute, ComputeSpec, Error, ErrorCode, Node, NodeState
 from skyward.worker import plugins
 
 logger = logger.bind(component="reconciler")
@@ -113,7 +113,9 @@ class Reconciler:
         A compute on its way up is degraded by a failure: the state says the pool is
         not what was asked for, and the next tick tries again. A compute on its way
         out has nowhere to be degraded to — the failure is a fact on the way to
-        ``deleted``, and the next tick carries on giving the machines back.
+        ``deleted``, and the next tick carries on giving the machines back. Which way
+        it is going is read again here, because the pass that broke may have read the
+        compute before the delete that turned it around.
 
         A pass that finds nothing left to reconcile has found a compute that is deleted,
         and says so to whatever still holds something for it: the connections to its
@@ -132,11 +134,11 @@ class Reconciler:
                     self._wake("compute.deleted", compute_id=compute_id)
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
-                code = exc.code if isinstance(exc, SkywardError) else "reconcile_failed"
-                if compute.spec.desired == "deleted":
-                    await self._computes.apply(ComputeDeletionFailed(compute=compute_id, error=str(exc), code=code))
+                current = await self._computes.get(compute_id)
+                if current.spec.desired == "deleted":
+                    await self._computes.apply(ComputeDeletionFailed(compute=compute_id, error=str(exc), code=_code(exc)))
                 else:
-                    await self._computes.apply(ComputeDegraded(compute=compute_id, error=str(exc), code=code))
+                    await self._computes.apply(ComputeDegraded(compute=compute_id, error=str(exc), code=_code(exc)))
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str | None, image: str | None = None) -> None:
         """What the node's own lifecycle reported, and what follows from it.
@@ -186,7 +188,7 @@ class Reconciler:
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
             compute = await self._computes.get(compute.id)
 
-        await self._machines.resolve(compute)
+        compute, unlisted = await self._resolved(compute)
 
         nodes = await self._nodes.of(compute.id)
         digest = compute.spec.image.digest()
@@ -203,7 +205,8 @@ class Reconciler:
         load, holding, owed = await self._tasks.pressure(compute.id)
         buy, spare = demand(compute, nodes, load)
         lower, upper = bounds(compute.spec)
-        surplus = self._surplus(compute, alive, spare, holding, owed)
+        idle = self._idlers(alive, holding, owed, compute.spec.options.autoscale_idle_timeout)
+        surplus = self._surplus(compute, alive, spare, idle)
 
         log.debug(
             "pass: {} alive within [{}, {}], {} in the queue, nodes {} — buy {}, {} over the target, draining {}",
@@ -230,7 +233,32 @@ class Reconciler:
         if buy or surplus:
             nodes = await self._nodes.of(compute.id)
         await self._push(compute, nodes, holding)
-        return await self._status(compute, nodes, lower)
+        return await self._status(compute, nodes, lower, unlisted)
+
+    async def _resolved(self, compute: Compute) -> tuple[Compute, Exception | None]:
+        """Ask the provider what became of the machines, and read the compute again afterwards.
+
+        The listing is the slow part of a pass — on a provider that answers a call per
+        machine, minutes — and a delete or a resize written while it ran is this pass's
+        to act on, not the next one's: every row written below follows from the spec as
+        it stands, not as it stood when the pass began.
+
+        A compute being deleted does not wait on a listing that failed. The machines its
+        rows name are terminated by name, which asks nothing of the listing; what does is
+        the sweep for a machine no row names, so the failure is carried to :meth:`_status`
+        rather than dropped, and the compute is not ``deleted`` until a listing has passed.
+        A compute still wanted is degraded by the failure, as it always was: the pass
+        cannot see the machines it is sizing.
+        """
+        try:
+            await self._machines.resolve(compute)
+        except Exception as failure:
+            current = await self._computes.get(compute.id)
+            if current.spec.desired != "deleted":
+                raise
+            logger.bind(compute_id=compute.id).warning("the provider could not say what it holds; letting go of what the rows name meanwhile: {}", failure)
+            return current, failure
+        return await self._computes.get(compute.id), None
 
     async def _push(self, compute: Compute, nodes: Sequence[Node], holding: Counter[str]) -> None:
         """Re-offer every row that is waiting on somebody, and retire the ones that are done.
@@ -283,7 +311,7 @@ class Reconciler:
                 case _:
                     pass
 
-    def _surplus(self, compute: Compute, alive: list[Node], surplus: int, holding: Counter[str], owed: frozenset[int]) -> list[Node]:
+    def _surplus(self, compute: Compute, alive: list[Node], surplus: int, idle: set[str]) -> list[Node]:
         """Which machines to give back, if any.
 
         Idle for long enough, newest first. Newest because the oldest are the ones
@@ -301,9 +329,7 @@ class Reconciler:
         if compute.spec.desired == "deleted":
             return sorted(alive, key=lambda node: node.rank, reverse=True)[:surplus]
 
-        idle = self._idlers(alive, holding, owed, compute.spec.options.autoscale_idle_timeout)
         leavable = [node for node in alive if node.id in idle]
-
         return sorted(leavable, key=lambda node: node.rank, reverse=True)[:surplus]
 
     def _idlers(self, nodes: Sequence[Node], holding: Counter[str], owed: frozenset[int], idle_timeout: float) -> set[str]:
@@ -311,7 +337,9 @@ class Reconciler:
 
         The clock starts at ``ready``, and only runs while the node stays leavable:
         anything else resets it, so a machine that spends five minutes booting has
-        been idle for zero seconds when it arrives.
+        been idle for zero seconds when it arrives. It is read on every pass, not only
+        on one with machines to give back: a node that has sat idle for an hour when
+        the pool is resized has been idle for an hour, not since the resize.
         """
         now = monotonic()
 
@@ -327,16 +355,26 @@ class Reconciler:
 
         return idle
 
-    async def _status(self, compute: Compute, nodes: Sequence[Node], lower: int) -> bool:
+    async def _status(self, compute: Compute, nodes: Sequence[Node], lower: int, unlisted: Exception | None) -> bool:
         """Say what the count came to, and whether that was the last word.
 
         The event carries the observation — how many answer, of how many — and
         the state it leads to is the table's to say. Most passes say what the last
         one said, and those write the counts and record nothing.
+
+        The last word on a deletion needs the provider's too. ``unlisted`` is a
+        listing that failed this pass, written on the compute as the failure it is,
+        and a compute whose rows are all gone is not ``deleted`` on it: the listing is
+        what finds a machine no row names, and a compute closed without one may be
+        leaving that machine behind.
         """
         live = [node for node in nodes if node.state in LIVE]
         ready = [node for node in live if node.state == "ready"]
         gone = all(node.state == "deleted" for node in nodes)
+
+        if compute.spec.desired == "deleted" and unlisted is not None:
+            await self._computes.apply(ComputeDeletionFailed(compute=compute.id, error=str(unlisted), code=_code(unlisted)))
+            return False
 
         if compute.spec.desired == "deleted" and gone:
             try:
@@ -508,3 +546,8 @@ def bounds(spec: ComputeSpec) -> tuple[int, int]:
     upper = spec.nodes.max if spec.nodes.max is not None else spec.nodes.initial
 
     return min(lower, upper), max(lower, upper)
+
+
+def _code(exc: Exception) -> ErrorCode:
+    """What a failure is filed under on the compute: its own code, when it has one."""
+    return exc.code if isinstance(exc, SkywardError) else "reconcile_failed"

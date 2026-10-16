@@ -472,6 +472,32 @@ def describe_a_compute_whose_provider_cannot_be_reached() -> None:
         assert placement.retry_at > now(), "a compute that cannot buy waits before asking again"
 
 
+def describe_a_compute_being_deleted() -> None:
+    async def it_buys_nothing_for_a_row_still_asking(tmp_path: Path) -> None:
+        """A pass that read the compute before the delete re-offers its rows; the purchase is where that has to stop."""
+        await connect(tmp_path / "skyward.sqlite")
+        provider = Gated()
+        provider.open.set()
+        events = EventStore()
+        nodes, blobs = NodeStore(), BlobStore()
+        computes = ComputeStore(events, nodes)
+        machines = Machines(computes, nodes, Providers(provider), Offers(), blobs, events)  # type: ignore[arg-type]
+        spec = ComputeSpec(
+            specs=(Spec(provider=ProviderRef(kind="gated"), accelerator="a100", accelerator_count=1),),
+            nodes=NodeBounds(initial=1),
+            image=Image(python="3.13"),
+            worker=Worker(concurrency=1, executor="thread"),
+        )
+        compute, _ = await computes.create(ComputeCreate(spec=spec), idempotency_key="doomed")
+        node = await nodes.request(compute.id, compute.generation)
+        await computes.delete(compute.id, compute.revision, "delete")
+
+        await machines.create(compute.id, node.id)
+
+        assert provider.sold == 0
+        assert (await nodes.get(compute.id, node.id)).state == "requested"
+
+
 def describe_a_compute_refused_by_every_market_and_region() -> None:
     async def it_does_not_call_the_provider_until_the_first_wait_has_passed(refused: Refused) -> None:
         await refused.refused()

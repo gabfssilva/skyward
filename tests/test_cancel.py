@@ -53,6 +53,15 @@ def describe_cancelling_a_task_a_machine_is_running() -> None:
         assert dict((await plane.tasks.pressure(plane.compute)).holding) == {}, "the slot is free once the worker let go"
         assert await plane.said(task.id) == [("started", 1), ("cancelled", 1)]
 
+    async def asked_again_it_leaves_the_stop_with_the_worker(tmp_path: Path) -> None:
+        plane, task = await _cancelled(tmp_path)
+
+        await plane.tasks.cancel(task.id, idempotency_key="again")
+
+        asked = await plane.tasks.get(task.id)
+        assert [e.state for e in asked.executions] == ["cancel_requested"], "code that may still be running is never declared cancelled"
+        assert asked.state == "running"
+
     async def ends_as_the_worker_answered_when_it_finished_before_the_stop_landed(tmp_path: Path) -> None:
         plane, task = await _cancelled(tmp_path)
 
