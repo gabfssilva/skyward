@@ -15,7 +15,7 @@ import pytest
 from skyward.core.view import ComputeView, observe
 from skyward.server.application.machines import Machines
 from skyward.server.application.mock import OFFER
-from skyward.server.application.reconciler import Reconciler, Wakeup
+from skyward.server.application.reconciler import STRIKES, Reconciler, Wakeup
 from skyward.server.persistence.computes import ComputeStore, GenerationStore, Infrastructure
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
@@ -276,14 +276,35 @@ async def _recorded(compute: str) -> list[str]:
 
 
 def describe_a_pass_that_breaks() -> None:
-    async def on_the_way_up_it_degrades_the_compute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def on_the_way_up_it_degrades_the_compute_once_the_breaking_has_lasted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, reconciler = await _reconciler(tmp_path, monkeypatch)
+
+        for _ in range(STRIKES - 1):
+            await reconciler.compute(compute)
+        assert (await _recorded(compute)).count("compute.degraded") == 0, "a pass that broke says nothing about the pool yet"
 
         await reconciler.compute(compute)
         await reconciler.compute(compute)
 
         assert (await computes.get(compute)).status.state == "degraded"
         assert (await _recorded(compute)).count("compute.degraded") == 1
+
+    async def on_the_way_up_a_pass_that_held_starts_the_count_over(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, reconciler = await _reconciler(tmp_path, monkeypatch)
+        down = reconciler._machines.resolve
+        for _ in range(STRIKES - 1):
+            await reconciler.compute(compute)
+
+        async def up(*_: object) -> None:
+            return None
+
+        monkeypatch.setattr(reconciler._machines, "resolve", up)
+        await reconciler.compute(compute)
+        monkeypatch.setattr(reconciler._machines, "resolve", down)
+        for _ in range(STRIKES - 1):
+            await reconciler.compute(compute)
+
+        assert (await _recorded(compute)).count("compute.degraded") == 0
 
     async def on_the_way_out_it_is_a_fact_and_the_teardown_goes_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, reconciler = await _reconciler(tmp_path, monkeypatch)

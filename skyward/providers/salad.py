@@ -37,6 +37,12 @@ was launched for before Salad is asked for it, so a launch whose reply is lost
 still leaves a group the listing names, and the daemon writes the id down from
 there, or from the retried launch, which Salad answers ``name_conflict``. The name
 carries the compute and the claim, and the listing is the record.
+
+The sdk's timeout is set on it after it is built, not handed to its constructor:
+the async flavour of the sdk builds its services after the constructor has
+applied the timeout to the ones it is replacing, so the argument is lost and a
+request waits the sdk's own minute. Every call goes through the sdk's retry
+handler, which tries four times, so a request that fails costs four timeouts.
 """
 
 import asyncio
@@ -272,7 +278,8 @@ class SaladProvider:
         self._priority = config.priority
         self._config = config
         self._api_key = api_key
-        self._sdk = SaladCloudSdkAsync(timeout=config.request_timeout * 1000)
+        self._sdk = SaladCloudSdkAsync()
+        self._sdk.set_timeout(config.request_timeout * 1000)
         self._sdk.set_api_key(api_key, "Salad-Api-Key")
 
     @classmethod

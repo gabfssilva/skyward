@@ -506,7 +506,7 @@ with sky.Compute(
 | `storage_gb` | `int` | `50` | Container storage in GB. |
 | `vcpu_price` | `float` | `0.005` | Dollars per vCPU-hour, for CPU-only nodes. |
 | `memory_price` | `float` | `0.001` | Dollars per GB-hour, for CPU-only nodes. |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+| `request_timeout` | `int` | `5` | HTTP request timeout in seconds. Short on purpose: the API is polled every pass, and a request left waiting holds the compute still. |
 
 Salad sells nodes with a GPU and nodes without. A GPU class is priced by Salad and includes its vCPUs and RAM; a CPU-only node is priced here, from `vcpu_price` and `memory_price`, because Salad quotes no CPU catalog over its API. Either is sized by the compute's `cpus` and `memory_gb`. See [the provider reference](reference/providers/salad.md) for which sizes are offered.
 

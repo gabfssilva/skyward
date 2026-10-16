@@ -222,6 +222,12 @@ class Salad(Provider, frozen=True, kw_only=True):
     ``organization`` and ``project`` are not optional to the provider — they are
     the account's namespace — only optional here, where the environment may
     answer for them.
+
+    ``request_timeout`` is short because the api is polled: every pass of the
+    reconciler lists the compute's groups and asks each one for its instances, so
+    a request left waiting holds the compute still for as long as it waits. Salad
+    answers in under a second when it answers at all; a request past a few seconds
+    is a request its sdk will retry.
     """
 
     kind: ClassVar[str] = "salad"
@@ -245,7 +251,7 @@ class Salad(Provider, frozen=True, kw_only=True):
     A GPU class is unaffected: Salad bills no vCPU or RAM alongside one, and its
     quoted price is the whole of it.
     """
-    request_timeout: int = 30
+    request_timeout: int = 5
 
     @property
     def countries(self) -> tuple[str, ...]:

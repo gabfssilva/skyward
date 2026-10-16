@@ -63,6 +63,17 @@ forward would buy machines for a process that no longer exists, once per tick,
 forever. That is precisely the bug this exists to stop.
 """
 
+STRIKES = 3
+"""How many passes in a row must break before the compute is told.
+
+A pass breaks when the provider does not answer, and a provider that did not
+answer once usually answers at the next tick: a listing cut short by the gateway
+in front of it says nothing about the pool. Told at the first, a compute on its
+way up would read ``degraded`` until the next pass held, which is long enough for
+the client waiting on ``ready`` to give up on it. Told at the third, a credential
+or a quota that will never answer still reaches the client within a few ticks.
+"""
+
 
 class Wakeup:
     """The emitter, before there is an app to emit into.
@@ -102,6 +113,8 @@ class Reconciler:
         self._events = events
         self._wake = wake
         self._locks: dict[str, asyncio.Lock] = {}
+        self._broken: dict[str, int] = {}
+        """How many passes in a row have broken for each compute. Absent means the last one held."""
         self._idle: dict[str, float] = {}
         """When each node last had nothing to do. Absent means it is doing something."""
         self._up_since = now()
@@ -115,7 +128,9 @@ class Reconciler:
         out has nowhere to be degraded to — the failure is a fact on the way to
         ``deleted``, and the next tick carries on giving the machines back. Which way
         it is going is read again here, because the pass that broke may have read the
-        compute before the delete that turned it around.
+        compute before the delete that turned it around. Neither is told of one pass
+        that broke, nor of two: a failure is counted until it has lasted :data:`STRIKES`
+        passes, and a pass that held starts the count over.
 
         A pass that finds nothing left to reconcile has found a compute that is deleted,
         and says so to whatever still holds something for it: the connections to its
@@ -127,13 +142,18 @@ class Reconciler:
             try:
                 compute = await self._computes.get(compute_id)
             except NotFoundError:
+                self._broken.pop(compute_id, None)
                 return
             try:
                 if await self._pass(compute):
                     self._locks.pop(compute_id, None)
                     self._wake("compute.deleted", compute_id=compute_id)
+                self._broken.pop(compute_id, None)
             except Exception as exc:
                 logger.bind(compute_id=compute_id).exception("reconcile failed")
+                broken = self._broken[compute_id] = self._broken.get(compute_id, 0) + 1
+                if broken < STRIKES:
+                    return
                 current = await self._computes.get(compute_id)
                 if current.spec.desired == "deleted":
                     await self._computes.apply(ComputeDeletionFailed(compute=compute_id, error=str(exc), code=_code(exc)))
