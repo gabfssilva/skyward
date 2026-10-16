@@ -141,10 +141,12 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
             self._stopped = stopped
             self.deleted: list[str] = []
             self.started: list[str] = []
+            self.created: list[Any] = []
             self.quota_full = False
             self.refusal: tuple[int, str | None] | None = None
 
         async def create_container_group(self, body: Any, organization: str, project: str) -> None:
+            self.created.append(body)
             if self.refusal:
                 status, problem = self.refusal
                 raise ApiError("Refused", status, SimpleNamespace(body={"type": problem, "status": status} if problem else {}))
@@ -172,8 +174,8 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
         async def delete_container_group(self, organization: str, project: str, name: str) -> None:
             self.deleted.append(name)
 
-    def _salad(instances: dict[str, str], pulled: float = 0.43, stopped: frozenset[str] = frozenset()) -> tuple[SaladProvider, _Salad]:
-        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj"})
+    def _salad(instances: dict[str, str], pulled: float = 0.43, stopped: frozenset[str] = frozenset(), **config: Any) -> tuple[SaladProvider, _Salad]:
+        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", **config})
         groups = _Salad(instances, pulled, stopped)
         provider._sdk = SimpleNamespace(container_groups=groups)
         return provider, groups
@@ -251,6 +253,25 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
 
         with pytest.raises(ApiError):
             await provider.launch(launching, "on_demand", "aaaa")
+
+    def describe_held_to_a_download_speed() -> None:
+        """Salad filters nodes by nothing about their network, so the container measures its own."""
+
+        async def it_is_told_the_speed_the_account_requires() -> None:
+            provider, groups = _salad({}, min_mbps=25)
+
+            await provider.launch(launching, "on_demand", "aaaa")
+
+            container = groups.created[0].container
+            assert container.environment_variables["MIN_MBPS"] == "25", "the threshold, where the container's command reads it"
+            assert "169.254.169.254/v1/reallocate" in container.command[2], "and what a node short of it does about itself"
+
+        async def it_measures_nothing_when_the_account_requires_nothing() -> None:
+            provider, groups = _salad({})
+
+            await provider.launch(launching, "on_demand", "aaaa")
+
+            assert "MIN_MBPS" not in groups.created[0].container.environment_variables, "the command skips the check it was not given a speed for"
 
 
 def describe_what_a_salad_account_may_buy() -> None:
