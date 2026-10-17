@@ -4,6 +4,8 @@ Commands that reach the machines of a compute that is already up: shell commands
 
 ## Running work on a compute
 
+With the plugin's MCP tools in the session, `exec` is the `exec_command` tool (`ref`, `command`, `node`: `all` or a rank), and needs none of the quoting below.
+
 ```bash
 sky compute exec training nvidia-smi                  # every node's shell
 sky compute exec training --node 0 -- df -h           # one node, by rank

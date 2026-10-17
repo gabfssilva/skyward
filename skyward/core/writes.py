@@ -50,8 +50,9 @@ async def conditional(client: Client, ref: str, method: str, body: bytes | None 
                 raise
 
 
-async def delete(client: Client, compute_id: str) -> None:
-    await conditional(client, compute_id, "DELETE", headers={"Idempotency-Key": uuid.uuid4().hex})
+async def delete(client: Client, ref: str) -> ComputeResource:
+    """The compute as the delete left it: ``deleting``, until reconciliation has ended its machines."""
+    return await conditional(client, ref, "DELETE", headers={"Idempotency-Key": uuid.uuid4().hex})
 
 
 async def scale(client: Client, compute: ComputeResource, minimum: int, maximum: int) -> None:

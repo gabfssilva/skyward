@@ -2,6 +2,8 @@
 
 `sky` is a thin client over the Skyward daemon's HTTP API. It decides nothing and stores nothing: every command turns a few flags into one or two HTTP calls and prints what came back. Everything that matters — computes, nodes, offers, provider accounts, event logs — lives in the daemon.
 
+With the plugin's MCP tools in the session, the reads and writes here are tools (`list_computes`, `create_compute`, `list_offers`, …; the index, `SKILL.md`, maps them), and this file is for what a command means and for what has no tool: starting the daemon, registering an account, following a compute as it runs.
+
 This file covers the daemon, provider accounts, offers and the lifecycle of a compute. Work on the nodes of a compute that is up (`exec`, `compute run`, files, `ssh`, `repl`, notebook) is `reference/nodes.md`; `sky run` is `reference/script.md`.
 
 ## Where a command lands

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "skyward": {
+      "command": "sky",
+      "args": ["mcp"]
+    }
+  }
+}

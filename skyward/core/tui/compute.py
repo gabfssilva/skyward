@@ -244,17 +244,17 @@ class ComputeScreen(Screen[None]):
             self._confirmed("delete", partial(writes.delete, self._client, self._compute)),
         )
 
-    def _confirmed(self, action: str, write: Callable[[], Awaitable[None]]) -> Callable[[bool | None], None]:
+    def _confirmed(self, action: str, write: Callable[[], Awaitable[object]]) -> Callable[[bool | None], None]:
         def answered(confirmed: bool | None) -> None:
             if confirmed:
                 self._perform(action, write)
 
         return answered
 
-    def _perform(self, action: str, write: Callable[[], Awaitable[None]]) -> None:
+    def _perform(self, action: str, write: Callable[[], Awaitable[object]]) -> None:
         self.run_worker(self._write(action, write), group="write")
 
-    async def _write(self, action: str, write: Callable[[], Awaitable[None]]) -> None:
+    async def _write(self, action: str, write: Callable[[], Awaitable[object]]) -> None:
         try:
             await write()
         except FAILURES as error:

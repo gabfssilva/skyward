@@ -18,6 +18,7 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 | `sky stop REF` | Tear a compute down (alias of `compute delete`) |
 | `sky monitor REF [--mode rich\|log]` | Watch a live compute until interrupted |
 | `sky app` | Watch every live compute on one screen, until `q` |
+| `sky mcp [--url URL]` | Serve the daemon as an MCP server on stdin and stdout; the plugin's `.mcp.json` starts it (`mcp` extra) |
 | `sky compute ssh REF [--node N] [--command CMD]` | Interactive shell on one machine, ready or still bootstrapping (`sky console` is the older name) |
 | `sky repl REF [--node N]` | Python REPL on the node's bootstrapped interpreter |
 

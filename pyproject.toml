@@ -96,10 +96,16 @@ notebook = [
 storage = [
     "aioboto3>=13.0.0",
 ]
+# `sky mcp`: the daemon as tools an AI assistant calls, over the Model Context
+# Protocol. The command is the CLI's, so it carries the CLI and the client along.
+mcp = [
+    "skyward[client,cli]",
+    "mcp>=2.3",
+]
 # Everything skyward ships, for the machine that is developing against it rather
 # than running one job.
 all = [
-    "skyward[client,server,cli,tui,notebook,storage,providers]",
+    "skyward[client,server,cli,tui,notebook,storage,providers,mcp]",
 ]
 
 [project.scripts]

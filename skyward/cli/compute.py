@@ -119,18 +119,8 @@ def list_computes(
 
     ``--state`` asks for one state instead, and is then the whole filtered list.
     """
-    async def work(client: Client) -> tuple[ComputeResource, ...]:
-        if state:
-            return (await client.call("GET", "/v1/computes", Page[ComputeResource], state=state)).items
-
-        live = await client.call("GET", "/v1/computes", Page[ComputeResource], live=True)
-        if history <= 0:
-            return live.items
-
-        finished = await client.call("GET", "/v1/computes", Page[ComputeResource], live=False, limit=history)
-        return live.items + finished.items
-
-    render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in _call(work, url=url)], output=output)
+    listed = _call(lambda client: computes(client, state, history), url=url)
+    render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in listed], output=output)
 
 
 @compute_app.command(name="get")
@@ -184,23 +174,18 @@ def create_compute(
     spec's, and it is short — a compute whose machines are slow to become
     reachable is a compute whose machines can reach it first.
     """
-    from skyward.shared.accelerators import resolve
-
     if provider not in FACTORIES:
         raise SystemExit(f"unknown provider '{provider}'; known: {', '.join(sorted(FACTORIES))}")
 
     account = FACTORIES[provider]()
-    spec = ComputeSpec(
-        specs=(
-            Spec(
-                provider=ProviderRef(kind=account.kind, name=account.name or account.kind),
-                accelerator=resolve(accelerator, None)[0],
-                cpus=cpus,
-                memory_gb=memory,
-                region=region,
-            ),
-        ),
+    spec = compute_spec(
+        account,
+        accelerator=accelerator,
         nodes=NodeBounds(initial=nodes),
+        region=region,
+        cpus=cpus,
+        memory_gb=memory,
+        ttl=ttl,
         image=Image(
             base=base,
             python=python,
@@ -212,20 +197,7 @@ def create_compute(
         ),
         plugins=tuple(_plugin(text) for text in plugin or ()),
     )
-    if ttl is not None:
-        spec = msgspec.structs.replace(spec, ttl=ttl)
-
-    async def work(client: Client) -> ComputeResource:
-        await _register(client, account)
-        return await client.call(
-            "POST",
-            "/v1/computes",
-            ComputeResource,
-            body=msgspec.json.encode(ComputeCreate(spec=spec, name=name)),
-            headers={"Idempotency-Key": uuid.uuid4().hex},
-        )
-
-    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url))], output=output)
+    render(COMPUTE_COLUMNS, [_compute_row(_call(lambda client: create(client, account, spec, name), url=url))], output=output)
 
 
 @compute_app.command(name="scale")
@@ -272,27 +244,8 @@ def update_compute(
     A compute whose image was not created ``mutable`` refuses the change with
     ``image_fixed``: its image is its identity, and another one is another compute.
     """
-
-    async def work(client: Client) -> ComputeResource:
-        found = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
-        image = msgspec.convert(msgspec.to_builtins(found.spec.image), Image)
-        if pip is not None:
-            image = msgspec.structs.replace(image, pip=tuple(pip))
-        if pip_index is not None:
-            image = msgspec.structs.replace(image, pip_indexes=tuple(PipIndex(url=index) for index in pip_index))
-        if exclude is not None:
-            image = msgspec.structs.replace(image, excludes=tuple(exclude))
-        if include is not None or exclude is not None:
-            includes = tuple(include) if include is not None else image.includes
-            sha: str | None = None
-            if includes:
-                blob = await asyncio.to_thread(usercode.tarball, includes, image.excludes)
-                sha = await codec.digest(blob)
-                await client.upload(f"/v1/blobs/{sha}", blob)
-            image = msgspec.structs.replace(image, includes=includes, includes_sha256=sha)
-        return await writes.conditional(client, found.id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(image=image)))
-
-    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url))], output=output)
+    updated = _call(lambda client: update(client, ref, pip=pip, pip_index=pip_index, include=include, exclude=exclude), url=url)
+    render(COMPUTE_COLUMNS, [_compute_row(updated)], output=output)
 
 
 @compute_app.command(name="delete")
@@ -307,9 +260,7 @@ def delete_compute(
     The delete is accepted, not done: reconciliation runs until the provider
     confirms the machines are gone, so what comes back is still ``deleting``.
     """
-    key = uuid.uuid4().hex
-    deleted = _call(lambda client: writes.conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url)
-    render(COMPUTE_COLUMNS, [_compute_row(deleted)], output=output)
+    render(COMPUTE_COLUMNS, [_compute_row(_call(lambda client: writes.delete(client, ref), url=url))], output=output)
 
 
 @compute_app.command(name="view")
@@ -591,6 +542,92 @@ def run_declared(
         notice("WARNING", f"{declared.name} is still up")
     if status:
         raise SystemExit(status)
+
+
+async def computes(client: Client, state: str | None, history: int) -> tuple[ComputeResource, ...]:
+    """Every live compute, then the newest ``history`` finished ones; or, given a ``state``, every compute in it."""
+    if state:
+        return (await client.call("GET", "/v1/computes", Page[ComputeResource], state=state)).items
+
+    live = await client.call("GET", "/v1/computes", Page[ComputeResource], live=True)
+    if history <= 0:
+        return live.items
+
+    finished = await client.call("GET", "/v1/computes", Page[ComputeResource], live=False, limit=history)
+    return live.items + finished.items
+
+
+def compute_spec(
+    account: Provider,
+    *,
+    accelerator: str | None,
+    nodes: NodeBounds,
+    region: str | None,
+    cpus: int | None,
+    memory_gb: int | None,
+    ttl: int | None,
+    image: Image,
+    plugins: tuple[PluginRef, ...],
+) -> ComputeSpec:
+    """The definition :func:`create` posts: one spec on the account, and the spec's own ``ttl`` unless one is given."""
+    from skyward.shared.accelerators import resolve
+
+    spec = ComputeSpec(
+        specs=(
+            Spec(
+                provider=ProviderRef(kind=account.kind, name=account.name or account.kind),
+                accelerator=resolve(accelerator, None)[0],
+                cpus=cpus,
+                memory_gb=memory_gb,
+                region=region,
+            ),
+        ),
+        nodes=nodes,
+        image=image,
+        plugins=plugins,
+    )
+    return spec if ttl is None else msgspec.structs.replace(spec, ttl=ttl)
+
+
+async def create(client: Client, account: Provider, spec: ComputeSpec, name: str | None) -> ComputeResource:
+    """Post the compute, registering the account first if the daemon holds none by its name. Accepted, not ready."""
+    await _register(client, account)
+    return await client.call(
+        "POST",
+        "/v1/computes",
+        ComputeResource,
+        body=msgspec.json.encode(ComputeCreate(spec=spec, name=name)),
+        headers={"Idempotency-Key": uuid.uuid4().hex},
+    )
+
+
+async def update(
+    client: Client,
+    ref: str,
+    *,
+    pip: Sequence[str] | None,
+    pip_index: Sequence[str] | None,
+    include: Sequence[str] | None,
+    exclude: Sequence[str] | None,
+) -> ComputeResource:
+    """Replace each of the image's lists that is given, packing and uploading the includes when they change."""
+    found = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
+    image = msgspec.convert(msgspec.to_builtins(found.spec.image), Image)
+    if pip is not None:
+        image = msgspec.structs.replace(image, pip=tuple(pip))
+    if pip_index is not None:
+        image = msgspec.structs.replace(image, pip_indexes=tuple(PipIndex(url=index) for index in pip_index))
+    if exclude is not None:
+        image = msgspec.structs.replace(image, excludes=tuple(exclude))
+    if include is not None or exclude is not None:
+        includes = tuple(include) if include is not None else image.includes
+        sha: str | None = None
+        if includes:
+            blob = await asyncio.to_thread(usercode.tarball, includes, image.excludes)
+            sha = await codec.digest(blob)
+            await client.upload(f"/v1/blobs/{sha}", blob)
+        image = msgspec.structs.replace(image, includes=includes, includes_sha256=sha)
+    return await writes.conditional(client, found.id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(image=image)))
 
 
 def _node(node: str) -> str:
@@ -974,7 +1011,11 @@ def _call[T](work: Work[T], *, url: str | None = None) -> T:
 
 
 __all__ = [
+    "Result",
     "cancel_task",
+    "compute_spec",
+    "computes",
+    "create",
     "create_compute",
     "delete_compute",
     "download_path",
@@ -987,6 +1028,7 @@ __all__ = [
     "remove_path",
     "run_declared",
     "run_script",
+    "update",
     "upload_path",
     "view_compute",
 ]

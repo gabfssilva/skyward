@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from msgspec.structs import replace
 
+from skyward.shared.providers import Credential
 from skyward.shared.schemas import Image
 from skyward.worker.api import Info
 from skyward.worker.plugins.plugin import Plugin
@@ -31,7 +32,7 @@ class HuggingFace(Plugin, frozen=True):
 
     kind: ClassVar[str] = "huggingface"
 
-    token: str | None = None
+    token: Annotated[str | None, Credential] = None
 
     def image(self, image: Image) -> Image:
         return replace(image, pip=(*image.pip, "huggingface_hub"))

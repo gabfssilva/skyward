@@ -12,9 +12,10 @@ training loop and has no business acquiring an argument parser to do it.
 from __future__ import annotations
 
 import sys
+from typing import Annotated
 
 try:
-    from cyclopts import App
+    from cyclopts import App, Parameter
 except ModuleNotFoundError as missing:
     raise SystemExit("the sky CLI needs: pip install 'skyward[cli]'") from missing
 
@@ -43,6 +44,24 @@ def version() -> None:
     print(f"skyward {__version__}, python {sys.version.split()[0]}")
 
 
+@app.command(name="mcp")
+def serve_mcp(*, url: Annotated[str | None, Parameter(help="Daemon URL")] = None) -> None:
+    """Serve the daemon to an AI assistant: a Model Context Protocol server on stdin and stdout.
+
+    The assistant's host starts it and talks to it for the length of a session. Every
+    tool is a request to the daemon the rest of ``sky`` reaches: ``--url``, else
+    ``SKYWARD_URL``, else the local one.
+    """
+    try:
+        from skyward.cli.mcp import server
+    except ModuleNotFoundError as missing:
+        raise SystemExit("sky mcp needs: pip install 'skyward[mcp]'") from missing
+
+    from skyward.cli._client import resolve
+
+    server(resolve(url)).run("stdio")
+
+
 from skyward.cli import compute as compute  # noqa: E402, F401
 from skyward.cli import config as config  # noqa: E402, F401
 from skyward.cli import console as console  # noqa: E402, F401
@@ -69,6 +88,7 @@ __all__ = [
     "notebook_app",
     "offers_app",
     "providers_app",
+    "serve_mcp",
     "server_app",
     "version",
 ]

@@ -37,9 +37,11 @@ SCALEWAY_ZONES = (
 class Credential:
     """Marks a field as a secret.
 
-    Credentials travel to the daemon apart from the rest and are stored on the
-    provider row rather than on the compute — the API serves a provider's config
-    back, and never its credentials.
+    A provider account's credentials travel to the daemon apart from the rest and
+    are stored on the provider row rather than on the compute — the API serves a
+    provider's config back, and never its credentials. A plugin's travel on the
+    compute with the rest of it, and ``sky mcp`` hides them from the assistant it
+    answers.
     """
 
 
@@ -72,8 +74,8 @@ class Provider(Struct, frozen=True, kw_only=True):
 
 
 @cache
-def secrets(kind: type[Provider]) -> tuple[str, ...]:
-    """The fields of ``kind`` marked :class:`Credential`."""
+def secrets(kind: type[Struct]) -> tuple[str, ...]:
+    """The fields of ``kind``, a provider account or a plugin, marked :class:`Credential`."""
     return tuple(name for name, hint in _hints(kind).items() if Credential in get_args(hint))
 
 
@@ -98,7 +100,7 @@ def split(provider: Provider) -> tuple[dict[str, str], dict[str, Any]]:
     return credentials, config
 
 
-def _hints(kind: type[Provider]) -> Mapping[str, Any]:
+def _hints(kind: type[Struct]) -> Mapping[str, Any]:
     names = {field.name for field in structs.fields(kind)}
     return {name: hint for name, hint in get_type_hints(kind, include_extras=True).items() if name in names}
 

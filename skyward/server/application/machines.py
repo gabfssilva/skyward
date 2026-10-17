@@ -72,6 +72,19 @@ because the tick that asks is the one that was queued behind the launch. Younger
 than this, absence is the index lagging; older, the machine is gone.
 """
 
+LISTING_SECONDS = 60.0
+"""How long a compute with nothing on its way goes between listings.
+
+The listing is what moves a node that is on its way: it names the machine a
+launch bought, carries the progress a boot is judged by, and says when a machine
+is gone. For a node that is ready it says only the last of those — a machine
+gone from under it, which the connection to it notices first — so a compute
+whose nodes are all ready is asked for at this pace rather than every pass. On a
+provider that answers one call per machine, that is a call a minute instead of
+one a second. A compute on its way out is listed every pass: the listing is the
+sweep for a machine no row names.
+"""
+
 REFUSED_FIRST = 10.0
 """How long a compute waits before buying again, after every market and region refused a machine."""
 
@@ -105,6 +118,8 @@ class Machines:
         """What each machine still short of an address was last seen doing, and when that changed."""
         self._refused: dict[str, tuple[float, float]] = {}
         """When each refused compute may try to buy again, on the monotonic clock, and the delay that set it."""
+        self._listed: dict[str, float] = {}
+        """When each compute was last listed, by the monotonic clock. Absent means never."""
 
     async def create(self, compute_id: str, node_id: str) -> None:
         """Buy the machine one row is asking for, and write down what we got.
@@ -518,6 +533,10 @@ class Machines:
         bought for is gone, and nothing but this will ever stop it billing. Nothing
         here is decided from memory; the store and the listing are the whole truth,
         which is what lets this run while twenty launches are in flight.
+
+        A compute with nothing on its way is listed once in :data:`LISTING_SECONDS`
+        rather than every pass; what a preemptible provider has to say about its
+        machines is asked for every pass regardless.
         """
         infrastructure = await self._computes.infrastructure(compute.id)
         if not infrastructure.provider_id:
@@ -531,14 +550,6 @@ class Machines:
         pending = [node for node in nodes if node.state in ("requested", "provisioning")]
         watched = [node for node in nodes if node.state in ("connecting", "bootstrapping", "ready")]
 
-        observed = await adapter.machines(infrastructure.binding)
-        logger.bind(compute_id=compute.id).debug(
-            "the provider has {} machines under this binding; {} still without an address, {} being held",
-            len(observed),
-            len(pending),
-            len(watched),
-        )
-
         if isinstance(adapter, Preemptible):
             claimed_ids = tuple(node.machine for node in nodes if node.machine)
             if claimed_ids:
@@ -547,6 +558,20 @@ class Machines:
                 for machine_id, reason in warned.items():
                     if node := watched_by_machine.get(machine_id):
                         await self._lost(node, reason)
+
+        at_rest = not pending and all(node.state == "ready" for node in watched) and compute.spec.desired != "deleted"
+        listed = self._listed.get(compute.id)
+        if at_rest and listed is not None and monotonic() - listed < LISTING_SECONDS:
+            return
+
+        observed = await adapter.machines(infrastructure.binding)
+        self._listed[compute.id] = monotonic()
+        logger.bind(compute_id=compute.id).debug(
+            "the provider has {} machines under this binding; {} still without an address, {} being held",
+            len(observed),
+            len(pending),
+            len(watched),
+        )
 
         by_claim = {machine.node: machine for machine in observed.values() if machine.node}
         deadline = compute.spec.options.provision_timeout
@@ -611,6 +636,7 @@ class Machines:
     async def release(self, compute_id: str) -> None:
         """Give back everything that was the compute's and not a machine's."""
         self._refused.pop(compute_id, None)
+        self._listed.pop(compute_id, None)
         await self._computes.placed(compute_id)
         infrastructure = await self._computes.infrastructure(compute_id)
         if not infrastructure.provider_id:

@@ -20,7 +20,7 @@ import msgspec
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.server.application.machines import Machines
+from skyward.server.application.machines import LISTING_SECONDS, Machines
 from skyward.server.application.mock import OFFER, SPEC
 from skyward.server.application.node import Node as ApplicationNode
 from skyward.server.application.runtimes import Files, Runtime, Runtimes
@@ -616,6 +616,46 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
         assert "downloading (55%)" in given_up.last_error.message, "the reason names what the machine was doing"
 
 
+def describe_a_compute_with_nothing_on_its_way() -> None:
+    """The listing moves a node that is on its way; a compute whose nodes are all ready is asked for once a minute."""
+
+    async def it_is_listed_once_a_minute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _Clock()
+        monkeypatch.setattr("skyward.server.application.machines.monotonic", clock)
+        machines, compute, listings = await _at_rest(tmp_path / "skyward.sqlite")
+
+        for clock.now in (0.0, 5.0, 10.0):
+            await machines.resolve(compute)
+        assert listings.count == 1, "the passes in between asked the provider nothing"
+
+        clock.now = LISTING_SECONDS
+        await machines.resolve(compute)
+        assert listings.count == 2
+
+    async def it_is_listed_every_pass_while_a_node_is_on_its_way(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _Clock()
+        monkeypatch.setattr("skyward.server.application.machines.monotonic", clock)
+        machines, compute, listings = await _at_rest(tmp_path / "skyward.sqlite", ready=False)
+
+        for clock.now in (0.0, 5.0, 10.0):
+            await machines.resolve(compute)
+
+        assert listings.count == 3
+
+    async def it_is_listed_every_pass_once_it_is_on_its_way_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _Clock()
+        monkeypatch.setattr("skyward.server.application.machines.monotonic", clock)
+        machines, compute, listings = await _at_rest(tmp_path / "skyward.sqlite")
+        store = ComputeStore(EventStore(), NodeStore())
+        await store.delete(compute.id, compute.revision, "delete")
+        compute = await store.get(compute.id)
+
+        for clock.now in (0.0, 5.0):
+            await machines.resolve(compute)
+
+        assert listings.count == 2, "the listing is the sweep, and a compute going is swept every pass"
+
+
 def describe_binding_a_compute() -> None:
     async def it_is_served_with_the_offer_it_was_bound_to(tmp_path: Path) -> None:
         store = await _store(tmp_path)
@@ -881,6 +921,54 @@ async def _bought(
     progress = deque(reported)
     machines.adapter = lambda _: _answering(progress)
     return machines, await computes.get(compute.id), node
+
+
+RUNNING = Machine(id="m1", state="running", host="10.0.0.1", user="root")
+"""The one machine the provider of :func:`_at_rest` has, where the row says it is."""
+
+
+class _Listings:
+    """A provider with one running machine, counting how often it is asked for it."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    async def adapter(self) -> Any:
+        return SimpleNamespace(machines=self.machines)
+
+    async def machines(self, _: object) -> dict[str, Machine]:
+        self.count += 1
+        return {RUNNING.id: RUNNING}
+
+
+class _Clock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def _at_rest(database: Path, ready: bool = True) -> tuple[Machines, Compute, _Listings]:
+    """A compute whose one node has a machine with an address and, when ``ready``, nothing left to wait for."""
+    await connect(database)
+    nodes, providers = NodeStore(), ProviderStore()
+    computes = ComputeStore(EventStore(), nodes)
+    compute, _ = await computes.create(ComputeCreate(spec=SPEC), idempotency_key="at-rest")
+    await computes.bind(compute.id, Infrastructure(offer=OFFER, offer_id=OFFER.id, provider_id="prv_1", binding={"prefix": "skyward-"}))
+
+    node = await nodes.request(compute.id, compute.generation)
+    await nodes.launched(node.id, RUNNING)
+    if ready:
+        await nodes.reachable(node.id, RUNNING)
+        await nodes.observe(node.id, "ready")
+
+    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=OfferCache(providers), blobs=BlobStore(), events=EventStore())
+    listings = _Listings()
+    machines.adapter = lambda _: listings.adapter()
+    return machines, await computes.get(compute.id), listings
 
 
 async def _answering(progress: deque[tuple[str, float | None]]) -> Any:
