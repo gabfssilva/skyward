@@ -15,7 +15,7 @@ FAILURES: dict[int, str] = {
     400: "Content does not hash to the name it was given — `hash_mismatch`",
     404: "No such resource — `not_found`",
     409: (
-        "The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, "
+        "The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, "
         "`compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
     ),
     412: "`If-Match` did not name the stored revision — `revision_conflict`. Retryable: re-read, re-apply, re-send",

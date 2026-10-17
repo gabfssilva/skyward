@@ -32,12 +32,6 @@ class IdempotencyConflictError(SkywardError):
     status = 409
 
 
-class LeaseHeldError(SkywardError):
-    code = "lease_held"
-    status = 409
-    retryable = True
-
-
 class NameTakenError(SkywardError):
     code = "name_taken"
     status = 409

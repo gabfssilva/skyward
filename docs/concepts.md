@@ -70,7 +70,7 @@ with sky.Compute.attached("training") as compute:  # tomorrow, another process
     evaluate() >> compute
 ```
 
-`Compute.attached()` takes a name or id and no spec — the definition already lives in the daemon. Ownership is a **lease** the SDK renews in the background; when renewals stop, the daemon may reclaim the compute.
+`Compute.attached()` takes a name or id and no spec — the definition already lives in the daemon. Each process using a compute holds a **lease** on it that the SDK renews in the background, and any number of them hold one compute at once; once no lease is renewed and no task holds it, the daemon may reclaim the compute.
 
 Internally, one asyncio event loop on a background daemon thread serves every call. That is what makes `task() > compute` a real future rather than a wrapper around a blocking call.
 

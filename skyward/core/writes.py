@@ -29,9 +29,9 @@ async def conditional(client: Client, ref: str, method: str, body: bytes | None 
 
     ``If-Match`` is what keeps two writers from overwriting each other's intent,
     but the revision also moves on bookkeeping nobody asked for: the reconciler
-    writes what it observed on every tick, and a lease renews itself on a timer.
-    Either landing between the read and the write refuses a change nothing was
-    racing, so the precondition is refreshed rather than handed back as a failure.
+    writes what it observed on every tick. That landing between the read and the
+    write refuses a change nothing was racing, so the precondition is refreshed
+    rather than handed back as a failure.
     """
     attempts = WRITE_ATTEMPTS
     while True:

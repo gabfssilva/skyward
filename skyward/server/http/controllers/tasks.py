@@ -95,6 +95,9 @@ class TaskController(Controller):
             "(`spec.nodes.initial`), each waiting for its machine.\n\n"
             "The arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no "
             "Python to pickle with sends `call` instead — the values in JSON — and the daemon encodes them here.\n\n"
+            "`hold: true` keeps the compute, with no lease, until the task settles: work left to the daemon by a process "
+            "that does not stay to renew a lease, as `sky run` leaves its run. A compute with `spec.delete_on_exit` is "
+            "deleted (`finished`) once its holding tasks have settled and no lease is left on it.\n\n"
             "The task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on "
             "`(task_id, execution_id, args_hash)`."
         ),

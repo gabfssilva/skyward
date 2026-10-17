@@ -132,6 +132,7 @@ class TaskStore:
                 submitted_at=now(),
                 queue_timeout=_limit(body.queue_timeout_seconds, compute.spec.options.task_queue_timeout),
                 run_timeout=_limit(body.run_timeout_seconds, compute.spec.options.task_run_timeout),
+                hold=body.hold,
             ).save().run()
 
             for rank in await self._ranks(compute, body):
@@ -761,6 +762,7 @@ async def _to_task(row: TaskRow, attempts: Sequence[ExecutionRow]) -> Task:
         run_timeout_seconds=row.run_timeout,
         result_sha256=row.result_sha256,
         finished_at=row.finished_at,
+        hold=row.hold,
     )
 
 

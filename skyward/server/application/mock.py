@@ -61,7 +61,8 @@ COMPUTE = Compute(
     generation=3,
     spec=SPEC,
     status=ComputeStatus(state="ready", observed_generation=3),
-    lease=Lease(owner="ctl_1:epoch_9", expires_at=NOW),
+    leases=(Lease(holder="sdk_5c1e2f9a0b3d", expires_at=NOW),),
+    holding=0,
     created_at=NOW,
     cost=18.4,
     tasks=TaskCounts(queued=0, running=0, succeeded=1, failed=0, cancelled=0, timed_out=0, indeterminate=0),
@@ -195,10 +196,10 @@ class MockComputes:
     async def delete(self, ref: str, expected_revision: int, idempotency_key: str) -> Compute:
         return COMPUTE
 
-    async def claim_lease(self, ref: str, claim: LeaseClaim) -> Lease:
-        return Lease(owner=claim.owner, expires_at=None if claim.task else NOW, task=claim.task)
+    async def claim_lease(self, ref: str, holder: str, claim: LeaseClaim) -> Lease:
+        return Lease(holder=holder, expires_at=NOW)
 
-    async def release_lease(self, ref: str) -> None:
+    async def release_lease(self, ref: str, holder: str) -> None:
         return None
 
 

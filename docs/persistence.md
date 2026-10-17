@@ -29,7 +29,7 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 | `status_observed_generation` | reconciler | which one has actually been applied |
 | `status_state` | `ComputeStore.apply` | `requested`, `provisioning`, `ready`, `degraded`, `deleting`, `deleted` — moved only by an event, recorded in the same transaction |
 | `placement_reason` / `placement_retry_at` | `Machines` | why the last launch was refused, and when buying is tried again |
-| `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` —, `abandoned`, the reconciler's when nobody renewed the lease and `delete_on_exit` was set, or `finished`, the reconciler's when the task the lease was held for settled and `delete_on_exit` was set |
+| `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` —, or the reconciler's once nothing holds the compute and `delete_on_exit` was set: `finished` when tasks held it and all of them settled, `abandoned` when only leases did and nobody renewed them |
 | `deleted_at` | `ComputeStore.apply` | when the state reached `deleted`, written once |
 | `revision` | either | the optimistic-concurrency token behind `If-Match` |
 
@@ -57,12 +57,13 @@ That leaves exactly one gap, and it is the one every payment gateway has — a c
 |---|---|---|
 | `providers` | one registered account | `credentials` is stored here and nowhere else; no read path selects it |
 | `offers` | the cached hardware catalog | a cache, not a ledger |
-| `computes` | intent, observation, binding, lease | one row per compute; also the SSH key and the cluster's authority |
+| `computes` | intent, observation, binding | one row per compute; also the SSH key and the cluster's authority |
+| `leases` | one process holding one compute | `{compute_id}:{holder}` is the key; a renewal writes `expires_at` and nothing of the compute's row |
 | `generations` | one frozen definition each | history kept, because a rollback is a generation too |
 | `nodes` | one machine as the control plane knows it | `requested` → `provisioning` → `connecting` → `bootstrapping` → `ready` |
 | `blobs` | content addressed by SHA-256 | code, arguments, results |
 | `functions` | what a blob of code is | so a task can name it without carrying it |
-| `tasks` | one call, one terminal outcome | `state` derived from executions |
+| `tasks` | one call, one terminal outcome | `state` derived from executions; `hold` keeps the compute until it settles |
 | `executions` | one physical attempt | `ordinal` counts attempts, `rank` says which node |
 | `events` | the log the SSE stream replays | `sequence` is monotonic and gapless; `compute_id`, `node_id` and `task_id` are what a reader narrows by |
 | `idempotency` | what a key has already been used to do | key plus request fingerprint |
@@ -85,7 +86,9 @@ An SSH connection is not a row. Neither is a forwarded port, nor the casty clien
 
 Everything live is held in `Runtimes` — one per compute per process — and it is **rebuilt** from the store when a daemon comes up, never recovered from it. The store says which machines exist and at which addresses; the daemon redials them.
 
-This is what the compute's **lease** protects. A lease is a liveness signal the owning process renews in the background, stored as `lease_owner` and `lease_expires_at` — or held until a task settles, with `lease_task` in place of an expiry, which is how `sky run` leaves a compute to its run. Two daemons holding SSH connections to the same machines would both believe they were the one bootstrapping it, so only the lease holder opens a runtime. Releasing a lease is not deletion — with `delete_on_exit=False`, the compute stays up and the next process attaches to it. When renewals simply stop, the reconciler may reclaim it.
+A compute is meant to be reconciled by one daemon: two holding SSH connections to the same machines would both believe they were the one bootstrapping it.
+
+What keeps a compute is written down, though. A **lease** is a liveness signal one client process renews in the background, a row of `leases` per holder, so any number of processes use one compute at once and none is refused for another. A task submitted with `hold` keeps it too, until the task settles, which is how `sky run` leaves a compute to its run with no process left to renew anything. Releasing a lease is not deletion — with `delete_on_exit=False`, the compute stays up and the next process attaches to it. When nothing holds it any more — every lease ran out or was let go of, and no holding task is left — the reconciler may reclaim it. A file from before leases had rows of their own keeps `lease_owner`, `lease_expires_at` and `lease_task` on `computes`, read by nothing.
 
 ## Reading the store directly
 

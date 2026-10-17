@@ -11,7 +11,7 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 | Command | Does |
 |---|---|
 | `sky version` | Print the Skyward and Python versions |
-| `sky run FILE [COMMAND] [ARGS...] [--node any] [-f]` | Run a file on the compute it declares (PEP 723 header, or `sky.app` functions), creating or attaching to it. It returns once the run's task is queued, printing the compute and the task; the daemon holds the compute for the task and deletes it once it settles unless `delete_on_exit` is false. `-f`/`--foreground` stays for the run and exits with its status. `sky run FILE --help` lists a `sky.app` file's commands, and `sky run` with no file prints its own help, since `--help` after it belongs to the file (`reference/script.md`) |
+| `sky run FILE [COMMAND] [ARGS...] [--node any] [-f]` | Run a file on the compute it declares (PEP 723 header, or `sky.app` functions), creating or attaching to it. It returns once the run's task is queued, printing the compute and the task; the task holds the compute until it settles, runs of one file share it, and the daemon deletes it once nothing holds it unless `delete_on_exit` is false. `-f`/`--foreground` stays for the run and exits with its status. `sky run FILE --help` lists a `sky.app` file's commands, and `sky run` with no file prints its own help, since `--help` after it belongs to the file (`reference/script.md`) |
 | `sky new …` | Alias of `sky compute create` |
 | `sky status [REF]` | One compute, or all of them |
 | `sky sessions` | Every compute — `status` with no argument |
@@ -120,7 +120,7 @@ sky compute delete REF
 - `scale --nodes N` fixes the size; `--nodes MIN:MAX` makes it elastic (`1 <= MIN <= MAX`). What comes back is a new `generation`, not a finished resize.
 - `update` sets the mutable fields of a compute's image (`pip`, `pip-index`, `include`, `exclude`) as whole lists and returns a new `generation`. It is refused with `image_fixed` on a compute whose image is not `mutable`, which `create --mutable` is what makes it.
 - `delete` is accepted, not done — the compute stays `deleting` until the provider confirms the machines are gone.
-- Writes are guarded by `If-Match` on the compute's revision and retried five times on a `revision_conflict`, since the reconciler and the lease also move it.
+- Writes are guarded by `If-Match` on the compute's revision and retried five times on a `revision_conflict`, since the reconciler also moves it.
 
 ### Work
 

@@ -5,9 +5,10 @@ live counterpart of what the store remembers — the open channels, the forwarde
 ports, the casty client that dials them — and all of it is rebuilt from the store
 when a daemon comes up, never recovered from it.
 
-There is exactly one of these per compute per process, which is what the compute's
-lease is for: two daemons holding SSH connections to the same machines would both
-believe they were the one bootstrapping it.
+There is exactly one of these per compute per process, and a compute is meant to be
+reconciled by one daemon: two daemons holding SSH connections to the same machines
+would both believe they were the one bootstrapping it. A compute's leases are its
+clients' and say nothing about which daemon holds these.
 """
 
 from __future__ import annotations

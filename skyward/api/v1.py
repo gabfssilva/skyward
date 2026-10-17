@@ -71,7 +71,6 @@ type ErrorCode = Literal[
     "not_found",
     "revision_conflict",
     "idempotency_conflict",
-    "lease_held",
     "name_taken",
     "compute_not_connected",
     "compute_not_accepting",
@@ -265,11 +264,10 @@ class FunctionSummary(Struct, frozen=True, kw_only=True):
 
 
 class LeaseResource(Struct, frozen=True, kw_only=True):
-    """Who owns the compute, and until when — ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary."""
+    """One process holding the compute, and until when. Any number hold it at once; zero is legitimate and temporary."""
 
-    owner: str | None
-    expires_at: datetime | None
-    task: str | None = None
+    holder: str
+    expires_at: datetime
 
 
 class Refusal(Struct, frozen=True, kw_only=True):
@@ -448,7 +446,10 @@ class ComputeResource(Struct, frozen=True, kw_only=True):
     provider: ProviderSummary | None
     """The account the compute was bound to. Null until it is bound, since a spec may name several."""
     offer: OfferResource | None
-    lease: LeaseResource
+    leases: tuple[LeaseResource, ...]
+    """The processes renewing a lease on it."""
+    holding: int
+    """How many of its tasks that hold it have not settled. With no lease and none of these, ``delete_on_exit`` deletes it."""
     cost: float
     """What its machines have cost so far, in dollars."""
     rate: float
@@ -498,6 +499,8 @@ class TaskResource(Struct, frozen=True, kw_only=True):
     queue_timeout_seconds: float | None
     run_timeout_seconds: float | None
     result_sha256: str | None
+    hold: bool
+    """Whether it keeps its compute until it settles."""
 
 
 class GenerationResource(Struct, frozen=True, kw_only=True):
@@ -616,11 +619,9 @@ class CreateGenerationResource(Struct, frozen=True, kw_only=True):
 
 
 class ClaimLeaseResource(Struct, frozen=True, kw_only=True):
-    """Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until."""
+    """How long the lease lasts from this claim, unless it is claimed again first."""
 
-    owner: str
-    ttl_seconds: int | None = None
-    task: str | None = None
+    ttl_seconds: int
 
 
 class CreateTaskResource(Struct, frozen=True, kw_only=True):
@@ -641,6 +642,8 @@ class CreateTaskResource(Struct, frozen=True, kw_only=True):
     retry: str | None | UnsetType = UNSET
     """The blob holding this task's retry decision. Left out takes the compute's; null is no retry."""
     correlation_id: str | None = None
+    hold: bool = False
+    """Keep the compute, with no lease, until this task settles."""
 
 
 class CreateExecutionResource(Struct, frozen=True, kw_only=True):
@@ -736,16 +739,21 @@ class ComputeGenerationAppliedEvent(Struct, frozen=True, kw_only=True, tag_field
 
 
 class ComputeLeaseClaimedEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="compute.lease.claimed"):
+    """A process began holding the compute. Its renewals are not said again."""
+
     compute: str
-    owner: str
+    holder: str
 
 
 class ComputeLeaseReleasedEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="compute.lease.released"):
+    """A process let go of the compute without asking for anything to be destroyed."""
+
     compute: str
+    holder: str
 
 
 class ComputeAbandonedEvent(Struct, frozen=True, kw_only=True, tag_field="type", tag="compute.abandoned"):
-    """Nothing renewed the lease and ``delete_on_exit`` was set, so the compute is going away."""
+    """Nothing holds the compute, nobody renewed a lease on it, and ``delete_on_exit`` was set, so it is going away."""
 
     compute: str
 

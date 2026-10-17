@@ -277,8 +277,15 @@ export const finishedOf = (c: Compute): number => callsOf(c) - c.tasks.queued - 
 
 export const CAUSE: Record<Ending['cause'], string> = {
   requested: 'someone asked for it',
-  abandoned: 'nobody renewed its lease',
-  finished: 'the task it was held for settled',
+  abandoned: 'nobody renewed a lease on it',
+  finished: 'the tasks that held it settled',
+}
+
+/** What keeps a compute up: the processes renewing a lease on it, and its tasks that hold it until they settle. */
+export const keptBy = (c: Compute): string | null => {
+  const tasks = c.holding ? [`${c.holding} task${c.holding === 1 ? '' : 's'}`] : []
+  const all = [...c.leases.map((lease) => lease.holder), ...tasks]
+  return all.length ? all.join(', ') : null
 }
 
 /** What was bought, or asked for: the offer a compute is bound to, else the first spec it named. */

@@ -95,10 +95,10 @@ type DeletionCause = Literal["requested", "abandoned", "finished"]
 """Why a compute was deleted.
 
 ``requested`` is a ``DELETE`` somebody sent — a ``with`` block exiting, ``sky compute
-delete``, a button. ``abandoned`` is the reconciler's: nobody renewed the lease, and
-``delete_on_exit`` said that a compute nobody holds is torn down. ``finished`` is the
-reconciler's too: the lease was held for a task, the task settled, and
-``delete_on_exit`` said the compute goes with it.
+delete``, a button. The other two are the reconciler's, once nothing holds the compute
+and ``delete_on_exit`` said that a compute nobody holds is torn down: ``finished`` when
+tasks held it and every one of them has settled, ``abandoned`` when only leases did and
+nobody renewed them.
 """
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process", "loky"]
@@ -118,7 +118,6 @@ type ErrorCode = Literal[
     "not_found",
     "revision_conflict",
     "idempotency_conflict",
-    "lease_held",
     "name_taken",
     "compute_not_connected",
     "compute_not_accepting",
@@ -637,21 +636,17 @@ class Refusal(Struct, frozen=True):
 
 
 class Lease(Struct, frozen=True):
-    """Who currently owns the compute, and until when.
+    """One process holding the compute, and until when.
 
-    A liveness signal the owning process renews, not a lock on the resource. Zero
-    owners is legitimate and temporary — a daemon restarting, a script killed —
-    and only the holder opens SSH connections to the machines. Losing it destroys
-    nothing by itself.
-
-    A lease is held until ``expires_at``, or, with ``task``, until that task
-    settles: an owner that leaves the compute to its work holds it for the work's
-    length, with nothing left running to renew it.
+    A liveness signal the holder renews, not a lock: any number of processes hold
+    one compute at once, each under a lease of its own, and none of them is turned
+    away for another. Zero is legitimate and temporary — a daemon restarting, a
+    script killed — and losing one destroys nothing by itself: the compute goes, with
+    ``delete_on_exit``, once no lease and no holding task is left on it.
     """
 
-    owner: str | None = None
-    expires_at: datetime | None = None
-    task: str | None = None
+    holder: str
+    expires_at: datetime
 
 
 class Ending(Struct, frozen=True):
@@ -688,6 +683,10 @@ class Compute(Struct, frozen=True):
     resolved to once the compute was bound, and ``ended`` is how a deleted one ended.
     ``tasks`` counts every task it was given, by state, from the task rows on each
     read — not the page of them a listing returns.
+
+    ``leases`` and ``holding`` are what keeps it: the processes renewing a lease on
+    it, and how many of its tasks that hold it have not settled. With neither, and
+    ``delete_on_exit``, the reconciler deletes it.
     """
 
     id: str
@@ -696,7 +695,8 @@ class Compute(Struct, frozen=True):
     generation: int
     spec: ComputeSpec
     status: ComputeStatus
-    lease: Lease
+    leases: tuple[Lease, ...]
+    holding: int
     created_at: datetime
     cost: float
     """What its machines have cost so far: up to now while it is live, and up to its ending
@@ -712,11 +712,9 @@ class Compute(Struct, frozen=True):
 
 
 class LeaseClaim(Struct, frozen=True):
-    """A bid for ownership: who is claiming, and for how long — ``ttl_seconds``, or until ``task`` settles."""
+    """How long a lease lasts from this claim, unless it is claimed again first. The holder is named by the route."""
 
-    owner: str
-    ttl_seconds: int | None = None
-    task: str | None = None
+    ttl_seconds: int
 
 
 class Node(Struct, frozen=True):
@@ -926,6 +924,10 @@ class TaskCreate(Struct, frozen=True):
     """The digest of this task's retry decision. Unset takes the compute's; ``None``
     turns retrying off for this task alone."""
     correlation_id: str | None = None
+    hold: bool = False
+    """Keep the compute, with no lease, until this task settles. For work left to the
+    daemon by a process that does not stay to renew a lease — ``sky run`` — and never
+    for a pool's: a script that died must not leave its tasks keeping its machines."""
 
 
 class Task(Struct, frozen=True):
@@ -957,6 +959,8 @@ class Task(Struct, frozen=True):
     """The run each attempt is allowed, settled at admission; ``None`` is no limit."""
     result_sha256: str | None = None
     finished_at: datetime | None = None
+    hold: bool = False
+    """Whether it keeps its compute until it settles."""
 
 
 class ExecutionCreate(Struct, frozen=True):

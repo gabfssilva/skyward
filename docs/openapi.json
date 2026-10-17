@@ -78,34 +78,14 @@
         "type": "object"
       },
       "ClaimLeaseResource": {
-        "description": "Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until.",
+        "description": "How long the lease lasts from this claim, unless it is claimed again first.",
         "properties": {
-          "owner": {
-            "type": "string"
-          },
-          "task": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "ttl_seconds": {
-            "oneOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "integer"
           }
         },
         "required": [
-          "owner"
+          "ttl_seconds"
         ],
         "title": "ClaimLeaseResource",
         "type": "object"
@@ -132,7 +112,7 @@
         "type": "object"
       },
       "ComputeAbandonedEvent": {
-        "description": "Nothing renewed the lease and ``delete_on_exit`` was set, so the compute is going away.",
+        "description": "Nothing holds the compute, nobody renewed a lease on it, and ``delete_on_exit`` was set, so it is going away.",
         "properties": {
           "compute": {
             "type": "string"
@@ -283,7 +263,6 @@
               "not_found",
               "revision_conflict",
               "idempotency_conflict",
-              "lease_held",
               "name_taken",
               "compute_not_connected",
               "compute_not_accepting",
@@ -382,7 +361,6 @@
               "not_found",
               "revision_conflict",
               "idempotency_conflict",
-              "lease_held",
               "name_taken",
               "compute_not_connected",
               "compute_not_accepting",
@@ -466,11 +444,12 @@
         "type": "object"
       },
       "ComputeLeaseClaimedEvent": {
+        "description": "A process began holding the compute. Its renewals are not said again.",
         "properties": {
           "compute": {
             "type": "string"
           },
-          "owner": {
+          "holder": {
             "type": "string"
           },
           "type": {
@@ -480,15 +459,19 @@
         },
         "required": [
           "compute",
-          "owner",
+          "holder",
           "type"
         ],
         "title": "ComputeLeaseClaimedEvent",
         "type": "object"
       },
       "ComputeLeaseReleasedEvent": {
+        "description": "A process let go of the compute without asking for anything to be destroyed.",
         "properties": {
           "compute": {
+            "type": "string"
+          },
+          "holder": {
             "type": "string"
           },
           "type": {
@@ -498,6 +481,7 @@
         },
         "required": [
           "compute",
+          "holder",
           "type"
         ],
         "title": "ComputeLeaseReleasedEvent",
@@ -586,11 +570,17 @@
           "generation": {
             "type": "integer"
           },
+          "holding": {
+            "type": "integer"
+          },
           "id": {
             "type": "string"
           },
-          "lease": {
-            "$ref": "#/components/schemas/LeaseResource"
+          "leases": {
+            "items": {
+              "$ref": "#/components/schemas/LeaseResource"
+            },
+            "type": "array"
           },
           "name": {
             "oneOf": [
@@ -666,8 +656,9 @@
           "created_at",
           "ended",
           "generation",
+          "holding",
           "id",
-          "lease",
+          "leases",
           "name",
           "nodes",
           "offer",
@@ -995,6 +986,10 @@
           "function": {
             "type": "string"
           },
+          "hold": {
+            "default": false,
+            "type": "boolean"
+          },
           "queue_timeout_seconds": {
             "oneOf": [
               {
@@ -1203,7 +1198,6 @@
               "not_found",
               "revision_conflict",
               "idempotency_conflict",
-              "lease_held",
               "name_taken",
               "compute_not_connected",
               "compute_not_accepting",
@@ -1723,43 +1717,19 @@
         "type": "object"
       },
       "LeaseResource": {
-        "description": "Who owns the compute, and until when \u2014 ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary.",
+        "description": "One process holding the compute, and until when. Any number hold it at once; zero is legitimate and temporary.",
         "properties": {
           "expires_at": {
-            "oneOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "format": "date-time",
+            "type": "string"
           },
-          "owner": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "task": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "holder": {
+            "type": "string"
           }
         },
         "required": [
           "expires_at",
-          "owner"
+          "holder"
         ],
         "title": "LeaseResource",
         "type": "object"
@@ -3874,6 +3844,9 @@
           "generation": {
             "type": "integer"
           },
+          "hold": {
+            "type": "boolean"
+          },
           "id": {
             "type": "string"
           },
@@ -3953,6 +3926,7 @@
           "finished_at",
           "function",
           "generation",
+          "hold",
           "id",
           "queue_timeout_seconds",
           "rank",
@@ -4486,7 +4460,7 @@
     "/v1/computes": {
       "get": {
         "deprecated": false,
-        "description": "Every compute this daemon knows about, newest first, including the deleted ones \u2014 a compute's row outlives its machines. `live=true` lists only the computes that still owe something (`requested` through `deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what a compute looks like between the script that made it exiting and the next one attaching.",
+        "description": "Every compute this daemon knows about, newest first, including the deleted ones \u2014 a compute's row outlives its machines. `live=true` lists only the computes that still owe something (`requested` through `deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes with no live lease and no task holding them, which is what a compute looks like between the script that made it exiting and the next one attaching.",
         "operationId": "V1ComputesList",
         "parameters": [
           {
@@ -4570,12 +4544,12 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
-            "description": "`false` lists orphans \u2014 computes with no live owner.",
+            "description": "`false` lists orphans \u2014 computes nothing holds: no live lease, no holding task.",
             "in": "query",
             "name": "owned",
             "required": false,
             "schema": {
-              "description": "`false` lists orphans \u2014 computes with no live owner.",
+              "description": "`false` lists orphans \u2014 computes nothing holds: no live lease, no holding task.",
               "oneOf": [
                 {
                   "type": "boolean"
@@ -4610,12 +4584,12 @@
             "allowEmptyValue": false,
             "allowReserved": false,
             "deprecated": false,
-            "description": "Why the compute ended \u2014 `requested` or `abandoned`.",
+            "description": "Why the compute ended \u2014 `requested`, `abandoned` or `finished`.",
             "in": "query",
             "name": "cause",
             "required": false,
             "schema": {
-              "description": "Why the compute ended \u2014 `requested` or `abandoned`.",
+              "description": "Why the compute ended \u2014 `requested`, `abandoned` or `finished`.",
               "oneOf": [
                 {
                   "enum": [
@@ -4791,7 +4765,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -4914,7 +4888,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "412": {
             "content": {
@@ -5274,7 +5248,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5409,7 +5383,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5542,7 +5516,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5682,7 +5656,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5813,7 +5787,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5930,7 +5904,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -6273,7 +6247,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "412": {
             "content": {
@@ -6396,11 +6370,11 @@
         ]
       }
     },
-    "/v1/computes/{compute}/lease": {
+    "/v1/computes/{compute}/leases/{holder}": {
       "delete": {
         "deprecated": false,
-        "description": "Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",
-        "operationId": "V1ComputesLeaseReleaseLease",
+        "description": "Orderly detach: drops this holder's lease without touching `spec.desired` or anyone else's. Destroys nothing by itself; a compute nothing holds any more is left to reconciliation, as one whose leases ran out.",
+        "operationId": "V1ComputesLeasesHolderReleaseLease",
         "parameters": [
           {
             "deprecated": false,
@@ -6410,6 +6384,15 @@
             "required": true,
             "schema": {
               "description": "The compute's name or id.",
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "holder",
+            "required": true,
+            "schema": {
               "type": "string"
             }
           }
@@ -6468,15 +6451,15 @@
             "description": "No such resource \u2014 `not_found`"
           }
         },
-        "summary": "Release ownership",
+        "summary": "Let go of a compute",
         "tags": [
           "computes"
         ]
       },
       "put": {
         "deprecated": false,
-        "description": "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).\n\nClaiming requires the current lease to be expired or absent \u2014 it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.\n\nA claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease lasts until that task settles, with nothing renewing it \u2014 how an owner that leaves holds the compute for the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` is `true`, deletes the compute (`finished`).",
-        "operationId": "V1ComputesLeaseClaimLease",
+        "description": "A lease is one process's sign of life on a compute, named by the process: `holder` is any id it picked for itself and keeps for as long as it uses the compute. Any number of processes hold one compute at once, each under a lease of its own, and a claim is never refused for another's. The first claim is said on the stream (`compute.lease.claimed`); renewing within `ttl_seconds` is the same request again, and is not. Neither changes the compute's `revision`.\n\nA lease that runs out destroys nothing by itself. A compute is held by its live leases and by its tasks submitted with `hold` that have not settled. Once neither is left, a compute with `spec.delete_on_exit` is deleted by reconciliation \u2014 `finished` when tasks held it, `abandoned` otherwise \u2014 and one without it sits unheld until something attaches.",
+        "operationId": "V1ComputesLeasesHolderClaimLease",
         "parameters": [
           {
             "deprecated": false,
@@ -6486,6 +6469,15 @@
             "required": true,
             "schema": {
               "description": "The compute's name or id.",
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "holder",
+            "required": true,
+            "schema": {
               "type": "string"
             }
           }
@@ -6559,19 +6551,9 @@
               }
             },
             "description": "No such resource \u2014 `not_found`"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
-        "summary": "Claim or renew ownership",
+        "summary": "Hold a compute, or renew the hold",
         "tags": [
           "computes"
         ]
@@ -7151,7 +7133,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Drain and replace a node",
@@ -7372,7 +7354,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -7565,7 +7547,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -9851,7 +9833,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -10119,7 +10101,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -10363,7 +10345,7 @@
       },
       "post": {
         "deprecated": false,
-        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions. On a compute with no `ready` node yet it is for the ranks the compute opens with (`spec.nodes.initial`), each waiting for its machine.\n\nThe arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead \u2014 the values in JSON \u2014 and the daemon encodes them here.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
+        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions. On a compute with no `ready` node yet it is for the ranks the compute opens with (`spec.nodes.initial`), each waiting for its machine.\n\nThe arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead \u2014 the values in JSON \u2014 and the daemon encodes them here.\n\n`hold: true` keeps the compute, with no lease, until the task settles: work left to the daemon by a process that does not stay to renew a lease, as `sky run` leaves its run. A compute with `spec.delete_on_exit` is deleted (`finished`) once its holding tasks have settled and no lease is left on it.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
         "operationId": "V1TasksSubmit",
         "parameters": [
           {
@@ -10464,7 +10446,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -10576,7 +10558,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Cancel a task",
@@ -10850,7 +10832,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Create an execution (retry)",
@@ -11049,7 +11031,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Download the result",

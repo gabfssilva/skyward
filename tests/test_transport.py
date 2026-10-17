@@ -400,10 +400,12 @@ def describe_following_the_event_stream() -> None:
 def describe_the_lease_of_a_pool() -> None:
     def it_is_renewed_and_released_over_the_control_connections(monkeypatch: pytest.MonkeyPatch) -> None:
         ordinary, control = _held(monkeypatch, seconds=0.8)
+        claims = [path for method, path in control if method == "PUT"]
 
-        assert not [call for call in ordinary if call[1].endswith("/lease")], "a lease request went over the ordinary connections"
-        assert control.count(("PUT", "/v1/computes/c1/lease")) >= 2, "the claim and at least one renewal must go over the control connections"
-        assert control[-1] == ("DELETE", "/v1/computes/c1/lease"), "the release must go over the control connections"
+        assert not [call for call in ordinary if "/leases/" in call[1]], "a lease request went over the ordinary connections"
+        assert len(claims) >= 2, "the claim and at least one renewal must go over the control connections"
+        assert len(set(claims)) == 1 and claims[0].startswith("/v1/computes/c1/leases/sdk_"), "one holder, renewing its own lease"
+        assert control[-1] == ("DELETE", claims[0]), "the release must go over the control connections"
 
     def it_goes_on_renewing_after_a_renewal_found_no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
         claim = sky.Compute._claim
@@ -420,11 +422,42 @@ def describe_the_lease_of_a_pool() -> None:
 
         _, control = _held(monkeypatch, seconds=1.2)
 
-        assert control.count(("PUT", "/v1/computes/c1/lease")) >= 3, "a daemon away for longer than a request's patience must not end the renewals"
+        assert len([method for method, _ in control if method == "PUT"]) >= 3, "a daemon away for longer than a request's patience must not end the renewals"
 
 
-def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Hold an attached pool for ``seconds``, renewing every third of a second; the calls on the ordinary and the control connections."""
+def describe_leaving_a_pool_that_deletes_on_exit() -> None:
+    def held_by_nothing_else_it_deletes_the_compute(monkeypatch: pytest.MonkeyPatch) -> None:
+        ordinary, _ = _held(monkeypatch, seconds=0, delete_on_exit=True)
+
+        assert ("DELETE", "/v1/computes/c1") in ordinary
+
+    def beside_another_process_holding_it_it_leaves_the_compute_up(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        ordinary, control = _held(monkeypatch, seconds=0, delete_on_exit=True, holders=("sdk_other",))
+
+        assert ("DELETE", "/v1/computes/c1") not in ordinary, "the other process's machines are not this pool's to take"
+        assert control[-1][0] == "DELETE", "its own lease is let go of all the same"
+        assert "still held by sdk_other" in capsys.readouterr().err
+
+    def beside_a_task_holding_it_it_leaves_the_compute_up(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        ordinary, _ = _held(monkeypatch, seconds=0, delete_on_exit=True, holding=2)
+
+        assert ("DELETE", "/v1/computes/c1") not in ordinary
+        assert "still held by 2 tasks" in capsys.readouterr().err
+
+
+def _held(
+    monkeypatch: pytest.MonkeyPatch,
+    seconds: float,
+    *,
+    delete_on_exit: bool = False,
+    holders: Sequence[str] = (),
+    holding: int = 0,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Hold an attached pool for ``seconds``, renewing every third of a second; the calls on the ordinary and the control connections.
+
+    ``holders`` are the other processes holding the compute, beside the pool's own lease, and ``holding`` the tasks that
+    hold it. A delete moves the compute to ``deleted`` on the next read, which is what the pool waits for.
+    """
     ordinary: list[tuple[str, str]] = []
     control: list[tuple[str, str]] = []
     resource = ComputeResource(
@@ -437,7 +470,8 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
         spec=ComputeSpec(specs=(), nodes=NodeBounds(initial=1)),
         provider=None,
         offer=None,
-        lease=LeaseResource(owner=None, expires_at=None),
+        leases=tuple(LeaseResource(holder=holder, expires_at=datetime.now(UTC)) for holder in holders),
+        holding=holding,
         cost=0.0,
         rate=0.0,
         tasks=TaskCounts(queued=0, running=0, succeeded=0, failed=0, cancelled=0, timed_out=0, indeterminate=0),
@@ -455,6 +489,9 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
                 return httpx.Response(200, text="")
             case "/v1/events":
                 return httpx.Response(200, text=f"id: 1\nevent: {MOVES[0]}\ndata: {{}}\n\n")
+            case "/v1/computes/c1" if ("DELETE", "/v1/computes/c1") in ordinary:
+                gone = msgspec.structs.replace(resource, status=ComputeStatus(state="deleted", observed_generation=1, last_error=None))
+                return httpx.Response(200, content=msgspec.json.encode(gone))
             case "/v1/computes/c1":
                 return httpx.Response(200, content=msgspec.json.encode(resource))
             case _:
@@ -462,7 +499,7 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
 
     def lease(request: httpx.Request) -> httpx.Response:
         control.append((request.method, request.url.path))
-        held = LeaseResource(owner=None, expires_at=None)
+        held = LeaseResource(holder=request.url.path.rsplit("/", 1)[-1], expires_at=datetime.now(UTC))
         return httpx.Response(204) if request.method == "DELETE" else httpx.Response(200, content=msgspec.json.encode(held))
 
     async def fake_connect(url: str | None, database: Path | None, *, strict: bool) -> Client:
@@ -473,7 +510,7 @@ def _held(monkeypatch: pytest.MonkeyPatch, seconds: float) -> tuple[list[tuple[s
     monkeypatch.setattr("skyward.core.compute.connect", fake_connect)
     monkeypatch.setattr("skyward.core.compute.LEASE_SECONDS", 1)
 
-    with sky.Compute.attached("c1", console=False):
+    with sky.Compute.attached("c1", console=False, delete_on_exit=delete_on_exit):
         time.sleep(seconds)
 
     return ordinary, control

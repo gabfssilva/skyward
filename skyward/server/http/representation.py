@@ -42,7 +42,8 @@ def compute(reading: ComputeReading) -> v1.ComputeResource:
         spec=recast(compute.spec, v1.ComputeSpec),
         provider=v1.ProviderSummary(id=offer.provider_id, name=offer.provider_name, kind=offer.kind) if offer else None,
         offer=recast(offer, v1.OfferResource) if offer else None,
-        lease=v1.LeaseResource(owner=compute.lease.owner, expires_at=compute.lease.expires_at, task=compute.lease.task),
+        leases=tuple(v1.LeaseResource(holder=lease.holder, expires_at=lease.expires_at) for lease in compute.leases),
+        holding=compute.holding,
         cost=compute.cost,
         rate=reading.rate,
         tasks=_counts(compute.tasks, reading),
@@ -113,6 +114,7 @@ def task(reading: TaskReading) -> v1.TaskResource:
         queue_timeout_seconds=task.queue_timeout_seconds,
         run_timeout_seconds=task.run_timeout_seconds,
         result_sha256=task.result_sha256,
+        hold=task.hold,
     )
 
 

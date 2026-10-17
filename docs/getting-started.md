@@ -261,7 +261,7 @@ with sky.Compute.attached("training", url="http://127.0.0.1:17590") as compute:
     evaluate() >> compute
 ```
 
-The SDK claims and renews a lease while it owns the Compute. `Compute.attached()` does not delete on exit by default.
+The SDK claims and renews a lease while it uses the Compute, beside any other process doing the same. `Compute.attached()` does not delete on exit by default, and a pool that does leaves the Compute up while something else still holds it.
 
 ## Local testing
 

@@ -90,9 +90,13 @@ class ComputeRow(Table, tablename="computes"):
 
     ``deletion_cause`` and ``deleted_at`` are how the compute ended. The cause is
     written with the intent to delete, by whoever had it — a client, or the
-    reconciler letting go of a lease nobody renews or a task held until it settled —
-    and the moment by the move
-    into ``deleted``, once, the way a node's ``terminated_at`` is.
+    reconciler letting go of a compute nothing holds any more — and the moment by
+    the move into ``deleted``, once, the way a node's ``terminated_at`` is.
+
+    What holds it is not here: its leases are rows of their own, one per process,
+    renewed without touching this one, and its holding tasks are task rows. A file
+    from before keeps ``lease_owner``, ``lease_expires_at`` and ``lease_task``, as
+    nullable columns nothing reads or writes.
     """
 
     id = Varchar(primary_key=True)
@@ -118,11 +122,23 @@ class ComputeRow(Table, tablename="computes"):
     deletion_cause = Varchar(null=True, default=None)
     deleted_at = Timestamptz(null=True, default=None)
 
-    lease_owner = Varchar(null=True, default=None)
-    lease_expires_at = Timestamptz(null=True, default=None)
-    lease_task = Varchar(null=True, default=None)
-
     created_at = Timestamptz()
+
+
+class LeaseRow(Table, tablename="leases"):
+    """One process holding one compute, until ``expires_at`` unless it renews.
+
+    A compute has any number of these, one per holder, so ``id`` is the pair —
+    ``{compute_id}:{holder}`` — and a renewal is the same row written again. They are
+    apart from the compute's row because a renewal is not a change to the compute: in
+    its row, every holder's heartbeat would move the revision a conditional write was
+    read at.
+    """
+
+    id = Varchar(primary_key=True)
+    compute_id = Varchar(index=True)
+    holder = Varchar()
+    expires_at = Timestamptz()
 
 
 class GenerationRow(Table, tablename="generations"):
@@ -261,6 +277,8 @@ class TaskRow(Table, tablename="tasks"):
     """Seconds each attempt may run once started, settled at admission; null is no limit."""
     result_sha256 = Varchar(null=True, default=None)
     finished_at = Timestamptz(null=True, default=None)
+    hold = Boolean(default=False)
+    """Whether the task keeps its compute, with no lease, until it settles."""
 
 
 class ExecutionRow(Table, tablename="executions"):
@@ -367,6 +385,7 @@ TABLES = (
     ProviderRow,
     OfferRow,
     ComputeRow,
+    LeaseRow,
     GenerationRow,
     NodeRow,
     BlobRow,

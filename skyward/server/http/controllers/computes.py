@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from litestar import Controller, Response, delete, get, patch, post, put
 from litestar.di import Provide
-from litestar.exceptions import ValidationException
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 
@@ -15,7 +14,6 @@ from skyward.server.http.exceptions import failures
 from skyward.server.http.headers import etag, revision_of
 from skyward.server.http.include import compute_blocks
 from skyward.server.http.representation import recast
-from skyward.shared.errors import NotFoundError
 from skyward.shared.schemas import ComputeCreate, ComputeSpecPatch, GenerationCreate, LeaseClaim
 
 
@@ -29,8 +27,8 @@ class ComputeController(Controller):
         description=(
             "Every compute this daemon knows about, newest first, including the deleted ones — a compute's row "
             "outlives its machines. `live=true` lists only the computes that still owe something (`requested` through "
-            "`deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes no live "
-            "process is holding a lease on, which is what a compute looks like between the script that made it "
+            "`deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes with no live "
+            "lease and no task holding them, which is what a compute looks like between the script that made it "
             "exiting and the next one attaching."
         ),
         responses=failures(404),
@@ -42,9 +40,9 @@ class ComputeController(Controller):
         cursor: str | None = None,
         limit: int = Parameter(default=50, ge=1),
         compute_state: v1.ComputeState | None = Parameter(query="state", default=None),
-        owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes with no live owner."),
+        owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes nothing holds: no live lease, no holding task."),
         live: bool | None = Parameter(default=None, description="`true` lists what is still running, `false` what is finished."),
-        cause: v1.DeletionCause | None = Parameter(default=None, description="Why the compute ended — `requested` or `abandoned`."),
+        cause: v1.DeletionCause | None = Parameter(default=None, description="Why the compute ended — `requested`, `abandoned` or `finished`."),
     ) -> v1.Page[v1.ComputeResource]:
         page = await reader.computes(cursor, limit, compute_state, owned, live, cause, blocks)
         return v1.Page(items=tuple(representation.compute(each) for each in page.items), next_cursor=page.next_cursor, total=page.total)
@@ -191,34 +189,34 @@ class ComputeController(Controller):
         return recast(generation, v1.GenerationResource)
 
     @put(
-        "/{compute:str}/lease",
-        summary="Claim or renew ownership",
+        "/{compute:str}/leases/{holder:str}",
+        summary="Hold a compute, or renew the hold",
         description=(
-            "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, "
-            "script killed).\n\n"
-            "Claiming requires the current lease to be expired or absent — it is a CAS. Renewing requires being the "
-            "current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, "
-            "reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.\n\n"
-            "A claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease "
-            "lasts until that task settles, with nothing renewing it — how an owner that leaves holds the compute for "
-            "the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` "
-            "is `true`, deletes the compute (`finished`)."
+            "A lease is one process's sign of life on a compute, named by the process: `holder` is any id it picked "
+            "for itself and keeps for as long as it uses the compute. Any number of processes hold one compute at "
+            "once, each under a lease of its own, and a claim is never refused for another's. The first claim is said "
+            "on the stream (`compute.lease.claimed`); renewing within `ttl_seconds` is the same request again, and is "
+            "not. Neither changes the compute's `revision`.\n\n"
+            "A lease that runs out destroys nothing by itself. A compute is held by its live leases and by its tasks "
+            "submitted with `hold` that have not settled. Once neither is left, a compute with `spec.delete_on_exit` "
+            "is deleted by reconciliation — `finished` when tasks held it, `abandoned` otherwise — and one without it "
+            "sits unheld until something attaches."
         ),
-        responses=failures(404, 409),
-    )
-    async def claim_lease(self, compute_id: str, data: v1.ClaimLeaseResource, computes: ports.Computes, tasks: ports.Tasks) -> v1.LeaseResource:
-        if (data.ttl_seconds is None) == (data.task is None):
-            raise ValidationException("a lease lasts `ttl_seconds`, or until `task` settles: give exactly one")
-        if data.task is not None and (await tasks.get(data.task)).compute_id != await computes.identify(compute_id):
-            raise NotFoundError(f"compute {compute_id} has no task {data.task}")
-        return recast(await computes.claim_lease(compute_id, recast(data, LeaseClaim)), v1.LeaseResource)
-
-    @delete(
-        "/{compute:str}/lease",
-        status_code=204,
-        summary="Release ownership",
-        description="Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",
         responses=failures(404),
     )
-    async def release_lease(self, compute_id: str, computes: ports.Computes) -> None:
-        await computes.release_lease(compute_id)
+    async def claim_lease(self, compute_id: str, holder: str, data: v1.ClaimLeaseResource, computes: ports.Computes) -> v1.LeaseResource:
+        return recast(await computes.claim_lease(compute_id, holder, recast(data, LeaseClaim)), v1.LeaseResource)
+
+    @delete(
+        "/{compute:str}/leases/{holder:str}",
+        status_code=204,
+        summary="Let go of a compute",
+        description=(
+            "Orderly detach: drops this holder's lease without touching `spec.desired` or anyone else's. Destroys "
+            "nothing by itself; a compute nothing holds any more is left to reconciliation, as one whose leases ran out."
+        ),
+        responses=failures(404),
+    )
+    async def release_lease(self, compute_id: str, holder: str, computes: ports.Computes, wake: Wakeup) -> None:
+        await computes.release_lease(compute_id, holder)
+        wake("compute.changed", compute_id=await computes.identify(compute_id))

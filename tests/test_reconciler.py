@@ -23,7 +23,7 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
-from skyward.server.persistence.tables import ComputeRow, EventRow
+from skyward.server.persistence.tables import ComputeRow, EventRow, LeaseRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import TaskFailedError
 from skyward.shared.events import ComputeDeleted
@@ -277,13 +277,13 @@ def describe_a_daemon_going_away() -> None:
 
 
 def describe_a_compute_whose_lease_ran_out() -> None:
-    async def while_the_daemon_was_down_its_owner_gets_the_minute_to_renew_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def while_the_daemon_was_down_its_holder_gets_the_minute_to_renew_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
         await _unrenewed(compute, seconds=300)
 
         await reconciler.compute(compute)
 
-        assert (await computes.get(compute)).spec.desired != "deleted", "an owner cannot renew through a daemon that was not there"
+        assert (await computes.get(compute)).spec.desired != "deleted", "a holder cannot renew through a daemon that was not there"
 
     async def once_this_daemon_has_been_up_that_long_nobody_is_coming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
@@ -293,33 +293,70 @@ def describe_a_compute_whose_lease_ran_out() -> None:
         await reconciler.compute(compute)
 
         assert (await computes.get(compute)).spec.desired == "deleted"
+        assert await _cause(compute) == "abandoned"
 
-
-def describe_a_compute_held_for_a_task() -> None:
-    async def nothing_renewing_it_takes_nothing_down_while_the_task_is_in_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def another_holders_lease_keeps_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
-        _, task = await _held(computes, reconciler, monkeypatch, compute)
+        await _unrenewed(compute, seconds=300)
+        await computes.claim_lease(compute, "sdk_alive", LeaseClaim(ttl_seconds=60))
+        monkeypatch.setattr(reconciler, "_up_since", now() - timedelta(seconds=ABANDON_SECONDS + 1))
+
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired != "deleted"
+
+
+def describe_a_compute_held_by_its_tasks() -> None:
+    async def nothing_renewing_it_takes_nothing_down_while_a_task_is_in_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        await _held(computes, reconciler, monkeypatch, compute)
 
         await reconciler.compute(compute)
 
         found = await computes.get(compute)
-        assert found.spec.desired != "deleted", "a lease held for a task is not one nobody renews"
-        assert found.lease.task == task.id
+        assert found.spec.desired != "deleted", "a task that holds the compute is not a lease nobody renews"
+        assert (found.holding, found.leases) == (1, ())
 
-    async def once_the_task_settles_the_lease_is_let_go_and_the_compute_deleted_as_finished(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def once_every_one_of_them_settles_it_is_deleted_as_finished(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        tasks, first = await _held(computes, reconciler, monkeypatch, compute)
+        second = await _submit(tasks, compute, hold=True)
+        await tasks.observe(first.executions[0].id, "succeeded")
+
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired != "deleted", "the second run still holds it"
+
+        await tasks.observe(second.executions[0].id, "failed")
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired == "deleted"
+        assert await _cause(compute) == "finished"
+
+    async def a_live_lease_keeps_it_after_they_settle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
         tasks, task = await _held(computes, reconciler, monkeypatch, compute)
+        await computes.claim_lease(compute, "sdk_1", LeaseClaim(ttl_seconds=60))
         await tasks.observe(task.executions[0].id, "succeeded")
 
         await reconciler.compute(compute)
 
-        found = await computes.get(compute)
-        cause = await ComputeRow.select(ComputeRow.deletion_cause).where(ComputeRow.id == compute).first()
-        assert found.spec.desired == "deleted"
-        assert found.lease.owner is None
-        assert cause == {"deletion_cause": "finished"}
+        assert (await computes.get(compute)).spec.desired != "deleted"
 
-    async def one_that_keeps_itself_is_only_let_go(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def a_task_that_does_not_hold_it_keeps_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pool's tasks: the script that submitted them died, and its machines must not bill for as long as they run."""
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        tasks = TaskStore(computes, NodeStore(), BlobStore(), EventStore())
+        await _submit(tasks, compute)
+        await _unrenewed(compute, seconds=300)
+        monkeypatch.setattr(reconciler, "_up_since", now() - timedelta(seconds=ABANDON_SECONDS + 1))
+
+        await reconciler.compute(compute)
+
+        assert (await computes.get(compute)).spec.desired == "deleted"
+        assert await _cause(compute) == "abandoned"
+
+    async def one_that_keeps_itself_is_left_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         computes, _, _, reconciler = await _reconciler(tmp_path, monkeypatch)
         kept, _ = await computes.create(ComputeCreate(spec=msgspec.structs.replace(SPEC, delete_on_exit=False)), idempotency_key="kept")
         tasks, task = await _held(computes, reconciler, monkeypatch, kept.id)
@@ -329,28 +366,35 @@ def describe_a_compute_held_for_a_task() -> None:
 
         found = await computes.get(kept.id)
         assert found.spec.desired == "running"
-        assert found.lease.owner is None, "whatever the task came to, it no longer holds the compute"
+        assert found.holding == 0, "whatever the task came to, it no longer holds the compute"
 
 
 async def _held(computes: ComputeStore, reconciler: Reconciler, monkeypatch: pytest.MonkeyPatch, compute: str) -> tuple[TaskStore, Task]:
-    """A task queued on the compute and the lease held for it, as ``sky run`` leaves them, long past any grace a daemon gives."""
+    """A task queued on the compute holding it, as ``sky run`` leaves it, long past any grace a daemon gives."""
     tasks = TaskStore(computes, NodeStore(), BlobStore(), EventStore())
-    task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
-    await computes.claim_lease(compute, LeaseClaim(owner="run_1", task=task.id))
+    task = await _submit(tasks, compute, hold=True)
     await ComputeRow.update({ComputeRow.created_at: now() - timedelta(seconds=10 * ABANDON_SECONDS)}).where(ComputeRow.id == compute).run()
     monkeypatch.setattr(reconciler, "_up_since", now() - timedelta(seconds=10 * ABANDON_SECONDS))
     return tasks, task
 
 
+async def _submit(tasks: TaskStore, compute: str, *, hold: bool = False) -> Task:
+    task, _ = await tasks.submit(
+        TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args", hold=hold),
+        idempotency_key=uuid.uuid4().hex,
+    )
+    return task
+
+
 async def _unrenewed(compute: str, seconds: float) -> None:
-    """Make the compute older than the newborn grace, with a lease its owner last renewed ``seconds`` ago."""
-    await ComputeRow.update(
-        {
-            ComputeRow.created_at: now() - timedelta(seconds=seconds + ABANDON_SECONDS),
-            ComputeRow.lease_owner: "sdk_gone",
-            ComputeRow.lease_expires_at: now() - timedelta(seconds=seconds),
-        }
-    ).where(ComputeRow.id == compute).run()
+    """Make the compute older than the newborn grace, with a lease its holder last renewed ``seconds`` ago."""
+    await ComputeRow.update({ComputeRow.created_at: now() - timedelta(seconds=seconds + ABANDON_SECONDS)}).where(ComputeRow.id == compute).run()
+    await LeaseRow(id=f"{compute}:sdk_gone", compute_id=compute, holder="sdk_gone", expires_at=now() - timedelta(seconds=seconds)).save().run()
+
+
+async def _cause(compute: str) -> str | None:
+    row = await ComputeRow.select(ComputeRow.deletion_cause).where(ComputeRow.id == compute).first()
+    return None if row is None else row["deletion_cause"]
 
 
 async def _reconciler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wake: Wakeup | None = None) -> tuple[ComputeStore, str, CountingNodes, Reconciler]:

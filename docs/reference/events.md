@@ -70,9 +70,9 @@ Every change of a compute's `status.state` is one of the events below — the da
 | `compute.degraded` | `degraded` | A reconcile pass broke on a compute on its way up; carries `error` and `code`. Once per transition, not once per failing tick |
 | `compute.generation.created` | — | A new definition was frozen: `number` |
 | `compute.generation.applied` | — | The machines reflect that definition: `number` |
-| `compute.lease.claimed` | — | A process took ownership: `owner`. Renewals are not said |
-| `compute.lease.released` | — | The owner let go without asking for anything to be destroyed |
-| `compute.abandoned` | — | Nothing has held the compute and `delete_on_exit` was set, so it is being deleted |
+| `compute.lease.claimed` | — | A process began holding the compute: `holder`. Any number hold one at once; renewals are not said |
+| `compute.lease.released` | — | A process let go without asking for anything to be destroyed: `holder` |
+| `compute.abandoned` | — | Nothing holds the compute, no lease on it was renewed, and `delete_on_exit` was set, so it is being deleted |
 | `compute.deleting` | `deleting` | Destruction was asked for: `nodes_ready`, `nodes_total` |
 | `compute.deletion_failed` | — | A pass broke on a compute on its way out; carries `error` and `code` (`release_pending` when the provider would not release the binding). Once per distinct failure, not once per failing tick |
 | `compute.strays_terminated` | — | Machines under the compute that no row owns were terminated: `machines` |

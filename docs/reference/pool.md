@@ -24,7 +24,7 @@ with sky.Compute(
 
 ## Lifecycle
 
-Entering a `with Compute(...)` block registers provider accounts, creates or attaches the compute resource, waits for readiness, and starts the client-side lease. Leaving the block deletes the compute by default. Set `delete_on_exit=False` to keep it alive, then reconnect with `Compute.attached(ref)`.
+Entering a `with Compute(...)` block registers provider accounts, creates or attaches the compute resource, waits for readiness, and starts the client-side lease. Leaving the block deletes the compute by default, unless another process's lease or a task submitted to hold it is still on it. Set `delete_on_exit=False` to keep it alive, then reconnect with `Compute.attached(ref)`.
 
 With no `url`, the client uses the daemon at `http://127.0.0.1:17590` and starts one there if none is running; that daemon stays up after the block ends. With `url` or `SKYWARD_URL`, it uses the daemon it was given and never starts one. With `database=`, it runs the control plane in this process over that file. Every path uses the same control-plane API.
 

@@ -77,6 +77,7 @@ export function Run({ lineage, version, computeId, node }: { lineage?: string; v
         dispatch,
         rank: dispatch === 'one' && at !== ANY ? Number(at) : null,
         call: called(args),
+        hold: false,
       })
       close()
       void reloadCompute(compute)

@@ -200,9 +200,9 @@ def restart(
 
     The machines outlive it. A compute belongs to the daemon rather than to the
     process, so what a restart costs is a gap in reconciliation and every stream
-    that was open — clients come back on their own cursor. A compute whose client
-    is renewing its lease is not at risk from a restart that takes a second; one
-    nobody has held for a minute was already on its way out.
+    that was open — clients come back on their own cursor. A compute whose clients
+    are renewing their leases, or whose tasks hold it, is not at risk from a restart
+    that takes a second; one nothing has held for a minute was already on its way out.
 
     Nothing to stop is not a failure here: a daemon that died on its own is
     restarted by the same command that restarts a live one.

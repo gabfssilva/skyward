@@ -101,20 +101,21 @@ class GenerationApplied(Struct, frozen=True, tag_field="type", tag="compute.gene
 
 
 class LeaseClaimed(Struct, frozen=True, tag_field="type", tag="compute.lease.claimed"):
-    """A process took ownership. A renewal by the same owner is not said again."""
+    """A process began holding the compute. Its renewals are not said again."""
 
     compute: str
-    owner: str
+    holder: str
 
 
 class LeaseReleased(Struct, frozen=True, tag_field="type", tag="compute.lease.released"):
-    """The owner let go without asking for anything to be destroyed."""
+    """A process let go of the compute without asking for anything to be destroyed."""
 
     compute: str
+    holder: str
 
 
 class ComputeAbandoned(Struct, frozen=True, tag_field="type", tag="compute.abandoned"):
-    """Nothing renewed the lease and ``delete_on_exit`` was set, so it is going away.
+    """Nothing holds the compute, nobody renewed a lease on it, and ``delete_on_exit`` was set, so it is going away.
 
     Its own fact rather than a compute state, because a lapsed lease is not a
     failure — it is what a client exiting looks like from in here.

@@ -138,11 +138,11 @@ export function describe(payload: EventPayload): string {
     case 'compute.generation.applied':
       return `generation ${payload.number} applied`
     case 'compute.lease.claimed':
-      return `lease claimed by ${payload.owner}`
+      return `lease claimed by ${payload.holder}`
     case 'compute.lease.released':
-      return 'lease released'
+      return `lease released by ${payload.holder}`
     case 'compute.abandoned':
-      return 'abandoned — nobody is renewing the lease'
+      return 'abandoned — nobody is renewing a lease on it'
     case 'compute.deleting':
       return `deleting, ${payload.nodes_total} nodes to release`
     case 'compute.deletion_failed':

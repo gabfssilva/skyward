@@ -91,6 +91,7 @@ class _Counting:
             queue_timeout_seconds=None,
             run_timeout_seconds=None,
             result_sha256=None,
+            hold=False,
         )
 
 

@@ -63,7 +63,7 @@ export interface paths {
         };
         /**
          * List computes
-         * @description Every compute this daemon knows about, newest first, including the deleted ones — a compute's row outlives its machines. `live=true` lists only the computes that still owe something (`requested` through `deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what a compute looks like between the script that made it exiting and the next one attaching.
+         * @description Every compute this daemon knows about, newest first, including the deleted ones — a compute's row outlives its machines. `live=true` lists only the computes that still owe something (`requested` through `deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes with no live lease and no task holding them, which is what a compute looks like between the script that made it exiting and the next one attaching.
          */
         get: operations["V1ComputesList"];
         put?: never;
@@ -284,7 +284,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/computes/{compute}/lease": {
+    "/v1/computes/{compute}/leases/{holder}": {
         parameters: {
             query?: never;
             header?: never;
@@ -293,20 +293,18 @@ export interface paths {
         };
         get?: never;
         /**
-         * Claim or renew ownership
-         * @description A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).
+         * Hold a compute, or renew the hold
+         * @description A lease is one process's sign of life on a compute, named by the process: `holder` is any id it picked for itself and keeps for as long as it uses the compute. Any number of processes hold one compute at once, each under a lease of its own, and a claim is never refused for another's. The first claim is said on the stream (`compute.lease.claimed`); renewing within `ttl_seconds` is the same request again, and is not. Neither changes the compute's `revision`.
          *
-         *     Claiming requires the current lease to be expired or absent — it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.
-         *
-         *     A claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease lasts until that task settles, with nothing renewing it — how an owner that leaves holds the compute for the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` is `true`, deletes the compute (`finished`).
+         *     A lease that runs out destroys nothing by itself. A compute is held by its live leases and by its tasks submitted with `hold` that have not settled. Once neither is left, a compute with `spec.delete_on_exit` is deleted by reconciliation — `finished` when tasks held it, `abandoned` otherwise — and one without it sits unheld until something attaches.
          */
-        put: operations["V1ComputesLeaseClaimLease"];
+        put: operations["V1ComputesLeasesHolderClaimLease"];
         post?: never;
         /**
-         * Release ownership
-         * @description Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.
+         * Let go of a compute
+         * @description Orderly detach: drops this holder's lease without touching `spec.desired` or anyone else's. Destroys nothing by itself; a compute nothing holds any more is left to reconciliation, as one whose leases ran out.
          */
-        delete: operations["V1ComputesLeaseReleaseLease"];
+        delete: operations["V1ComputesLeasesHolderReleaseLease"];
         options?: never;
         head?: never;
         patch?: never;
@@ -861,6 +859,8 @@ export interface paths {
          *
          *     The arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead — the values in JSON — and the daemon encodes them here.
          *
+         *     `hold: true` keeps the compute, with no lease, until the task settles: work left to the daemon by a process that does not stay to renew a lease, as `sky run` leaves its run. A compute with `spec.delete_on_exit` is deleted (`finished`) once its holding tasks have settled and no lease is left on it.
+         *
          *     The task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.
          */
         post: operations["V1TasksSubmit"];
@@ -1023,12 +1023,10 @@ export interface components {
         };
         /**
          * ClaimLeaseResource
-         * @description Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until.
+         * @description How long the lease lasts from this claim, unless it is claimed again first.
          */
         ClaimLeaseResource: {
-            owner: string;
-            task?: string | null;
-            ttl_seconds?: number | null;
+            ttl_seconds: number;
         };
         /**
          * CommandResultResource
@@ -1041,7 +1039,7 @@ export interface components {
         };
         /**
          * ComputeAbandonedEvent
-         * @description Nothing renewed the lease and ``delete_on_exit`` was set, so the compute is going away.
+         * @description Nothing holds the compute, nobody renewed a lease on it, and ``delete_on_exit`` was set, so it is going away.
          */
         ComputeAbandonedEvent: {
             compute: string;
@@ -1117,7 +1115,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1162,7 +1160,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1197,19 +1195,26 @@ export interface components {
              */
             type: "compute.generation.created";
         };
-        /** ComputeLeaseClaimedEvent */
+        /**
+         * ComputeLeaseClaimedEvent
+         * @description A process began holding the compute. Its renewals are not said again.
+         */
         ComputeLeaseClaimedEvent: {
             compute: string;
-            owner: string;
+            holder: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             type: "compute.lease.claimed";
         };
-        /** ComputeLeaseReleasedEvent */
+        /**
+         * ComputeLeaseReleasedEvent
+         * @description A process let go of the compute without asking for anything to be destroyed.
+         */
         ComputeLeaseReleasedEvent: {
             compute: string;
+            holder: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1260,8 +1265,9 @@ export interface components {
             created_at: string;
             ended: components["schemas"]["Ending"] | null;
             generation: number;
+            holding: number;
             id: string;
-            lease: components["schemas"]["LeaseResource"];
+            leases: components["schemas"]["LeaseResource"][];
             name: string | null;
             nodes: components["schemas"]["NodeResource"][];
             offer: components["schemas"]["OfferResource"] | null;
@@ -1379,6 +1385,8 @@ export interface components {
             /** @enum {string} */
             dispatch: "one" | "all" | "stream";
             function: string;
+            /** @default false */
+            hold: boolean;
             queue_timeout_seconds?: number | null;
             rank?: number | null;
             retry?: string | null;
@@ -1438,7 +1446,7 @@ export interface components {
         /** Error */
         Error: {
             /** @enum {string} */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             details: {
                 [key: string]: unknown;
             } | null;
@@ -1553,12 +1561,12 @@ export interface components {
         };
         /**
          * LeaseResource
-         * @description Who owns the compute, and until when — ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary.
+         * @description One process holding the compute, and until when. Any number hold it at once; zero is legitimate and temporary.
          */
         LeaseResource: {
-            expires_at: string | null;
-            owner: string | null;
-            task?: string | null;
+            /** Format: date-time */
+            expires_at: string;
+            holder: string;
         };
         /** LivenessResource */
         LivenessResource: {
@@ -2106,6 +2114,7 @@ export interface components {
             finished_at: string | null;
             function: components["schemas"]["FunctionSummary"];
             generation: number;
+            hold: boolean;
             id: string;
             queue_timeout_seconds: number | null;
             rank: number | null;
@@ -2376,11 +2385,11 @@ export interface operations {
                 cursor?: string | null;
                 limit?: number;
                 state?: ("requested" | "provisioning" | "ready" | "degraded" | "deleting" | "deleted") | null;
-                /** @description `false` lists orphans — computes with no live owner. */
+                /** @description `false` lists orphans — computes nothing holds: no live lease, no holding task. */
                 owned?: boolean | null;
                 /** @description `true` lists what is still running, `false` what is finished. */
                 live?: boolean | null;
-                /** @description Why the compute ended — `requested` or `abandoned`. */
+                /** @description Why the compute ended — `requested`, `abandoned` or `finished`. */
                 cause?: ("requested" | "abandoned" | "finished") | null;
             };
             header?: never;
@@ -2472,7 +2481,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2590,7 +2599,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2733,7 +2742,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2805,7 +2814,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2877,7 +2886,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2949,7 +2958,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3019,7 +3028,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3087,7 +3096,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3266,7 +3275,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3343,13 +3352,14 @@ export interface operations {
             };
         };
     };
-    V1ComputesLeaseClaimLease: {
+    V1ComputesLeasesHolderClaimLease: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 /** @description The compute's name or id. */
                 compute: string;
+                holder: string;
             };
             cookie?: never;
         };
@@ -3392,24 +3402,16 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
         };
     };
-    V1ComputesLeaseReleaseLease: {
+    V1ComputesLeasesHolderReleaseLease: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 /** @description The compute's name or id. */
                 compute: string;
+                holder: string;
             };
             cookie?: never;
         };
@@ -3713,7 +3715,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3772,7 +3774,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3848,7 +3850,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4630,7 +4632,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4744,7 +4746,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4914,7 +4916,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5026,7 +5028,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5133,7 +5135,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5244,7 +5246,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
+            /** @description The write conflicts with what is already here — `idempotency_conflict`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged` */
             409: {
                 headers: {
                     [name: string]: unknown;

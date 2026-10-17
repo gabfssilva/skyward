@@ -80,8 +80,7 @@ stateDiagram-v2
 The pass performs these decisions:
 
 1. If the Compute is already deleted, it does nothing.
-2. If its lease is abandoned and `delete_on_exit=True`, it changes the desired state to deleted.
-   If its lease was held for a task that has settled, it releases the lease and, with `delete_on_exit=True`, changes the desired state to deleted.
+2. If nothing holds it — no live lease, no task submitted with `hold` that has not settled — past the newborn grace and `delete_on_exit=True`, it changes the desired state to deleted: `finished` when tasks held it, `abandoned` otherwise.
 3. It asks the provider adapter to resolve the machines behind existing node rows.
 4. It calculates the target count from bounds and outstanding work.
 5. It creates `requested` node rows for a deficit.
@@ -169,7 +168,7 @@ On a compute with a fixed `nodes` count, a refreshing node moves the compute to 
 
 ## Leases and abandoned resources
 
-A lease records which client process is actively using a Compute. The SDK claims it after creating or attaching and renews it in the background:
+A lease records one client process actively using a Compute, and a Compute has any number of them: `PUT /v1/computes/{id}/leases/{holder}` with `ttl_seconds`, under a holder id the process picked for itself. The SDK claims one after creating or attaching and renews it in the background; a claim is never refused for another holder's, and neither a claim nor a renewal moves the Compute's `revision`:
 
 ```python
 with sky.Compute(
@@ -180,9 +179,11 @@ with sky.Compute(
     train() >> compute
 ```
 
-Releasing the lease is a detach, not a delete. A process that stops renewing leaves the Compute ownerless. If its definition has `delete_on_exit=True`, the reconciler eventually marks it for deletion; if false, it remains available to `Compute.attached()`.
+Releasing a lease (`DELETE /v1/computes/{id}/leases/{holder}`) is a detach, not a delete. A process that stops renewing leaves its lease to run out. A pool leaving with `delete_on_exit=True` deletes the Compute itself only when no other lease and no holding task is on it.
 
-A lease can also be held for a task instead of renewed: `PUT /v1/computes/{id}/lease` with `task` in place of `ttl_seconds`. Nothing renews it and it never runs out; once the task settles the reconciler releases it and, with `delete_on_exit=True`, deletes the Compute with the cause `finished`. `sky run` leaves a Compute this way, so the command returns once its task is queued.
+A task holds the Compute too when it is submitted with `hold: true`: nothing renews anything, and the Compute is kept until the task settles. `sky run` leaves a Compute this way, so the command returns once its task is queued, and a second run of the same file queues its task beside the first's.
+
+Once nothing holds the Compute — every lease ran out or was released, and every holding task settled — a definition with `delete_on_exit=True` is marked for deletion by the reconciler, with the cause `finished` when tasks held it and `abandoned` when only leases did; if false, it remains available to `Compute.attached()`.
 
 ## Events and recovery
 

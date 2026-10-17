@@ -149,7 +149,7 @@ def describe_an_answer() -> None:
             brief = await answer(client, "get_compute", ref="whole")
             raw = await answer(client, "get_compute", ref="whole", raw=True)
 
-        bookkeeping = {"spec", "revision", "generation", "lease"}
+        bookkeeping = {"spec", "revision", "generation", "leases"}
         assert bookkeeping <= raw.keys()
         assert not bookkeeping & brief.keys()
         assert raw["spec"]["nodes"] == {"initial": 1, "min": None, "max": None}
@@ -455,9 +455,9 @@ async def ended(client: Client, compute: str) -> dict[str, Any] | None:
 
 
 async def released(client: Client, compute: str) -> dict[str, Any] | None:
-    """The compute whole, once the daemon has let go of the lease a run held for its task."""
+    """The compute whole, once no task of a run holds it any more."""
     found = await answer(client, "get_compute", ref=compute, raw=True)
-    return found if found["lease"]["owner"] is None else None
+    return found if found["holding"] == 0 else None
 
 
 async def state(client: Client, compute: str, *wanted: str) -> str | None:

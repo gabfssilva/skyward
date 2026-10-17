@@ -78,7 +78,6 @@ Every failure is the same JSON object, whatever produced it:
 | `not_found` | 404 | no | No such resource |
 | `revision_conflict` | 412 | yes | `If-Match` did not match the stored revision |
 | `idempotency_conflict` | 409 | no | Key reused with a different request |
-| `lease_held` | 409 | yes | Another process owns this compute |
 | `compute_not_accepting` | 422 | no | The compute is deleting or failed |
 | `compute_not_resizable` | 422 | no | The compute runs a collective, and its ranks are frozen |
 | `image_fixed` | 422 | no | The compute's image is not mutable, or the change is to a field a mutable image cannot change in place |

@@ -54,13 +54,13 @@ logger = logger.bind(component="reconciler")
 type Wake = Callable[..., None]
 
 ABANDON_SECONDS = 60.0
-"""How old a compute must be before having no owner means nobody is coming.
+"""How old a compute must be before nothing holding it means nobody is coming.
 
-A compute is claimed moments after it is created, but by a different request than
-the one that created it, and the tick can land in between. Younger than this and
-ownerless is a newborn; older, it is a script that was killed — and reconciling it
-forward would buy machines for a process that no longer exists, once per tick,
-forever. That is precisely the bug this exists to stop.
+A compute is held moments after it is created — leased, or given a task that holds
+it — but by a different request than the one that created it, and the tick can land
+in between. Younger than this and unheld is a newborn; older, it is a script that was
+killed — and reconciling it forward would buy machines for a process that no longer
+exists, once per tick, forever. That is precisely the bug this exists to stop.
 """
 
 STRIKES = 3
@@ -118,7 +118,7 @@ class Reconciler:
         self._idle: dict[str, float] = {}
         """When each node last had nothing to do. Absent means it is doing something."""
         self._up_since = now()
-        """When this daemon started watching leases. See :func:`abandoned`."""
+        """When this daemon started watching leases. See :func:`unheld`."""
 
     async def compute(self, compute_id: str) -> None:
         """One pass, and what a pass that broke does to the row.
@@ -202,19 +202,14 @@ class Reconciler:
 
         log = logger.bind(compute_id=compute.id)
 
-        if abandoned(compute, self._up_since) and compute.spec.delete_on_exit:
-            log.info("nobody has held the lease for {:.0f}s: deleting it", ABANDON_SECONDS)
-            await self._computes.apply(ComputeAbandoned(compute=compute.id))
-            await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
-            compute = await self._computes.get(compute.id)
-
-        if compute.lease.task is not None and (await self._tasks.get(compute.lease.task)).state not in ("queued", "running"):
-            if compute.spec.delete_on_exit and compute.spec.desired != "deleted":
-                log.info("task {} settled, and the lease it held said to delete the compute after it", compute.lease.task)
+        if compute.spec.delete_on_exit and unheld(compute, self._up_since):
+            if await self._computes.finished(compute.id):
+                log.info("the tasks that held it have settled, and nothing else holds it: deleting it")
                 await self._computes.delete(compute.id, compute.revision, f"finished:{compute.id}", "finished")
             else:
-                log.info("task {} settled: letting go of the lease it held", compute.lease.task)
-            await self._computes.release_lease(compute.id, task=compute.lease.task)
+                log.info("no lease on it is alive and no task holds it: deleting it")
+                await self._computes.apply(ComputeAbandoned(compute=compute.id))
+                await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
             compute = await self._computes.get(compute.id)
 
         compute, unlisted = await self._resolved(compute)
@@ -453,9 +448,9 @@ class Reconciler:
         The store's optimistic lock does not replace this one: it fences a single
         ``apply`` — one read, one decision, one write — and a pass is many writes,
         the node rows among them, which no compute revision covers. Nor could the
-        revision fence a whole pass: a lease renewal or a binding bumps it from
-        another task by design, and a pass that aborted on those would abort on
-        every pool with a live client.
+        revision fence a whole pass: a binding or a resize bumps it from another
+        task by design, and a pass that aborted on those would abort on every pool
+        that is being changed.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
 
@@ -466,35 +461,30 @@ def census(nodes: Sequence[Node]) -> str:
     return ", ".join(f"{count} {state}" for state, count in sorted(counted.items())) or "none"
 
 
-def abandoned(compute: Compute, up_since: datetime) -> bool:
-    """Whether nobody owns this compute and nobody is coming back for it.
+def unheld(compute: Compute, up_since: datetime) -> bool:
+    """Whether nothing holds this compute and nothing is coming back for it.
 
-    The lease is the only sign of life a client gives: it is claimed at birth and
-    renewed for as long as the process holding the SSH connections is alive. A
-    compute past the newborn grace with no live lease belongs to a process that is
-    gone — a ``Ctrl-C``, a crash, a laptop closed.
+    Two things hold a compute. A lease is a process's sign of life: claimed at birth
+    and renewed for as long as the process is alive, by as many processes as are using
+    it. A task submitted to hold it holds it until it settles, for work whose process
+    left — ``sky run`` — with nothing alive to renew a lease. A compute past the newborn
+    grace with neither belongs to processes that are gone — a ``Ctrl-C``, a crash, a
+    laptop closed — or to work that is done.
 
     Unless the daemon is what was gone. A lease that ran out while no daemon was
-    there to renew it says nothing about its owner, who has been knocking on a
+    there to renew it says nothing about its holder, who has been knocking on a
     closed port; so the grace counts from ``up_since``, when this daemon came up,
     as well as from the compute's birth — whichever is later. A restart that
     outlasts the lease does not tear down the computes it came back to.
 
     What follows is spelled out on the lease endpoint: ``delete_on_exit`` tears it
-    down, anything else sits ownerless until something attaches. Sitting ownerless
-    is not being ignored: the machines are still reconciled, because the compute a
-    shell created is never leased by anybody and would otherwise stop being brought
-    up sixty seconds into its own provisioning. A compute already being deleted is
-    never abandoned — teardown must finish no matter who asked.
-
-    A lease held for a task never runs out: the owner left the compute to that
-    task, and the pass lets go of it once the task settles.
+    down, anything else sits unheld until something attaches. Sitting unheld is not
+    being ignored: the machines are still reconciled, because the compute a shell
+    created is never leased by anybody and would otherwise stop being brought up
+    sixty seconds into its own provisioning. A compute already being deleted is never
+    unheld — teardown must finish no matter who asked.
     """
-    if compute.spec.desired == "deleted":
-        return False
-    if compute.lease.owner is not None and compute.lease.task is not None:
-        return False
-    if compute.lease.owner is not None and compute.lease.expires_at is not None and compute.lease.expires_at > now():
+    if compute.spec.desired == "deleted" or compute.leases or compute.holding:
         return False
     return now() - max(compute.created_at, up_since) > timedelta(seconds=ABANDON_SECONDS)
 

@@ -104,7 +104,7 @@ CONTROL_CONNECTIONS = 2
 A burst of submissions waits its turn behind :data:`SENDS` and every port
 forward holds a connection for its lifetime, so the shared connections can be
 taken for longer than a lease lives. A renewal that waits behind them is a
-compute the reconciler deletes as abandoned while its owner is busy using it.
+compute the reconciler deletes as abandoned while its holder is busy using it.
 """
 
 type Message = MutableMapping[str, Any]

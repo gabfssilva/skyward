@@ -78,12 +78,12 @@ DEFAULT_EXECUTOR = Executor()
 DEFAULT_OPTIONS = Options()
 INLINE = 256 * 1024
 LEASE_SECONDS = 60
-"""How long the compute stays owned after the last renewal.
+"""How long the compute stays held by this process after its last renewal.
 
 The claim is the client's heartbeat: while this process is alive the lease never
-lapses, and once it dies the reconciler is free to call the compute abandoned. Short
-enough that a killed script is noticed in a minute; long enough that no renewal ever
-races its own expiry.
+lapses, and once it dies the reconciler is free to find the compute held by nobody.
+Short enough that a killed script is noticed in a minute; long enough that no renewal
+ever races its own expiry.
 """
 MOVES: tuple[str, ...] = tuple(str(kind.__struct_config__.tag) for kind in lifecycle.COMPUTE)
 """The frames of the events that move a compute's state.
@@ -262,7 +262,7 @@ class Compute:
         self._leasing: Future[None] | None = None
         self._endings: Endings | None = None
         self._following: Future[None] | None = None
-        self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
+        self._holder = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
         self._active_token: Token[context.Pool | None] | None = None
         self._functions: dict[str, asyncio.Task[None]] = {}
@@ -652,18 +652,19 @@ class Compute:
         self._spec = msgspec.structs.replace(self._spec, volumes=tuple(refs))
 
     async def _claim(self) -> None:
-        """Own the compute, and say so out loud.
+        """Hold the compute, and say so out loud.
 
         The lease is the only thing standing between a killed script and machines
-        that bill forever: while this process renews it, the compute is somebody's;
-        the moment renewals stop, the reconciler is allowed to conclude nobody is
-        coming back and — with ``delete_on_exit`` — tear it down.
+        that bill forever: while this process renews it, the compute is held; the
+        moment renewals stop, and nothing else holds it, the reconciler is allowed to
+        conclude nobody is coming back and — with ``delete_on_exit`` — tear it down.
+        Other processes hold it beside this one, each under a lease of its own.
         """
         await self.client.call(
             "PUT",
-            f"/v1/computes/{self._id}/lease",
+            f"/v1/computes/{self._id}/leases/{self._holder}",
             LeaseResource,
-            body=msgspec.json.encode(LeaseClaim(owner=self._owner, ttl_seconds=LEASE_SECONDS)),
+            body=msgspec.json.encode(LeaseClaim(ttl_seconds=LEASE_SECONDS)),
             urgent=True,
         )
 
@@ -697,7 +698,7 @@ class Compute:
             self.loop.run(self._cancelled())
             self._client_stack.close()
             if self._spec.delete_on_exit and self._id:
-                self.loop.run(self._destroy())
+                self.loop.run(self._leave())
         finally:
             if self._leasing:
                 self._leasing.cancel()
@@ -707,7 +708,7 @@ class Compute:
                 self._following.cancel()
             try:
                 if self._id:
-                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease", urgent=True))
+                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/leases/{self._holder}", urgent=True))
             finally:
                 try:
                     self.loop.run(self.client.close())
@@ -715,6 +716,25 @@ class Compute:
                     self.loop.close()
                     self._loop, self._client, self._watching, self._leasing = None, None, None, None
                     self._endings, self._following = None, None
+
+    async def _leave(self) -> None:
+        """Delete the compute on the way out, unless something besides this pool holds it.
+
+        Another process's lease, or a task that holds the compute, is somebody the
+        delete would take the machines from. The compute is left to them, and to the
+        reconciler, which deletes it once nothing holds it any more. It is asked while
+        this pool's own lease is still on it, so that a compute this pool alone held is
+        deleted here — ``requested``, and at once — rather than found unheld by a pass
+        a moment later. A holder that arrives between the read and the delete loses
+        its machines: the window is one request wide.
+        """
+        current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
+        others = [lease.holder for lease in current.leases if lease.holder != self._holder]
+        if not others and not current.holding:
+            await self._destroy()
+            return
+        tasks = (f"{current.holding} task{'s' * (current.holding > 1)}",) if current.holding else ()
+        notice("INFO", f"compute {current.name or current.id} stays up: still held by {', '.join((*others, *tasks))}")
 
     async def _destroy(self) -> None:
         """Delete the compute, and wait until the provider says the machines are gone.

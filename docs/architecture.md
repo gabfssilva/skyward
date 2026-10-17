@@ -110,10 +110,10 @@ The SDK creates a Compute in the following order:
 2. The client registers the account in the selected daemon when the Compute needs it.
 3. User-code archives and external volume credentials are uploaded as blobs when required; secrets are not placed in the Compute spec.
 4. `POST /v1/computes` persists the desired definition.
-5. The SDK claims a lease and renews it while the process owns the Compute.
+5. The SDK claims a lease of its own and renews it while the process uses the Compute; other processes hold it beside it, each under theirs.
 6. The client follows recorded Compute events until the observed state is ready or terminal.
 7. Tasks are submitted after the Compute has ready nodes.
-8. On exit, `delete_on_exit=True` marks the Compute for deletion. Otherwise the SDK releases its lease and leaves the resource available for attachment.
+8. On exit, `delete_on_exit=True` marks the Compute for deletion, unless another process's lease or a task that holds it is still on it; then it is left to them, and the reconciler deletes it once nothing holds it. Either way the SDK releases its lease, and without `delete_on_exit` leaves the resource available for attachment.
 
 ```python
 with sky.Compute(

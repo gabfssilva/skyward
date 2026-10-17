@@ -196,8 +196,8 @@ def describe_applying_an_event_to_the_store() -> None:
         reads = 0
         original = computes._status
 
-        async def renewed_underneath(compute_id: str) -> dict[str, Any]:
-            """The row as apply reads it — and, the first time, a lease renewal landing right after."""
+        async def bound_underneath(compute_id: str) -> dict[str, Any]:
+            """The row as apply reads it — and, the first time, a binding landing right after."""
             nonlocal reads
             row = await original(compute_id)
             reads += 1
@@ -205,11 +205,11 @@ def describe_applying_an_event_to_the_store() -> None:
                 await ComputeRow.update({ComputeRow.revision: ComputeRow.revision + 1}).where(ComputeRow.id == compute_id).run()
             return row
 
-        monkeypatch.setattr(computes, "_status", renewed_underneath)
+        monkeypatch.setattr(computes, "_status", bound_underneath)
 
         assert await computes.apply(ready(compute=compute)) is True
 
-        assert reads == 2, "the first write lost to the renewal and the row was read again"
+        assert reads == 2, "the first write lost to the binding and the row was read again"
         assert (await computes.get(compute)).status.state == "ready"
         assert (await _recorded(compute)).count("compute.ready") == 1
 

@@ -8,9 +8,10 @@ Credentials are the exception, and only because they have to be: the daemon
 never reads the environment, so the provider row is registered from this
 process — the same thing the SDK does before it creates a pool.
 
-``sky run`` is the other exception. It holds the compute its script declares for
-as long as the script runs, through the same ``Compute`` a script written against
-the SDK would open.
+``sky run`` is the other exception. It asks for the compute its script declares
+as a ``Compute`` would, and leaves the run on it as a task that holds it; with
+``--foreground`` it holds it for as long as the script runs, through the same
+``Compute`` a script written against the SDK would open.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import msgspec
 from cyclopts import Parameter
 
 from skyward import api
-from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, NodeResource, Page, TaskResource, TaskState
+from skyward.api.v1 import ComputeResource, Error, FunctionResource, NodeResource, Page, TaskResource, TaskState
 from skyward.cli import app as cli
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call, resolve
@@ -38,7 +39,7 @@ from skyward.cli.script import FACTORIES, Call, Script, Whole, read
 from skyward.core import console, usercode, writes
 from skyward.core.app import App
 from skyward.core.client import Client
-from skyward.core.compute import LEASE_SECONDS, Compute, definition
+from skyward.core.compute import Compute, definition
 from skyward.core.errors import SkywardError
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
@@ -56,7 +57,6 @@ from skyward.shared.schemas import (
     Dispatch,
     FunctionExcerpt,
     Image,
-    LeaseClaim,
     NodeBounds,
     PipIndex,
     PluginRef,
@@ -94,7 +94,7 @@ DRAIN = 5.0
 
 
 class Launched(NamedTuple):
-    """A run left to the daemon: the compute it stands on, and the task the compute's lease is held for."""
+    """A run left to the daemon: the compute it stands on, and the task that holds the compute until it settles."""
 
     compute: ComputeResource
     task: TaskResource
@@ -525,10 +525,10 @@ def run_declared(
 
     The run is left to the daemon: the compute is asked for, the run's task is
     queued on it, and the command answers with both, waiting on neither the
-    machines nor the task. The compute's lease is held for the task, so nothing
-    here stays to renew it; once the task settles the daemon deletes the compute,
-    unless the file declares ``delete_on_exit = false``. ``sky log`` follows the
-    run, and ``sky compute result`` waits for what it returned.
+    machines nor the task. The task holds the compute until it settles, so nothing
+    here stays to keep it; once nothing holds it the daemon deletes it, unless the
+    file declares ``delete_on_exit = false``. ``sky log`` follows the run, and
+    ``sky compute result`` waits for what it returned.
 
     With ``--foreground`` the command stays for the run instead. On a terminal the
     compute is drawn as a script against the SDK would draw it: a panel under what
@@ -538,9 +538,9 @@ def run_declared(
     worst node's status.
 
     The compute is named after the file and what it declares, so a second run
-    lands on the same machines while they are up, and a declaration whose
-    ``nodes`` changed resizes them rather than buying others. A run on machines
-    another run still holds is refused.
+    lands on the same machines while they are up — beside a run still going on
+    them, its task queued with the first's — and a declaration whose ``nodes``
+    changed resizes them rather than buying others.
 
     What the image includes goes with each run, not with the machines: they are
     built without it, so a node never holds a copy older than the one it runs.
@@ -688,22 +688,27 @@ async def launch(client: Client, script: Script, where: Where) -> Launched:
     """Leave what the file declares to the daemon, and answer without waiting on any of it.
 
     The compute is asked for, or the one a run of the same declaration left up is
-    taken; the run's task is queued on it; and the compute's lease is held for that
-    task, so that no process has to stay to renew it. Once the task settles the
-    daemon lets go of the lease, and deletes the compute when the file says
-    ``delete_on_exit``.
+    taken, and the run's task is queued on it holding it: the compute stays for as
+    long as the task has not settled, with no process left to renew a lease. Once
+    nothing holds it — no lease, no task of any run — the daemon deletes it when the
+    file says ``delete_on_exit``.
 
-    The lease is claimed before the task is sent, so a compute another run holds is
-    refused with nothing queued on it. A claim that is never handed to the task —
-    this process dying in between — runs out like any other.
+    Runs share the compute, so two of them launched at once may both find no
+    compute and both ask for one; the one whose name is taken by then takes the
+    compute the other asked for.
     """
-    owner = f"run_{uuid.uuid4().hex[:12]}"
-    compute = await _standing(client, script) or await create(client, script.app.provider, await _definition(client, script.app), script.name)
-    lease = f"/v1/computes/{compute.id}/lease"
-    await client.call("PUT", lease, LeaseResource, body=msgspec.json.encode(LeaseClaim(owner=owner, ttl_seconds=LEASE_SECONDS)))
+
+    async def created() -> ComputeResource:
+        try:
+            return await create(client, script.app.provider, await _definition(client, script.app), script.name)
+        except SkywardError as error:
+            if error.code != "name_taken" or (standing := await _standing(client, script)) is None:
+                raise
+            return standing
+
+    compute = await _standing(client, script) or await created()
     work, name = _work(script)
-    task = await _submit(client, compute.id, work, script.source, name, where, script.app.retry)
-    await client.call("PUT", lease, LeaseResource, body=msgspec.json.encode(LeaseClaim(owner=owner, task=task.id)))
+    task = await _submit(client, compute.id, work, script.source, name, where, script.app.retry, hold=True)
     return Launched(compute, task)
 
 
@@ -802,7 +807,7 @@ async def _definition(client: Client, app: App) -> ComputeSpec:
 
 def _handed(script: Script, launched: Launched) -> None:
     """Where a run left to the daemon is, and the commands that reach it again."""
-    after = "deleted once the task settles" if script.app.delete_on_exit else f"kept after the task; sky stop {script.name} ends it"
+    after = "deleted once nothing holds it" if script.app.delete_on_exit else f"kept after the task; sky stop {script.name} ends it"
     sys.stdout.write(
         f"compute  {script.name} ({launched.compute.status.state})\n"
         f"task     {launched.task.id}\n"
@@ -889,14 +894,23 @@ async def _remotely[R](
 
 
 async def _submit(
-    client: Client, compute: str, work: Callable[[], object], excerpt: str, name: str, where: Where, retry: Retry | None | msgspec.UnsetType
+    client: Client,
+    compute: str,
+    work: Callable[[], object],
+    excerpt: str,
+    name: str,
+    where: Where,
+    retry: Retry | None | msgspec.UnsetType,
+    *,
+    hold: bool = False,
 ) -> TaskResource:
     """``work`` as a task: :mod:`skyward.worker.script` bound to the file's text.
 
     The text is also the function's excerpt, so the console shows the file that
     ran rather than the few lines that ran it. ``retry`` is the task's own
     decision, stored as a blob as a pool stores its own; unset leaves the task the
-    compute's.
+    compute's. ``hold`` keeps the compute until the task settles, for a run no
+    process stays to hold.
     """
     blob = await codec.payload.encode(work)
     function = await codec.digest(blob)
@@ -931,6 +945,7 @@ async def _submit(
                 args_inline=await codec.payload.encode(((), {})),
                 rank=rank,
                 retry=decision,
+                hold=hold,
             ),
         ),
         headers={"Idempotency-Key": uuid.uuid4().hex},

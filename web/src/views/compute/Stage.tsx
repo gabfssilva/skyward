@@ -15,6 +15,7 @@ import {
   endedAt,
   failedOf,
   finishedOf,
+  keptBy,
   machineOf,
   money,
   ms,
@@ -139,7 +140,7 @@ export function Stage() {
           live ? `up ${dur(Date.now() - ms(c.created_at))}` : `created ${dateOf(ms(c.created_at))}`,
           live ? null : `ended ${c.ended ? ago(endedAt(c)) : '—'}, ${c.ended ? CAUSE[c.ended.cause] : '—'}`,
           `generation ${c.generation}`,
-          live && c.lease.owner ? `held by ${c.lease.owner}` : null,
+          live && keptBy(c) ? `held by ${keptBy(c)}` : null,
           kin ? `${kin} other${kin === 1 ? '' : 's'} named ${name}` : null,
         ]}
         primary={live ? { label: 'Run', icon: 'run', onClick: () => openRun({ computeId: c.id }) } : undefined}
@@ -474,7 +475,6 @@ function SpecGrid({ c, live }: { c: Compute; live: boolean }) {
   const im = c.spec.image
   const pip = im?.pip ?? NONE
   const apt = im?.apt ?? NONE
-  const lease = Math.max(0, Math.round((ms(c.lease.expires_at) - Date.now()) / 1000))
   return (
     <div className="specgrid">
       {im?.base ? (
@@ -497,7 +497,7 @@ function SpecGrid({ c, live }: { c: Compute; live: boolean }) {
       <SpecItem label="plugins">{c.spec.plugins.map((p) => p.kind).join(', ') || <span className="faint">none</span>}</SpecItem>
       {live ? (
         <>
-          <SpecItem label="lease">{c.lease.task ? `until ${c.lease.task} settles` : c.lease.expires_at ? `renews in ${lease}s` : '—'}</SpecItem>
+          <SpecItem label="held by">{keptBy(c) ?? '—'}</SpecItem>
           <SpecItem label="ports" wide="wide">
             {ports.map((p) => `${p.remote}→${p.local}`).join(', ') || 'none'}
             <button className="btn sm ghost" style={{ height: 20, padding: '0 5px', fontSize: 11, marginLeft: 4 }} onClick={() => openPorts(c.id)}>

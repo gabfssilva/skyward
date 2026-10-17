@@ -203,6 +203,7 @@ def _task(task_id: str, name: str, state: str, error: str | None = None, attempt
             "queue_timeout_seconds": None,
             "run_timeout_seconds": None,
             "result_sha256": None,
+            "hold": False,
         },
         TaskResource,
     )

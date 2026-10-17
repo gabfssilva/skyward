@@ -27,10 +27,14 @@ import httpx
 import msgspec
 import pytest
 
+from skyward.api.v1 import ComputeResource, Page
+from skyward.cli import compute as commands
+from skyward.cli.compute import launch
 from skyward.cli.script import Call, Script, Whole, read
 from skyward.core import usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.app import App
+from skyward.core.client import Client
 from skyward.core.spec import Options
 from skyward.shared.providers import AWS
 from skyward.shared.schemas import Image, NodeBounds, PipIndex
@@ -701,6 +705,56 @@ def including(delete_on_exit: bool) -> str:
     """).lstrip()
 
 
+FAKED = """
+# /// script
+# requires-python = ">=3.12"
+#
+# [tool.skyward]
+# provider = "fake"
+# ///
+import sys
+
+sys.exit(int(sys.argv[1]))
+"""
+"""A file whole on a provider that sells nothing: enough for the daemon to take a compute and its tasks, and to buy no machine."""
+
+
+@pytest.mark.local
+def describe_launching_a_run() -> None:
+    async def two_runs_of_one_declaration_share_its_compute_each_task_holding_it(tmp_path: Path) -> None:
+        path = written(tmp_path, FAKED)
+        client = await Client.embedded(tmp_path / "skyward.sqlite")
+        try:
+            first = await launch(client, read(path, ["0"]), "any")
+            second = await launch(client, read(path, ["1"]), "any")
+            compute = await client.call("GET", f"/v1/computes/{read(path).name}", ComputeResource)
+        finally:
+            await client.close()
+
+        assert first.compute.id == second.compute.id == compute.id, "the second run lands beside the first rather than being refused"
+        assert (first.task.hold, second.task.hold) == (True, True)
+        assert (compute.holding, compute.leases) == (2, ()), "each run's task holds the compute, and no lease is left behind"
+
+    async def one_that_finds_the_name_taken_meanwhile_takes_the_compute_that_took_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = written(tmp_path, FAKED)
+        made = commands.create
+
+        async def raced(*args: Any) -> ComputeResource:
+            await made(*args)
+            return await made(*args)
+
+        monkeypatch.setattr(commands, "create", raced)
+        client = await Client.embedded(tmp_path / "skyward.sqlite")
+        try:
+            launched = await launch(client, read(path, ["0"]), "any")
+            computes = await client.call("GET", "/v1/computes", Page[ComputeResource])
+        finally:
+            await client.close()
+
+        assert [compute.id for compute in computes.items] == [launched.compute.id], "one compute, the one the other run asked for"
+        assert launched.task.hold is True
+
+
 @pytest.mark.compute
 @pytest.mark.xdist_group("script")
 def describe_sky_run() -> None:
@@ -804,8 +858,9 @@ def describe_sky_run() -> None:
             said = handed(queued.out)
             assert said["compute"] == f"{name} (requested)", "it answers before a machine is bought"
             assert said["result"] == f"sky compute result {said['task']}"
-            lease = httpx.get(f"{daemon}/v1/computes/{name}").json()["lease"]
-            assert (lease["task"], lease["expires_at"]) == (said["task"], None), "the compute is held for the run's task, with nothing renewing it"
+            held = httpx.get(f"{daemon}/v1/computes/{name}").json()
+            assert (held["holding"], held["leases"]) == (1, []), "the run's task holds the compute, with no lease left to renew"
+            assert httpx.get(f"{daemon}/v1/tasks/{said['task']}").json()["hold"] is True
 
             assert said["follow"] == f"sky monitor {name}"
             watched = cli("monitor", name, "--url", daemon)
@@ -826,7 +881,7 @@ def describe_sky_run() -> None:
             if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
                 cli("compute", "delete", name, "--url", daemon)
 
-    def it_holds_the_machines_for_its_run_and_lets_go_of_them_after(daemon: str, tmp_path: Path) -> None:
+    def two_runs_share_the_machines_and_let_go_of_them_once_both_are_done(daemon: str, tmp_path: Path) -> None:
         path = tmp_path / "held.py"
         path.write_text(entries(nodes=1, delete_on_exit=False))
         name = read(path, ["fail"]).name
@@ -834,17 +889,17 @@ def describe_sky_run() -> None:
             first = cli("run", "--url", daemon, str(path), "shout", "--word", "hi", "--times", "2")
             meanwhile = cli("run", "--url", daemon, str(path), "shout", "--word", "no")
 
-            assert first.code == 0, first.err
-            assert meanwhile.code == 1
-            assert "lease_held" in meanwhile.err, "a run on machines another run holds is refused"
-            assert httpx.get(f"{daemon}/v1/tasks", params={"compute": name}).json()["total"] == 1, "and nothing of it is queued"
+            assert (first.code, meanwhile.code) == (0, 0), (first.err, meanwhile.err)
+            assert httpx.get(f"{daemon}/v1/tasks", params={"compute": name}).json()["total"] == 2, "both runs are queued on the one compute"
 
             returned = cli("compute", "result", handed(first.out)["task"], "--url", daemon)
+            beside = cli("compute", "result", handed(meanwhile.out)["task"], "--url", daemon)
 
-            assert returned.code == 0, returned.err
+            assert (returned.code, beside.code) == (0, 0), (returned.err, beside.err)
             assert json.loads(returned.out) == {"rank": 0, "said": "hihi"}
-            kept = until(daemon, name, lambda found: found["lease"]["owner"] is None)
-            assert kept["status"]["state"] == "ready", "kept by its file, the compute stays once the run lets go of it"
+            assert json.loads(beside.out) == {"rank": 0, "said": "no"}
+            kept = until(daemon, name, lambda found: found["holding"] == 0)
+            assert kept["status"]["state"] == "ready", "kept by its file, the compute stays once its runs let go of it"
 
             again = cli("run", "--url", daemon, str(path), "fail")
             failed = cli("compute", "result", handed(again.out)["task"], "--url", daemon)

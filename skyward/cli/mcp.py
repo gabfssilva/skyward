@@ -72,8 +72,9 @@ that are running.
 
 run_script runs a Python file on the compute it declares, as `sky run` does, and answers with the compute and the \
 run's task as soon as the task is queued: read_log with the task gives what it prints, and read_result its exit status \
-or what its function returned once it settles. The daemon holds the compute for the task, and deletes it once the task \
-settles unless the file says `delete_on_exit = false`. `sky monitor <name>` in a background shell prints a line per \
+or what its function returned once it settles. The task holds the compute until it settles, and the daemon deletes the \
+compute once nothing holds it unless the file says `delete_on_exit = false`. Runs of one file share its compute, each \
+its own task. `sky monitor <name>` in a background shell prints a line per \
 event of the run as it happens, and ends once the compute is deleted.
 
 An answer leaves out every field that is null or empty, but for a page's `items`. A compute, a task, an offer or a log line comes with the \
@@ -563,10 +564,11 @@ class Tools:
         they take, buying nothing.
 
         The answer is the compute the run stands on, usually still being bought, and ``task``, the run's task. A compute an
-        earlier run of the same declaration left up is used again, and one another run still holds is refused.
-        ``read_log`` with the task gives what it prints, and ``read_result`` its exit status or what its function returned
-        once it settles. Nothing waits on the run: the daemon holds the compute for the task, whether or not this session
-        goes on, and once the task settles deletes the compute unless ``delete_on_exit`` is false.
+        earlier run of the same declaration left up is used again, also while that run is still going: the two tasks
+        share its machines. ``read_log`` with the task gives what it prints, and ``read_result`` its exit status or what its
+        function returned once it settles. Nothing waits on the run: the task holds the compute until it settles, whether
+        or not this session goes on, and once nothing holds it the daemon deletes the compute unless ``delete_on_exit`` is
+        false.
 
         Parameters
         ----------
