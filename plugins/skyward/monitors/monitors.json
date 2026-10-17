@@ -1,8 +1,0 @@
-[
-  {
-    "name": "skyward",
-    "command": "sky monitor --quiet",
-    "description": "Skyward: computes changing state and tasks ending, on every compute the daemon has",
-    "when": "always"
-  }
-]

@@ -54,8 +54,7 @@ def monitor(
     Given computes, the lines end once every one of them is deleted; given none,
     they go on until interrupted. Nothing from before the command started is
     replayed: that is ``sky log``. ``--quiet`` keeps the lines to changes of state
-    and task endings, which is what a reader of every compute, such as the Claude
-    Code plugin's monitor, can take in.
+    and task endings, which is what a reader of every compute can take in.
 
     Parameters
     ----------

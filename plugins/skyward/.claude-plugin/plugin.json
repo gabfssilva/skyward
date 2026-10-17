@@ -1,7 +1,7 @@
 {
   "name": "skyward",
-  "version": "0.3.0",
-  "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, an MCP server (`sky mcp`) whose tools read and operate them, a monitor (`sky monitor --quiet`) that tells the session when a compute changes state or a task ends, and a skill for the Python SDK, the `sky` CLI and scripts run with `sky run`.",
+  "version": "0.3.1",
+  "description": "Skyward for Claude Code: the `/sky` panel over the daemon's computes, an MCP server (`sky mcp`) whose tools read and operate them, and a skill for the Python SDK, the `sky` CLI and scripts run with `sky run`.",
   "author": {
     "name": "Gabriel Francisco",
     "email": "gabfssilva@gmail.com"

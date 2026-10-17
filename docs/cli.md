@@ -274,7 +274,7 @@ sky monitor research eval           # several computes, each line after the comp
 sky monitor                         # every compute the daemon has
 ```
 
-One compute on a terminal gets the live footer (`--mode rich`, the default). Anything else is lines on stdout, one per event worth one: a compute or a machine changing state, a line a node printed, an attempt at a task ending. Named computes end the lines once every one of them is deleted; with none named they go on until interrupted. Nothing from before is replayed — that is `sky log`. `--quiet` keeps the lines to changes of state and task endings, leaving out what the nodes print; the Claude Code plugin runs `sky monitor --quiet` as its monitor, so a session hears when a compute changes state or a task ends. Monitoring creates nothing: a named compute has to exist already.
+One compute on a terminal gets the live footer (`--mode rich`, the default). Anything else is lines on stdout, one per event worth one: a compute or a machine changing state, a line a node printed, an attempt at a task ending. Named computes end the lines once every one of them is deleted; with none named they go on until interrupted. Nothing from before is replayed — that is `sky log`. `--quiet` keeps the lines to changes of state and task endings, leaving out what the nodes print. Monitoring creates nothing: a named compute has to exist already.
 
 ## Next steps
 
