@@ -45,6 +45,7 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     DeletionCause,
     Image,
+    Lease,
     LeaseClaim,
     Node,
     NodeBounds,
@@ -750,6 +751,125 @@ def describe_claiming_a_lease() -> None:
         await store.claim_lease(compute.id, LeaseClaim(owner="sdk_2", ttl_seconds=60))
 
         assert (await store.get(compute.id)).lease.owner == "sdk_2"
+
+    def describe_held_for_a_task() -> None:
+        async def it_has_no_expiry_and_names_the_task(tmp_path: Path) -> None:
+            store = await _store(tmp_path)
+            compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            task = await _submit(TaskStore(store, NodeStore(), BlobStore(), EventStore()), compute.id)
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", ttl_seconds=60))
+
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", task=task.id))
+
+            lease = (await store.get(compute.id)).lease
+            assert (lease.owner, lease.expires_at, lease.task) == ("run_1", None, task.id)
+
+        async def nobody_else_takes_it_however_long_it_has_been(tmp_path: Path) -> None:
+            store = await _store(tmp_path)
+            compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            task = await _submit(TaskStore(store, NodeStore(), BlobStore(), EventStore()), compute.id)
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", task=task.id))
+
+            with pytest.raises(LeaseHeldError) as refused:
+                await store.claim_lease(compute.id, LeaseClaim(owner="sdk_2", ttl_seconds=60))
+
+            assert refused.value.message == f"compute {compute.id} is owned by run_1 until task {task.id} settles"
+
+        async def once_the_task_settles_anyone_takes_it_before_the_reconciler_lets_go(tmp_path: Path) -> None:
+            store = await _store(tmp_path)
+            compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            tasks = TaskStore(store, NodeStore(), BlobStore(), EventStore())
+            task = await _submit(tasks, compute.id)
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", task=task.id))
+            await tasks.observe(task.executions[0].id, "succeeded")
+
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_2", ttl_seconds=60))
+            await store.release_lease(compute.id, task=task.id)
+
+            lease = (await store.get(compute.id)).lease
+            assert (lease.owner, lease.task) == ("run_2", None), "a late release lets go of the settled task's hold, not of the claim that took it"
+
+        async def it_is_owned_while_listed(tmp_path: Path) -> None:
+            store = await _store(tmp_path)
+            compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            task = await _submit(TaskStore(store, NodeStore(), BlobStore(), EventStore()), compute.id)
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", task=task.id))
+
+            owned = await store.list(None, 10, None, True, None)
+            orphans = await store.list(None, 10, None, False, None)
+
+            assert [found.id for found in owned.items] == [compute.id]
+            assert orphans.items == ()
+
+        async def a_release_lets_go_of_the_task_too(tmp_path: Path) -> None:
+            store = await _store(tmp_path)
+            compute, _ = await store.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            task = await _submit(TaskStore(store, NodeStore(), BlobStore(), EventStore()), compute.id)
+            await store.claim_lease(compute.id, LeaseClaim(owner="run_1", task=task.id))
+
+            await store.release_lease(compute.id)
+
+            assert (await store.get(compute.id)).lease == Lease()
+
+    def describe_over_http() -> None:
+        @pytest.mark.parametrize("body", [{"owner": "run_1"}, {"owner": "run_1", "ttl_seconds": 60, "task": "tsk_1"}])
+        async def a_claim_gives_a_clock_or_a_task_and_not_both(tmp_path: Path, body: dict[str, object]) -> None:
+            await connect(tmp_path / "skyward.sqlite")
+            svc = services()
+            compute, _ = await svc.computes.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+
+            async with AsyncTestClient(app=create_app(svc, logging=False)) as http:
+                answer = await http.put(f"/v1/computes/{compute.id}/lease", json=body)
+
+            assert answer.status_code == 400, answer.text
+
+        async def the_compute_says_which_task_holds_it(tmp_path: Path) -> None:
+            await connect(tmp_path / "skyward.sqlite")
+            svc = services()
+            assert isinstance(svc.tasks, TaskStore)
+            compute, _ = await svc.computes.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            task = await _submit(svc.tasks, compute.id)
+
+            async with AsyncTestClient(app=create_app(svc, logging=False)) as http:
+                claimed = await http.put(f"/v1/computes/{compute.id}/lease", json={"owner": "run_1", "task": task.id})
+                read = await http.get(f"/v1/computes/{compute.id}")
+
+            assert claimed.status_code == 200, claimed.text
+            assert read.json()["lease"] == {"owner": "run_1", "expires_at": None, "task": task.id}
+
+        async def a_task_of_another_compute_is_not_found_on_this_one(tmp_path: Path) -> None:
+            await connect(tmp_path / "skyward.sqlite")
+            svc = services()
+            assert isinstance(svc.tasks, TaskStore)
+            compute, _ = await svc.computes.create(ComputeCreate(spec=SPEC), idempotency_key="compute")
+            other, _ = await svc.computes.create(ComputeCreate(spec=SPEC), idempotency_key="other")
+            elsewhere = await _submit(svc.tasks, other.id)
+
+            async with AsyncTestClient(app=create_app(svc, logging=False)) as http:
+                answer = await http.put(f"/v1/computes/{compute.id}/lease", json={"owner": "run_1", "task": elsewhere.id})
+
+            assert answer.status_code == 404, answer.text
+            assert (await svc.computes.get(compute.id)).lease.owner is None
+
+
+def describe_a_broadcast() -> None:
+    async def before_any_node_is_ready_it_is_for_every_rank_the_compute_opens_with(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+
+        task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="all", args_inline=b"args"), idempotency_key="all")
+
+        assert sorted(execution.rank for execution in task.executions) == list(range(SPEC.nodes.initial))
+
+    async def once_a_node_is_ready_it_is_for_the_ready_ones_alone(tmp_path: Path) -> None:
+        tasks, compute = await _tasks(tmp_path)
+        nodes = NodeStore()
+        ready = await nodes.request(compute, 1)
+        await nodes.observe(ready.id, "ready")
+        await nodes.request(compute, 1)
+
+        task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="all", args_inline=b"args"), idempotency_key="all")
+
+        assert [execution.rank for execution in task.executions] == [ready.rank]
 
 
 def describe_draining_a_node() -> None:

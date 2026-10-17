@@ -256,9 +256,9 @@ class ComputeStore:
         elif live is False:
             narrowed.append(ComputeRow.status_state.not_in(list(LIVE)))
         if owned:
-            narrowed.append(ComputeRow.lease_owner.is_not_null() & (ComputeRow.lease_expires_at > now()))
+            narrowed.append(ComputeRow.lease_owner.is_not_null() & ((ComputeRow.lease_expires_at > now()) | ComputeRow.lease_task.is_not_null()))
         elif owned is False:
-            narrowed.append(ComputeRow.lease_owner.is_null() | (ComputeRow.lease_expires_at <= now()))
+            narrowed.append(ComputeRow.lease_owner.is_null() | ((ComputeRow.lease_expires_at <= now()) & ComputeRow.lease_task.is_null()))
         if cause:
             narrowed.append(ComputeRow.deletion_cause == cause)
 
@@ -329,7 +329,7 @@ class ComputeStore:
         the answer to this request already says so and so does the stream.
 
         ``cause`` is why: a client asking, or the reconciler letting go of a compute
-        nobody holds. The first one given is the one kept — asking again for a
+        nobody holds or whose task settled. The first one given is the one kept — asking again for a
         compute already on its way out asks for nothing new.
         """
 
@@ -374,35 +374,47 @@ class ComputeStore:
 
         Whether it is free is decided by the write, not by the read before it: two
         claims that both read a free lease would otherwise both be told they hold it.
+
+        A lease held for a task has no expiry: it is free again once the task has
+        settled, whether or not the reconciler has let go of it yet, so a run that
+        follows one that just ended is not refused for the length of a pass.
         """
         row = await self._row(ref)
         moment = now()
-        expires = moment + timedelta(seconds=claim.ttl_seconds)
+        expires = None if claim.ttl_seconds is None else moment + timedelta(seconds=claim.ttl_seconds)
         free = ComputeRow.lease_owner.is_null() | (ComputeRow.lease_owner == claim.owner) | (ComputeRow.lease_expires_at <= moment)
+        if row.lease_task is not None and await self._settled(row.lease_task):
+            free = free | (ComputeRow.lease_task == row.lease_task)
 
         landed = await ComputeRow.update({
             ComputeRow.lease_owner: claim.owner,
             ComputeRow.lease_expires_at: expires,
+            ComputeRow.lease_task: claim.task,
             ComputeRow.revision: ComputeRow.revision + 1,
         }).where((ComputeRow.id == row.id) & free).returning(ComputeRow.id).run()
         if not landed:
-            owner = (await self._row(row.id)).lease_owner
-            raise LeaseHeldError(f"compute {row.id} is owned by {owner}", owner=owner)
+            held = await self._row(row.id)
+            until = f" until task {held.lease_task} settles" if held.lease_task else ""
+            raise LeaseHeldError(f"compute {row.id} is owned by {held.lease_owner}{until}", owner=held.lease_owner)
 
         renewal = row.lease_owner == claim.owner and row.lease_expires_at is not None and row.lease_expires_at > moment
         if not renewal:
             await self.apply(LeaseClaimed(compute=row.id, owner=claim.owner))
 
-        return Lease(owner=claim.owner, expires_at=expires)
+        return Lease(owner=claim.owner, expires_at=expires, task=claim.task)
 
-    async def release_lease(self, ref: str) -> None:
+    async def release_lease(self, ref: str, task: str | None = None) -> None:
+        """Let go of the lease; given ``task``, only while it is still held for that task, and not by a claim that took it since."""
         compute_id = await self.identify(ref)
-        await ComputeRow.update({
+        held = ComputeRow.id == compute_id
+        released = await ComputeRow.update({
             ComputeRow.lease_owner: None,
             ComputeRow.lease_expires_at: None,
+            ComputeRow.lease_task: None,
             ComputeRow.revision: ComputeRow.revision + 1,
-        }).where(ComputeRow.id == compute_id).run()
-        await self.apply(LeaseReleased(compute=compute_id))
+        }).where(held if task is None else held & (ComputeRow.lease_task == task)).returning(ComputeRow.id).run()
+        if released:
+            await self.apply(LeaseReleased(compute=compute_id))
 
     async def infrastructure(self, compute_id: str) -> Infrastructure:
         row = await self._row(compute_id)
@@ -491,6 +503,11 @@ class ComputeStore:
         if not rows:
             raise NotFoundError(f"no such compute: {ref}")
         return next((row for row in rows if row.status_state != "deleted"), rows[0])
+
+    async def _settled(self, task: str) -> bool:
+        """Whether the task a lease was held for has come to an end, or is gone."""
+        row = await TaskRow.select(TaskRow.state).where(TaskRow.id == task).first()
+        return row is None or row["state"] not in ("queued", "running")
 
     async def _written(self, row: ComputeRow, changes: Mapping[Column, Any]) -> None:
         """Write what was decided from ``row``, if the compute is still at the revision ``row`` was read at.
@@ -626,7 +643,7 @@ async def _to_compute(row: ComputeRow, cost: float, ended: Ending | None, tasks:
             observed_generation=row.status_observed_generation,
             last_error=await unpacked(row.status_error, Error) if row.status_error else None,
         ),
-        lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
+        lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at, task=row.lease_task),
         created_at=row.created_at,
         cost=cost,
         tasks=tasks,

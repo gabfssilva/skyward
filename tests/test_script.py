@@ -15,9 +15,12 @@ import json
 import sys
 import tarfile
 import textwrap
+import time
 import types
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import cloudpickle
 import httpx
@@ -308,9 +311,10 @@ def describe_reading_a_module() -> None:
         with pytest.raises(SystemExit, match="declares no compute"):
             read(written(tmp_path, "from borrowed_entries import train\n", name="main.py"))
 
-    def it_refuses_a_parameter_sky_run_keeps_for_itself(tmp_path: Path) -> None:
-        with pytest.raises(SystemExit, match="train takes node, which sky run keeps for its own --node"):
-            read(written(tmp_path, "import skyward as sky\n\n@sky.app(provider=sky.AWS())\ndef train(node: int) -> None: ...\n"))
+    @pytest.mark.parametrize("name", ["node", "foreground"])
+    def it_refuses_a_parameter_sky_run_keeps_for_itself(tmp_path: Path, name: str) -> None:
+        with pytest.raises(SystemExit, match=f"train takes {name}, which sky run keeps for its own --{name}"):
+            read(written(tmp_path, f"import skyward as sky\n\n@sky.app(provider=sky.AWS())\ndef train({name}: int) -> None: ...\n"))
 
     def a_header_wins_over_what_the_file_decorates(tmp_path: Path) -> None:
         path = header(tmp_path, 'provider = "gcp"')
@@ -705,7 +709,7 @@ def describe_sky_run() -> None:
         path.write_text(declared(nodes=1, delete_on_exit=False))
         name = read(path).name
         try:
-            first = cli("run", str(path), "--url", daemon, "--", "3")
+            first = cli("run", "-f", str(path), "--url", daemon, "--", "3")
 
             assert first.code == 3, first.err
             assert first.out.splitlines() == ["0 │ rank 0 of 1 said ['3']"], "stdout is the script's, each line after the rank that printed it"
@@ -713,7 +717,7 @@ def describe_sky_run() -> None:
             assert kept["status"]["state"] == "ready", "delete_on_exit = false leaves the compute up"
 
             path.write_text(declared(nodes=2, delete_on_exit=False))
-            second = cli("run", str(path), "--url", daemon, "--node", "all", "--", "0")
+            second = cli("run", str(path), "--foreground", "--url", daemon, "--node", "all", "--", "0")
 
             assert second.code == 0, second.err
             broadcast = ["0 │ rank 0 of 2 said ['0']", "1 │ rank 1 of 2 said ['0']"]
@@ -725,7 +729,7 @@ def describe_sky_run() -> None:
             assert resized["generation"] == kept["generation"] + 1, "a new size is a resize, not another compute"
 
             path.write_text(declared(nodes=2, delete_on_exit=True))
-            last = cli("run", str(path), "--url", daemon, "--node", "1", "--", "0")
+            last = cli("run", "-f", str(path), "--url", daemon, "--node", "1", "--", "0")
 
             assert last.code == 0, last.err
             assert last.out.splitlines() == ["1 │ rank 1 of 2 said ['0']"]
@@ -739,21 +743,21 @@ def describe_sky_run() -> None:
         path.write_text(entries(nodes=2, delete_on_exit=False))
         name = read(path, ["fail"]).name
         try:
-            everywhere = cli("run", "--url", daemon, "--node", "all", str(path), "shout", "--word", "hi", "--times", "2")
+            everywhere = cli("run", "-f", "--url", daemon, "--node", "all", str(path), "shout", "--word", "hi", "--times", "2")
 
             assert everywhere.code == 0, everywhere.err
             *lines, answer = everywhere.out.splitlines()
             assert sorted(lines) == ["0 │ rank 0 shouting", "1 │ rank 1 shouting"], "a node runs the file with no httpx, sky.app and all"
             assert json.loads(answer) == [{"rank": 0, "said": "hihi"}, {"rank": 1, "said": "hihi"}], "every node's answer, by rank, after the lines"
 
-            retried = cli("run", "--url", daemon, str(path), "flaky")
+            retried = cli("run", "-f", "--url", daemon, str(path), "flaky")
 
             assert retried.code == 0, retried.err
             assert "ValueError: the first attempt" in retried.out
             assert retried.out.splitlines()[-1] == "2", "the app's retry ran the function again after it raised, on the same compute"
 
             path.write_text(entries(nodes=2, delete_on_exit=True))
-            failed = cli("run", "--url", daemon, "--node", "1", str(path), "fail")
+            failed = cli("run", "-f", "--url", daemon, "--node", "1", str(path), "fail")
 
             assert failed.code == 1, failed.err
             assert "ValueError: on purpose" in failed.out
@@ -770,7 +774,7 @@ def describe_sky_run() -> None:
         path.write_text(including(delete_on_exit=False))
         name = read(path).name
         try:
-            first = cli("run", "--url", daemon, str(path))
+            first = cli("run", "-f", "--url", daemon, str(path))
 
             assert first.code == 0, first.err
             assert first.out.splitlines() == ["1"]
@@ -778,7 +782,7 @@ def describe_sky_run() -> None:
 
             version.write_text("VERSION = 2\n")
             path.write_text(including(delete_on_exit=True))
-            second = cli("run", "--url", daemon, str(path))
+            second = cli("run", "-f", "--url", daemon, str(path))
 
             assert second.code == 0, second.err
             assert second.out.splitlines() == ["2"], "a compute attached to runs the code as it is now, not as it was when it came up"
@@ -788,3 +792,80 @@ def describe_sky_run() -> None:
         finally:
             if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
                 cli("compute", "delete", name, "--url", daemon)
+
+    def it_returns_once_the_run_is_queued_and_the_compute_goes_once_the_run_ends(daemon: str, tmp_path: Path) -> None:
+        path = tmp_path / "queued.py"
+        path.write_text(declared(nodes=2, delete_on_exit=True))
+        name = read(path).name
+        try:
+            queued = cli("run", str(path), "--url", daemon, "--node", "all", "--", "0")
+
+            assert queued.code == 0, queued.err
+            said = handed(queued.out)
+            assert said["compute"] == f"{name} (requested)", "it answers before a machine is bought"
+            assert said["result"] == f"sky compute result {said['task']}"
+            lease = httpx.get(f"{daemon}/v1/computes/{name}").json()["lease"]
+            assert (lease["task"], lease["expires_at"]) == (said["task"], None), "the compute is held for the run's task, with nothing renewing it"
+
+            assert said["follow"] == f"sky monitor {name}"
+            watched = cli("monitor", name, "--url", daemon)
+
+            assert watched.code == 0, watched.err
+            lines = watched.out.splitlines()
+            assert f"{said['task']} │ succeeded" in lines, "the monitor says how the run's task ended"
+            assert lines[-1].endswith(" │ deleted"), "and it ends with the compute it watched"
+            assert httpx.get(f"{daemon}/v1/computes/{name}").json()["ended"]["cause"] == "finished", "the daemon took it down once the task settled"
+
+            settled = cli("compute", "result", said["task"], "--url", daemon)
+
+            assert settled.code == 0, settled.err
+            assert settled.out == "", "a file run whole returns its exit status alone"
+            ran = httpx.get(f"{daemon}/v1/tasks/{said['task']}").json()
+            assert sorted(execution["rank"] for execution in ran["executions"]) == [0, 1], "queued before any machine, the broadcast waited for both"
+        finally:
+            if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
+                cli("compute", "delete", name, "--url", daemon)
+
+    def it_holds_the_machines_for_its_run_and_lets_go_of_them_after(daemon: str, tmp_path: Path) -> None:
+        path = tmp_path / "held.py"
+        path.write_text(entries(nodes=1, delete_on_exit=False))
+        name = read(path, ["fail"]).name
+        try:
+            first = cli("run", "--url", daemon, str(path), "shout", "--word", "hi", "--times", "2")
+            meanwhile = cli("run", "--url", daemon, str(path), "shout", "--word", "no")
+
+            assert first.code == 0, first.err
+            assert meanwhile.code == 1
+            assert "lease_held" in meanwhile.err, "a run on machines another run holds is refused"
+            assert httpx.get(f"{daemon}/v1/tasks", params={"compute": name}).json()["total"] == 1, "and nothing of it is queued"
+
+            returned = cli("compute", "result", handed(first.out)["task"], "--url", daemon)
+
+            assert returned.code == 0, returned.err
+            assert json.loads(returned.out) == {"rank": 0, "said": "hihi"}
+            kept = until(daemon, name, lambda found: found["lease"]["owner"] is None)
+            assert kept["status"]["state"] == "ready", "kept by its file, the compute stays once the run lets go of it"
+
+            again = cli("run", "--url", daemon, str(path), "fail")
+            failed = cli("compute", "result", handed(again.out)["task"], "--url", daemon)
+
+            assert httpx.get(f"{daemon}/v1/computes/{name}").json()["id"] == kept["id"], "the next run attaches to it"
+            assert failed.code == 1
+            assert "task_failed" in failed.err, "a function that raised is a failed task, not a value"
+        finally:
+            if httpx.get(f"{daemon}/v1/computes/{name}").json().get("status", {}).get("state") not in (None, "deleted", "deleting"):
+                cli("compute", "delete", name, "--url", daemon)
+
+
+def handed(out: str) -> dict[str, str]:
+    """What ``sky run`` printed about the run it left to the daemon, by the word each line starts with."""
+    return dict(line.split(maxsplit=1) for line in out.splitlines())
+
+
+def until(daemon: str, name: str, holds: Callable[[dict[str, Any]], bool], seconds: float = 300) -> dict[str, Any]:
+    """The compute as the daemon serves it, once ``holds`` is true of it."""
+    deadline = time.monotonic() + seconds
+    while not holds(found := httpx.get(f"{daemon}/v1/computes/{name}").json()):
+        assert time.monotonic() < deadline, f"{name} did not come to it in {seconds:.0f}s"
+        time.sleep(1)
+    return found

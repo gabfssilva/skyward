@@ -31,7 +31,7 @@ print(f"rank {info.rank} of {info.nodes}: {len(rows)} rows, mean {np.mean(rows):
 sky run train.py --node all -- --epochs 3
 ```
 
-`__name__ == "__main__"`, `__file__` and `sys.argv[0]` are the path as given to `sky run`; `sys.argv[1:]` are the arguments after the file, except `--node` and `--url`, which are `sky run`'s wherever they are; after `--`, everything is the script's.
+`__name__ == "__main__"`, `__file__` and `sys.argv[0]` are the path as given to `sky run`; `sys.argv[1:]` are the arguments after the file, except `--node`, `--url` and `-f`/`--foreground`, which are `sky run`'s wherever they are; after `--`, everything is the script's.
 
 ## The block
 
@@ -55,7 +55,7 @@ PEP 723's own keys:
 | `region` | string | none | where to buy |
 | `allocation` | string | `"spot_if_available"` | `"spot"`, `"on_demand"`, `"spot_if_available"`, `"cheapest"` |
 | `nodes` | int, or table | `1` | a count (at least 1), or `sky.Nodes` as a table: `{ initial = 8, min = 4 }`, `{ min = 2, max = 8 }` |
-| `delete_on_exit` | bool | `true` | whether the run deletes the compute when the script ends |
+| `delete_on_exit` | bool | `true` | whether the compute is deleted when the script ends |
 
 `nodes` as a table needs an `initial` or a `min`; without `initial` it opens at `min`. The bounds must satisfy `0 <= min <= initial <= max` with room for one node.
 

@@ -34,15 +34,15 @@ if __name__ == "__main__":
 ```
 
 ```bash
-sky run train.py --help                                # the file's commands, with their docstrings
-sky run train.py train --help                          # one command's parameters
-sky run train.py train data.csv --epochs 5 --node all  # prints [{"epochs":5,...},{"epochs":5,...}], one per rank
-sky run train.py evaluate-model ckpt.pt                # prints 0.5
+sky run train.py --help                                   # the file's commands, with their docstrings
+sky run train.py train --help                             # one command's parameters
+sky run -f train.py train data.csv --epochs 5 --node all  # stays, and prints [{"epochs":5,...},{"epochs":5,...}], one per rank
+sky run train.py evaluate-model ckpt.pt                   # returns at once; sky compute result <task> prints 0.5
 ```
 
 ## What `sky.app` takes
 
-The arguments `sky.Compute` takes for the machines, with the same meaning: `provider` (required, a provider struct: `sky.AWS(...)`, `sky.RunPod(...)`, ...), `accelerator` (a string or `sky.accelerators.*`), `cpus`, `memory_gb`, `region`, `nodes` (`4`, `(2, 8)`, `sky.Nodes(...)`), `allocation`, `image` (`sky.Image(...)`: `python`, `pip`, `apt`, `env`, `pip_indexes`, `base`, `skyward`, and `includes`/`excludes`, which `reference/script.md` covers under "Local code"), `plugins` (`sky.plugins.Torch()`, ...), `delete_on_exit`, and `options` (`sky.Options(...)`, the run's timeouts and retries: `ready_timeout` is how long `sky run` waits for the machines before it gives up on them, 300 seconds unless said otherwise, which a provider that pulls a large image or installs a CUDA stack on a slow link can outlast). Nothing else: no `ttl`, `executor`, `ports` or `name` (the compute's name is derived, see `reference/script.md`). The SDK reference (`reference/sdk.md`) covers each of them.
+The arguments `sky.Compute` takes for the machines, with the same meaning: `provider` (required, a provider struct: `sky.AWS(...)`, `sky.RunPod(...)`, ...), `accelerator` (a string or `sky.accelerators.*`), `cpus`, `memory_gb`, `region`, `nodes` (`4`, `(2, 8)`, `sky.Nodes(...)`), `allocation`, `image` (`sky.Image(...)`: `python`, `pip`, `apt`, `env`, `pip_indexes`, `base`, `skyward`, and `includes`/`excludes`, which `reference/script.md` covers under "Local code"), `plugins` (`sky.plugins.Torch()`, ...), `delete_on_exit`, and `options` (`sky.Options(...)`, the run's timeouts and retries: `ready_timeout` is how long `sky run --foreground` waits for the machines before it gives up on them, 300 seconds unless said otherwise, which a provider that pulls a large image or installs a CUDA stack on a slow link can outlast). Nothing else: no `ttl`, `executor`, `ports` or `name` (the compute's name is derived, see `reference/script.md`). The SDK reference (`reference/sdk.md`) covers each of them.
 
 It can decorate directly (`@sky.app(provider=...)`) or be bound once and reused (`gpu = sky.app(...)`, then `@gpu`). Functions under one `sky.app` share one compute, and so do functions whose `sky.app`s declare the same machines (`nodes`, `delete_on_exit` and `options` aside); one that declares other machines runs on another compute.
 
@@ -54,7 +54,7 @@ A PEP 723 block without a `[tool.skyward]` table is not read: its `dependencies`
 - A command is named after its function, `_` spelled `-`: `evaluate_model` is `evaluate-model`.
 - With one command, naming it is optional: `sky run train.py data.csv`. With more, the name comes first, and a missing or unknown one is refused with the list of commands.
 - The parameters are parsed the way a command line parses a signature: positional or `--name value`, a list as repeated values, a `bool` as a `--flag`, a dict as `--name.key value`, each converted to its annotation. A value that does not convert is refused before anything is bought. The docstring's first line is the command's help.
-- A parameter named `node` or `url` is refused: `--node` and `--url` belong to `sky run`, wherever they are on the line.
+- A parameter named `node`, `url` or `foreground` is refused: `--node`, `--url` and `--foreground` belong to `sky run`, wherever they are on the line.
 - The arguments travel to the node as msgpack and are converted back against the same annotations there: strings, numbers, booleans, lists, dicts and `Path` arrive as themselves. An argument msgpack cannot carry is refused: `an argument cannot travel to the node`.
 
 ## What comes back

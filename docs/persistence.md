@@ -29,7 +29,7 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 | `status_observed_generation` | reconciler | which one has actually been applied |
 | `status_state` | `ComputeStore.apply` | `requested`, `provisioning`, `ready`, `degraded`, `deleting`, `deleted` — moved only by an event, recorded in the same transaction |
 | `placement_reason` / `placement_retry_at` | `Machines` | why the last launch was refused, and when buying is tried again |
-| `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` — or `abandoned`, the reconciler's when nobody renewed the lease and `delete_on_exit` was set |
+| `deletion_cause` | whoever asked for deletion | `requested` — a client's `DELETE` —, `abandoned`, the reconciler's when nobody renewed the lease and `delete_on_exit` was set, or `finished`, the reconciler's when the task the lease was held for settled and `delete_on_exit` was set |
 | `deleted_at` | `ComputeStore.apply` | when the state reached `deleted`, written once |
 | `revision` | either | the optimistic-concurrency token behind `If-Match` |
 
@@ -85,7 +85,7 @@ An SSH connection is not a row. Neither is a forwarded port, nor the casty clien
 
 Everything live is held in `Runtimes` — one per compute per process — and it is **rebuilt** from the store when a daemon comes up, never recovered from it. The store says which machines exist and at which addresses; the daemon redials them.
 
-This is what the compute's **lease** protects. A lease is a liveness signal the owning process renews in the background, stored as `lease_owner` and `lease_expires_at`. Two daemons holding SSH connections to the same machines would both believe they were the one bootstrapping it, so only the lease holder opens a runtime. Releasing a lease is not deletion — with `delete_on_exit=False`, the compute stays up and the next process attaches to it. When renewals simply stop, the reconciler may reclaim it.
+This is what the compute's **lease** protects. A lease is a liveness signal the owning process renews in the background, stored as `lease_owner` and `lease_expires_at` — or held until a task settles, with `lease_task` in place of an expiry, which is how `sky run` leaves a compute to its run. Two daemons holding SSH connections to the same machines would both believe they were the one bootstrapping it, so only the lease holder opens a runtime. Releasing a lease is not deletion — with `delete_on_exit=False`, the compute stays up and the next process attaches to it. When renewals simply stop, the reconciler may reclaim it.
 
 ## Reading the store directly
 

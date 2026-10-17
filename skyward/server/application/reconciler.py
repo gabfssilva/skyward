@@ -208,6 +208,15 @@ class Reconciler:
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}", "abandoned")
             compute = await self._computes.get(compute.id)
 
+        if compute.lease.task is not None and (await self._tasks.get(compute.lease.task)).state not in ("queued", "running"):
+            if compute.spec.delete_on_exit and compute.spec.desired != "deleted":
+                log.info("task {} settled, and the lease it held said to delete the compute after it", compute.lease.task)
+                await self._computes.delete(compute.id, compute.revision, f"finished:{compute.id}", "finished")
+            else:
+                log.info("task {} settled: letting go of the lease it held", compute.lease.task)
+            await self._computes.release_lease(compute.id, task=compute.lease.task)
+            compute = await self._computes.get(compute.id)
+
         compute, unlisted = await self._resolved(compute)
 
         nodes = await self._nodes.of(compute.id)
@@ -477,8 +486,13 @@ def abandoned(compute: Compute, up_since: datetime) -> bool:
     shell created is never leased by anybody and would otherwise stop being brought
     up sixty seconds into its own provisioning. A compute already being deleted is
     never abandoned — teardown must finish no matter who asked.
+
+    A lease held for a task never runs out: the owner left the compute to that
+    task, and the pass lets go of it once the task settles.
     """
     if compute.spec.desired == "deleted":
+        return False
+    if compute.lease.owner is not None and compute.lease.task is not None:
         return False
     if compute.lease.owner is not None and compute.lease.expires_at is not None and compute.lease.expires_at > now():
         return False

@@ -23,6 +23,7 @@ export type ProgressEvent = Schemas['NodeProgressEvent']
 export type ConsoleEvent = Schemas['NodeConsoleEvent']
 export type PhaseEvent = Schemas['NodePhaseEvent']
 export type MetricEvent = Schemas['NodeMetricsEvent']
+export type EmittedEvent = Schemas['NodeEmittedEvent']
 export type TaskStateEvent = Schemas['TaskStateEvent']
 
 /** Everything the stream can carry, discriminated by `type`. */
@@ -48,6 +49,7 @@ export type EventPayload =
   | ConsoleEvent
   | PhaseEvent
   | MetricEvent
+  | EmittedEvent
   | TaskStateEvent
 
 export type EventType = EventPayload['type']
@@ -109,6 +111,7 @@ export const FRAMES: readonly string[] = [
   'node.console',
   'node.phase',
   'node.metrics',
+  'node.emitted',
   ...NODE_STATES.map((s) => `node.${s}`),
   ...TASK_STATES.map((s) => `task.${s}`),
 ]
@@ -160,6 +163,8 @@ export function describe(payload: EventPayload): string {
       return payload.error ? `${payload.phase} ${payload.event} — ${payload.error}` : `${payload.phase} ${payload.event}`
     case 'node.metrics':
       return `${payload.name} ${payload.value}`
+    case 'node.emitted':
+      return `emitted ${payload.name}`
     case 'task.state':
       return `${payload.state} on attempt ${payload.attempt}`
   }

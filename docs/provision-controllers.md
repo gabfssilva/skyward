@@ -81,6 +81,7 @@ The pass performs these decisions:
 
 1. If the Compute is already deleted, it does nothing.
 2. If its lease is abandoned and `delete_on_exit=True`, it changes the desired state to deleted.
+   If its lease was held for a task that has settled, it releases the lease and, with `delete_on_exit=True`, changes the desired state to deleted.
 3. It asks the provider adapter to resolve the machines behind existing node rows.
 4. It calculates the target count from bounds and outstanding work.
 5. It creates `requested` node rows for a deficit.
@@ -180,6 +181,8 @@ with sky.Compute(
 ```
 
 Releasing the lease is a detach, not a delete. A process that stops renewing leaves the Compute ownerless. If its definition has `delete_on_exit=True`, the reconciler eventually marks it for deletion; if false, it remains available to `Compute.attached()`.
+
+A lease can also be held for a task instead of renewed: `PUT /v1/computes/{id}/lease` with `task` in place of `ttl_seconds`. Nothing renews it and it never runs out; once the task settles the reconciler releases it and, with `delete_on_exit=True`, deletes the Compute with the cause `finished`. `sky run` leaves a Compute this way, so the command returns once its task is queued.
 
 ## Events and recovery
 

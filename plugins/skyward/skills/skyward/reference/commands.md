@@ -11,12 +11,12 @@ Every command below accepts `--url` (daemon URL, overrides `SKYWARD_URL`; defaul
 | Command | Does |
 |---|---|
 | `sky version` | Print the Skyward and Python versions |
-| `sky run FILE [COMMAND] [ARGS...] [--node any]` | Run a file on the compute it declares (PEP 723 header, or `sky.app` functions), creating or attaching to it; `sky run FILE --help` lists a `sky.app` file's commands, and `sky run` with no file prints its own help, since `--help` after it belongs to the file (`reference/script.md`) |
+| `sky run FILE [COMMAND] [ARGS...] [--node any] [-f]` | Run a file on the compute it declares (PEP 723 header, or `sky.app` functions), creating or attaching to it. It returns once the run's task is queued, printing the compute and the task; the daemon holds the compute for the task and deletes it once it settles unless `delete_on_exit` is false. `-f`/`--foreground` stays for the run and exits with its status. `sky run FILE --help` lists a `sky.app` file's commands, and `sky run` with no file prints its own help, since `--help` after it belongs to the file (`reference/script.md`) |
 | `sky new …` | Alias of `sky compute create` |
 | `sky status [REF]` | One compute, or all of them |
 | `sky sessions` | Every compute — `status` with no argument |
 | `sky stop REF` | Tear a compute down (alias of `compute delete`) |
-| `sky monitor REF [--mode rich\|log]` | Watch a live compute until interrupted |
+| `sky monitor [REF...] [--mode rich\|log] [-q]` | Watch computes from now on: one compute on a terminal as the live footer, anything else as a line per event on stdout (a state change, a line a node printed, a task's attempt ending), every compute when none is named. Named computes end the lines once all are deleted. `-q`/`--quiet` leaves out what the nodes print: changes of state and task endings only |
 | `sky app` | Watch every live compute on one screen, until `q` |
 | `sky mcp [--url URL]` | Serve the daemon as an MCP server on stdin and stdout; the plugin's `.mcp.json` starts it (`mcp` extra) |
 | `sky compute ssh REF [--node N] [--command CMD]` | Interactive shell on one machine, ready or still bootstrapping (`sky console` is the older name) |
@@ -129,6 +129,7 @@ sky compute exec REF COMMAND... [--node all]
 sky compute run  REF SCRIPT [ARGS...] [--node any]
 sky compute tasks  REF [--state S] [--limit 20]
 sky compute cancel TASK
+sky compute result TASK
 ```
 
 - `exec` runs in the **machine's shell** — questions about the node, and it reaches a node whose worker is busy. Quote a command carrying flags, or put it after `--`: `sky compute exec training --node 0 -- df -h`.
@@ -136,6 +137,7 @@ sky compute cancel TASK
 - Both exit with the worst node's status.
 - `tasks` lists a compute's calls, running first, then queued, then the latest to finish, up to `--limit`; `--state` asks for one state. Columns: id, compute, function, state, attempts, submitted.
 - `cancel` takes a task id (the first column of `tasks`), not a compute. A task not yet started never runs; a running one is stopped on its node, so the row that comes back reads `cancel_requested` until the worker lets go. A task that finished first keeps its outcome.
+- `result` waits for a task `sky run` started to settle, prints what a `sky.app` function returned as JSON (a list by rank when it ran on every node), and exits with the worst node's status; a file run whole prints nothing. A task that failed or was cancelled is refused with its reason.
 
 ### Files
 

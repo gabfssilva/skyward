@@ -239,6 +239,10 @@ _STATE = {
     "deleted": "\033[90m",         # grey
     "failed": "\033[31m",          # red
     "degraded": "\033[31m",        # red
+    "succeeded": "\033[32m",       # green — a task's endings, which only ``ended`` draws
+    "cancelled": "\033[90m",       # grey
+    "timed_out": "\033[31m",       # red
+    "indeterminate": "\033[31m",   # red
 }
 """How each lifecycle word is coloured — by what it means, not alphabetically."""
 
@@ -306,6 +310,25 @@ def render(event: Event, color: bool = False) -> str | None:
             return f"{_who(event.compute, color)} {_sep(color)} {_badge(state, color)}"
         case _:
             return None
+
+
+def ended(event: Event, color: bool = False) -> str | None:
+    """How an attempt at a task ended, as a line, for a reader that holds no result of its own: ``sky monitor``'s.
+
+    :func:`render` leaves these out for the caller of the task, which has the result
+    or the exception in hand. One watching from outside has only the stream.
+    """
+    match event:
+        case TaskEvent(task=task, state="succeeded" | "failed" | "cancelled" | "timed_out" | "indeterminate" as state, error=error):
+            said = f" {_dim(error, color)}" if error else ""
+            return f"{_who(task, color)} {_sep(color)} {_badge(state, color)}{said}"
+        case _:
+            return None
+
+
+def named(name: str, line: str, color: bool = False) -> str:
+    """A line, after the name of the compute it is about: what tells them apart when one reader watches several."""
+    return f"{_who(name, color)} {_sep(color)} {line}"
 
 
 def _asks(event: Event) -> bool:

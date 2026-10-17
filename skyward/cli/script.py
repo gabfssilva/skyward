@@ -76,7 +76,7 @@ PYTHONS = ("3.12", "3.13", "3.14")
 BLOCK = re.compile(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$")
 """PEP 723's own expression for a metadata block."""
 
-RESERVED = frozenset({"node", "url"})
+RESERVED = frozenset({"node", "url", "foreground"})
 """The flags ``sky run`` takes for itself, wherever they are on the line: a parameter by one of these names could never be given."""
 
 FACTORIES: dict[str, Callable[[], Provider]] = {

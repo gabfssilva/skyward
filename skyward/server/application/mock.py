@@ -196,7 +196,7 @@ class MockComputes:
         return COMPUTE
 
     async def claim_lease(self, ref: str, claim: LeaseClaim) -> Lease:
-        return Lease(owner=claim.owner, expires_at=NOW)
+        return Lease(owner=claim.owner, expires_at=None if claim.task else NOW, task=claim.task)
 
     async def release_lease(self, ref: str) -> None:
         return None

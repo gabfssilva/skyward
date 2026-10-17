@@ -19,14 +19,10 @@ and every tool that buys, changes or ends machines says so.
 
 from __future__ import annotations
 
-import asyncio
 import io
-import os
-import sys
-import tempfile
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
-from contextlib import redirect_stderr, redirect_stdout, suppress
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from itertools import groupby
 from pathlib import Path
@@ -42,7 +38,7 @@ from msgspec.structs import asdict, replace
 from pydantic import AwareDatetime, Field, JsonValue
 
 from skyward.api import v1
-from skyward.cli.compute import Result, compute_spec, computes, create, update
+from skyward.cli.compute import Result, compute_spec, computes, create, launch, update
 from skyward.cli.script import FACTORIES, Script, read
 from skyward.core import writes
 from skyward.core.client import Client
@@ -64,7 +60,7 @@ name.
 These tools are the `sky` command's, as calls. For what they cover, use them rather than `sky` in a shell, also in a \
 session that has been running `sky` until now: they reach the same daemon and answer in less text. `sky compute exec` \
 is exec_command; `sky compute list`, `sky status`, `get` and `view` are list_computes and get_compute; `sky compute \
-tasks` and `cancel` are list_tasks and cancel_task; `sky compute create`, `scale`, `update` and `delete` (`sky stop`) \
+tasks`, `cancel` and `result` are list_tasks, cancel_task and read_result; `sky compute create`, `scale`, `update` and `delete` (`sky stop`) \
 are the tools of those names; `sky offers list` is list_offers; `sky providers list` is list_providers; `sky run` is \
 run_script; the event log `sky log export` writes is read_log. The shell keeps what no tool does: files on the nodes, \
 ssh, repl, `sky compute run`, `sky providers set`, `sky server start`, and following output as it arrives \
@@ -74,8 +70,11 @@ create_compute, run_script, and scale_compute when it grows a compute, buy machi
 delete_compute ends them. scale_compute when it shrinks a compute, update_compute and delete_compute act on machines \
 that are running.
 
-run_script runs a Python file on the compute it declares, as `sky run` does, and answers once the run is under way: \
-list_tasks then finds its task, read_log what it prints, and read_result its exit status or what its function returned.
+run_script runs a Python file on the compute it declares, as `sky run` does, and answers with the compute and the \
+run's task as soon as the task is queued: read_log with the task gives what it prints, and read_result its exit status \
+or what its function returned once it settles. The daemon holds the compute for the task, and deletes it once the task \
+settles unless the file says `delete_on_exit = false`. `sky monitor <name>` in a background shell prints a line per \
+event of the run as it happens, and ends once the compute is deleted.
 
 An answer leaves out every field that is null or empty, but for a page's `items`. A compute, a task, an offer or a log line comes with the \
 fields that matter to act on it; `raw` on the tool that read it answers with everything the daemon holds. The values \
@@ -86,9 +85,6 @@ through these tools."""
 
 HIDDEN = "<hidden>"
 """What an answer carries in place of an environment variable's value or a plugin's credential."""
-
-STARTING = 60.0
-"""Seconds ``run_script`` waits for the compute its run stands on to reach the daemon before answering without it."""
 
 type Count = Annotated[int, Field(ge=0)]
 type Positive = Annotated[int, Field(ge=1)]
@@ -559,18 +555,18 @@ class Tools:
         return await self._ask(lambda client: create(client, account, spec, name), _described)
 
     async def run_script(self, path: str, args: tuple[str, ...] = (), node: Literal["any", "all"] | int = "any") -> str:
-        """Run a Python file on the compute it declares, as ``sky run`` does, and answer once the run is under way.
+        """Run a Python file on the compute it declares, as ``sky run`` does, and answer once the run's task is queued.
 
         The file declares its compute in a PEP 723 header (a ``# /// script`` block with ``[tool.skyward]``), and then all
         of it runs with ``args`` as its argv. Or it decorates functions with ``sky.app``, and then ``args`` name one and give
         its arguments as flags, such as ``["train", "--epochs", "5"]``; ``["--help"]`` answers with the functions and what
         they take, buying nothing.
 
-        The answer is the compute the run stands on, usually still provisioning, and ``log``, the file the run writes its
-        own progress to. A compute an earlier run of the same declaration left up is used again. ``list_tasks`` finds the
-        run's task once the nodes are ready, ``read_log`` with that task what it prints, and ``read_result`` its exit
-        status or what its function returned. The run holds the compute until its task ends, and then deletes it unless
-        ``delete_on_exit`` is false; it goes on if this session ends.
+        The answer is the compute the run stands on, usually still being bought, and ``task``, the run's task. A compute an
+        earlier run of the same declaration left up is used again, and one another run still holds is refused.
+        ``read_log`` with the task gives what it prints, and ``read_result`` its exit status or what its function returned
+        once it settles. Nothing waits on the run: the daemon holds the compute for the task, whether or not this session
+        goes on, and once the task settles deletes the compute unless ``delete_on_exit`` is false.
 
         Parameters
         ----------
@@ -589,35 +585,13 @@ class Tools:
             case str(said):
                 return said
             case Script() as script:
-
-                async def started(client: Client) -> tuple[v1.ComputeResource | None, Path]:
-                    await _found(client, script.name)
-                    descriptor, log = tempfile.mkstemp(prefix=f"{script.name}-", suffix=".log")
-                    with os.fdopen(descriptor, "wb") as written:
-                        running = await asyncio.create_subprocess_exec(
-                            sys.executable,
-                            "-c",
-                            "from skyward.cli import app; app()",
-                            *("run", "--url", self._url, "--node", str(node), str(file), *args),
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=written,
-                            stderr=asyncio.subprocess.STDOUT,
-                            start_new_session=True,
-                        )
-                    standing = await _arrived(client, running, script.name)
-                    if standing is None and running.returncode:
-                        said = Path(log).read_text(errors="replace").splitlines()
-                        raise ToolError(f"sky run {file.name} ended with {running.returncode}:\n" + "\n".join(said[-40:]))
-                    return standing, Path(log)
-
                 return await self._ask(
-                    started,
-                    lambda found: _brief(
+                    lambda client: launch(client, script, node),
+                    lambda launched: _brief(
                         {
-                            "name": script.name,
-                            "compute": None if found[0] is None else _compute(found[0], detail=False),
+                            "compute": _compute(launched.compute, detail=False),
+                            "task": launched.task.id,
                             "delete_on_exit": script.app.delete_on_exit,
-                            "log": str(found[1]),
                         }
                     ),
                 )
@@ -902,32 +876,6 @@ def _declared(file: Path, args: tuple[str, ...]) -> Script | str:
                 raise ToolError(said.getvalue().strip()) from None
     except Exception as failed:
         raise ToolError(f"{file} cannot be read: {type(failed).__name__}: {failed}") from None
-
-
-async def _found(client: Client, name: str) -> v1.ComputeResource | None:
-    """The compute by this name, unless the daemon has none."""
-    try:
-        return await client.call("GET", f"/v1/computes/{name}", v1.ComputeResource)
-    except SkywardError as error:
-        if error.code != "not_found":
-            raise
-        return None
-
-
-async def _arrived(client: Client, running: asyncio.subprocess.Process, name: str) -> v1.ComputeResource | None:
-    """The compute ``running`` stands on, once the daemon holds it and it is not on its way out.
-
-    ``None`` when the run ended first, or ``STARTING`` passed: registering an account and posting a compute take
-    seconds, and what takes minutes, buying the machines, is followed with the other tools.
-    """
-    with suppress(TimeoutError):
-        async with asyncio.timeout(STARTING):
-            while running.returncode is None:
-                if (found := await _found(client, name)) and found.status.state not in ("deleting", "deleted"):
-                    return found
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(running.wait(), 0.5)
-    return None
 
 
 async def _unpickled(task: str, blob: bytes) -> object:

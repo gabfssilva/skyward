@@ -219,6 +219,7 @@ export function Wizard() {
             bootstrap_timeout: 900,
             skyward: 'auto',
             warm: false,
+            mutable: false,
           },
           worker: { executor: w.executor, concurrency: w.concurrency, buffer: 0, reuse: w.executor === 'process' ? w.reuse : true },
         },

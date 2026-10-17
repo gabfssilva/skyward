@@ -48,10 +48,10 @@ def estimate_pi(n: int = 100_000_000) -> dict[str, str | float]:
 
 ```bash
 sky server start
-sky run pi.py --n 500000000
+sky run -f pi.py --n 500000000
 ```
 
-`sky.app` declares the machines a function runs on. `sky run` provisions them, parses the command line against the function's signature, runs the function there, prints what it returned as JSON, and tears the machines down.
+`sky.app` declares the machines a function runs on. `sky run -f` provisions them, parses the command line against the function's signature, runs the function there, prints what it returned as JSON, and tears the machines down. Without `-f` it returns as soon as the run is queued, the daemon tears the machines down once it ends, and `sky compute result` prints what it returned.
 
 ### Inside a program
 

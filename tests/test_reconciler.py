@@ -5,6 +5,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from skyward.server.application.connector import Connector
@@ -26,7 +27,7 @@ from skyward.server.persistence.tables import ComputeRow, EventRow
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared.errors import TaskFailedError
 from skyward.shared.events import ComputeDeleted
-from skyward.shared.schemas import Compute, ComputeCreate, ComputeSpecPatch, Node, NodeBounds, Task, TaskCreate
+from skyward.shared.schemas import Compute, ComputeCreate, ComputeSpecPatch, LeaseClaim, Node, NodeBounds, Task, TaskCreate
 from tests.conftest import given
 
 pytestmark = pytest.mark.local
@@ -250,13 +251,14 @@ def describe_a_deleted_compute() -> None:
 
     async def it_is_not_offered_for_a_task_without_an_attempt_to_answer_for(tmp_path: Path) -> None:
         daemon = await _daemon(tmp_path)
+        await _resized(daemon.computes, daemon.compute, NodeBounds(initial=0, min=0, max=8))
         broadcast, _ = await daemon.tasks.submit(
             TaskCreate(compute=daemon.compute, function="f" * 64, dispatch="all", args_inline=b"args"),
             idempotency_key="broadcast",
         )
         await daemon.delete_unannounced()
 
-        assert broadcast.executions == (), "a broadcast admitted while no node was ready is given no attempt"
+        assert broadcast.executions == (), "a broadcast admitted to a compute sized to nothing is given no attempt"
         assert await daemon.reconciler.unsettled() == ((), ()), "its deletion has nothing to answer, so there is nothing to offer it for on every tick"
 
 
@@ -291,6 +293,53 @@ def describe_a_compute_whose_lease_ran_out() -> None:
         await reconciler.compute(compute)
 
         assert (await computes.get(compute)).spec.desired == "deleted"
+
+
+def describe_a_compute_held_for_a_task() -> None:
+    async def nothing_renewing_it_takes_nothing_down_while_the_task_is_in_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        _, task = await _held(computes, reconciler, monkeypatch, compute)
+
+        await reconciler.compute(compute)
+
+        found = await computes.get(compute)
+        assert found.spec.desired != "deleted", "a lease held for a task is not one nobody renews"
+        assert found.lease.task == task.id
+
+    async def once_the_task_settles_the_lease_is_let_go_and_the_compute_deleted_as_finished(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, compute, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        tasks, task = await _held(computes, reconciler, monkeypatch, compute)
+        await tasks.observe(task.executions[0].id, "succeeded")
+
+        await reconciler.compute(compute)
+
+        found = await computes.get(compute)
+        cause = await ComputeRow.select(ComputeRow.deletion_cause).where(ComputeRow.id == compute).first()
+        assert found.spec.desired == "deleted"
+        assert found.lease.owner is None
+        assert cause == {"deletion_cause": "finished"}
+
+    async def one_that_keeps_itself_is_only_let_go(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        computes, _, _, reconciler = await _reconciler(tmp_path, monkeypatch)
+        kept, _ = await computes.create(ComputeCreate(spec=msgspec.structs.replace(SPEC, delete_on_exit=False)), idempotency_key="kept")
+        tasks, task = await _held(computes, reconciler, monkeypatch, kept.id)
+        await tasks.observe(task.executions[0].id, "failed")
+
+        await reconciler.compute(kept.id)
+
+        found = await computes.get(kept.id)
+        assert found.spec.desired == "running"
+        assert found.lease.owner is None, "whatever the task came to, it no longer holds the compute"
+
+
+async def _held(computes: ComputeStore, reconciler: Reconciler, monkeypatch: pytest.MonkeyPatch, compute: str) -> tuple[TaskStore, Task]:
+    """A task queued on the compute and the lease held for it, as ``sky run`` leaves them, long past any grace a daemon gives."""
+    tasks = TaskStore(computes, NodeStore(), BlobStore(), EventStore())
+    task, _ = await tasks.submit(TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_inline=b"args"), idempotency_key=uuid.uuid4().hex)
+    await computes.claim_lease(compute, LeaseClaim(owner="run_1", task=task.id))
+    await ComputeRow.update({ComputeRow.created_at: now() - timedelta(seconds=10 * ABANDON_SECONDS)}).where(ComputeRow.id == compute).run()
+    monkeypatch.setattr(reconciler, "_up_since", now() - timedelta(seconds=10 * ABANDON_SECONDS))
+    return tasks, task
 
 
 async def _unrenewed(compute: str, seconds: float) -> None:

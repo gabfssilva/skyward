@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from litestar import Controller, Response, delete, get, patch, post, put
 from litestar.di import Provide
+from litestar.exceptions import ValidationException
 from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 
@@ -14,6 +15,7 @@ from skyward.server.http.exceptions import failures
 from skyward.server.http.headers import etag, revision_of
 from skyward.server.http.include import compute_blocks
 from skyward.server.http.representation import recast
+from skyward.shared.errors import NotFoundError
 from skyward.shared.schemas import ComputeCreate, ComputeSpecPatch, GenerationCreate, LeaseClaim
 
 
@@ -196,11 +198,19 @@ class ComputeController(Controller):
             "script killed).\n\n"
             "Claiming requires the current lease to be expired or absent — it is a CAS. Renewing requires being the "
             "current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, "
-            "reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it."
+            "reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.\n\n"
+            "A claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease "
+            "lasts until that task settles, with nothing renewing it — how an owner that leaves holds the compute for "
+            "the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` "
+            "is `true`, deletes the compute (`finished`)."
         ),
         responses=failures(404, 409),
     )
-    async def claim_lease(self, compute_id: str, data: v1.ClaimLeaseResource, computes: ports.Computes) -> v1.LeaseResource:
+    async def claim_lease(self, compute_id: str, data: v1.ClaimLeaseResource, computes: ports.Computes, tasks: ports.Tasks) -> v1.LeaseResource:
+        if (data.ttl_seconds is None) == (data.task is None):
+            raise ValidationException("a lease lasts `ttl_seconds`, or until `task` settles: give exactly one")
+        if data.task is not None and (await tasks.get(data.task)).compute_id != await computes.identify(compute_id):
+            raise NotFoundError(f"compute {compute_id} has no task {data.task}")
         return recast(await computes.claim_lease(compute_id, recast(data, LeaseClaim)), v1.LeaseResource)
 
     @delete(

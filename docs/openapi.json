@@ -78,17 +78,34 @@
         "type": "object"
       },
       "ClaimLeaseResource": {
+        "description": "Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until.",
         "properties": {
           "owner": {
             "type": "string"
           },
+          "task": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "ttl_seconds": {
-            "type": "integer"
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
-          "owner",
-          "ttl_seconds"
+          "owner"
         ],
         "title": "ClaimLeaseResource",
         "type": "object"
@@ -1162,7 +1179,8 @@
           "cause": {
             "enum": [
               "requested",
-              "abandoned"
+              "abandoned",
+              "finished"
             ],
             "type": "string"
           },
@@ -1705,7 +1723,7 @@
         "type": "object"
       },
       "LeaseResource": {
-        "description": "Who owns the compute, and until when. Zero owners is legitimate and temporary.",
+        "description": "Who owns the compute, and until when \u2014 ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary.",
         "properties": {
           "expires_at": {
             "oneOf": [
@@ -1719,6 +1737,16 @@
             ]
           },
           "owner": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
             "oneOf": [
               {
                 "type": "string"
@@ -1817,6 +1845,9 @@
               },
               {
                 "$ref": "#/components/schemas/NodeConsoleEvent"
+              },
+              {
+                "$ref": "#/components/schemas/NodeEmittedEvent"
               },
               {
                 "$ref": "#/components/schemas/NodePhaseEvent"
@@ -2175,6 +2206,62 @@
           "type"
         ],
         "title": "NodeConsoleEvent",
+        "type": "object"
+      },
+      "NodeEmittedEvent": {
+        "description": "A JSON value the code on a node sent with ``sky.emit``, once per ``id``, and the task and attempt it belongs to when it belongs to one.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "compute": {
+            "type": "string"
+          },
+          "execution": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "payload": {},
+          "task": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "node.emitted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "compute",
+          "id",
+          "name",
+          "node",
+          "type"
+        ],
+        "title": "NodeEmittedEvent",
         "type": "object"
       },
       "NodeMetricsEvent": {
@@ -4533,7 +4620,8 @@
                 {
                   "enum": [
                     "requested",
-                    "abandoned"
+                    "abandoned",
+                    "finished"
                   ],
                   "type": "string"
                 },
@@ -6387,7 +6475,7 @@
       },
       "put": {
         "deprecated": false,
-        "description": "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).\n\nClaiming requires the current lease to be expired or absent \u2014 it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.",
+        "description": "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).\n\nClaiming requires the current lease to be expired or absent \u2014 it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.\n\nA claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease lasts until that task settles, with nothing renewing it \u2014 how an owner that leaves holds the compute for the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` is `true`, deletes the compute (`finished`).",
         "operationId": "V1ComputesLeaseClaimLease",
         "parameters": [
           {
@@ -8325,7 +8413,7 @@
     "/v1/events": {
       "get": {
         "deprecated": false,
-        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nA stream with nothing to say for 15 seconds sends a comment line, `: ping`, so a reader can tell a quiet stream from a connection that died without closing.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.deletion_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:\n\n| `event:` | `data.type` |\n|---|---|\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
+        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nA stream with nothing to say for 15 seconds sends a comment line, `: ping`, so a reader can tell a quiet stream from a connection that died without closing.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is what `types` filters on. For a compute the two are the same name, one per fact: `compute.created`, `compute.bound`, `compute.adopted`, `compute.provisioning`, `compute.ready`, `compute.degraded`, `compute.generation.created`, `compute.generation.applied`, `compute.lease.claimed`, `compute.lease.released`, `compute.abandoned`, `compute.deleting`, `compute.deletion_failed`, `compute.strays_terminated`, `compute.deleted`, `compute.cost`. Every compute state change is one of them: there is no way to move a compute's state without the stream saying so. For a node or a task the frame is finer than the tag:\n\n| `event:` | `data.type` |\n|---|---|\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.emitted` | `node.emitted` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
         "operationId": "V1EventsStream",
         "parameters": [
           {
@@ -8428,6 +8516,7 @@
                       "compute.ready": "#/components/schemas/ComputeReadyEvent",
                       "compute.strays_terminated": "#/components/schemas/ComputeStraysTerminatedEvent",
                       "node.console": "#/components/schemas/NodeConsoleEvent",
+                      "node.emitted": "#/components/schemas/NodeEmittedEvent",
                       "node.metrics": "#/components/schemas/NodeMetricsEvent",
                       "node.phase": "#/components/schemas/NodePhaseEvent",
                       "node.progress": "#/components/schemas/NodeProgressEvent",
@@ -8493,6 +8582,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/NodeConsoleEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/NodeEmittedEvent"
                     },
                     {
                       "$ref": "#/components/schemas/NodePhaseEvent"
@@ -10271,7 +10363,7 @@
       },
       "post": {
         "deprecated": false,
-        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions.\n\nThe arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead \u2014 the values in JSON \u2014 and the daemon encodes them here.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
+        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions. On a compute with no `ready` node yet it is for the ranks the compute opens with (`spec.nodes.initial`), each waiting for its machine.\n\nThe arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead \u2014 the values in JSON \u2014 and the daemon encodes them here.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
         "operationId": "V1TasksSubmit",
         "parameters": [
           {
@@ -10394,7 +10486,7 @@
     "/v1/tasks/{task_id}": {
       "delete": {
         "deprecated": false,
-        "description": "Before `started`, cancellation is guaranteed (CAS + worker ack). After `started` it is best-effort: the execution enters `cancel_requested` and only becomes `cancelled` once the worker confirms it stopped. Without that confirmation the outcome is `indeterminate` \u2014 Python code that may still be running is never declared cancelled.",
+        "description": "Before `started`, cancellation is certain: the execution has not reached a worker, and it is cancelled by a write conditional on that. After `started` the execution enters `cancel_requested`, the worker is asked to stop it until it lets go, and it becomes `cancelled` once the worker says it stopped. An execution that finished before the stop landed keeps its outcome, and one whose worker is gone is `indeterminate` \u2014 Python code that may still be running is never declared cancelled. A cancelled task is not retried.",
         "operationId": "V1TasksTaskIdCancel",
         "parameters": [
           {

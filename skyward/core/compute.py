@@ -229,20 +229,15 @@ class Compute:
 
         self._attach = attach
         self._providers = {spec.provider.name or spec.provider.kind: spec.provider for spec in specs}
-        self._spec = ComputeSpec(
-            specs=tuple(_wire(spec) for spec in specs),
-            nodes=bounds(nodes),
+        self._spec = definition(
+            specs,
+            nodes=nodes,
             allocation=allocation,
             selection=selection,
             image=image,
-            worker=Worker(
-                concurrency=executor.concurrency,
-                executor=executor.type,
-                reuse=executor.reuse,
-                buffer=executor.buffer,
-            ),
-            options=_options(options),
-            plugins=tuple(plugin.ref() for plugin in plugins),
+            plugins=plugins,
+            executor=executor,
+            options=options,
             delete_on_exit=delete_on_exit,
             ttl=ttl,
         )
@@ -920,6 +915,39 @@ class Compute:
         """The newest event the compute has, which its endings are followed from rather than replayed up to."""
         page = await self.client.call("GET", "/v1/events/log", Page[LogEntryResource], compute=self._id, limit=1)
         return page.items[0].sequence if page.items else None
+
+
+def definition(
+    specs: Sequence[Spec],
+    *,
+    nodes: NodeSpec = 1,
+    allocation: Allocation = "spot_if_available",
+    selection: Selection = "cheapest",
+    image: Image = DEFAULT_IMAGE,
+    plugins: Sequence[Plugin] = (),
+    executor: Executor = DEFAULT_EXECUTOR,
+    options: Options = DEFAULT_OPTIONS,
+    delete_on_exit: bool = True,
+    ttl: int = 600,
+) -> ComputeSpec:
+    """The compute a :class:`Compute` asks the daemon for, from the same arguments, for a caller that posts it without holding a pool."""
+    return ComputeSpec(
+        specs=tuple(_wire(spec) for spec in specs),
+        nodes=bounds(nodes),
+        allocation=allocation,
+        selection=selection,
+        image=image,
+        worker=Worker(
+            concurrency=executor.concurrency,
+            executor=executor.type,
+            reuse=executor.reuse,
+            buffer=executor.buffer,
+        ),
+        options=_options(options),
+        plugins=tuple(plugin.ref() for plugin in plugins),
+        delete_on_exit=delete_on_exit,
+        ttl=ttl,
+    )
 
 
 async def _next[T](source: AsyncIterator[T]) -> T | None:

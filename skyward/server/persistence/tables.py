@@ -90,7 +90,8 @@ class ComputeRow(Table, tablename="computes"):
 
     ``deletion_cause`` and ``deleted_at`` are how the compute ended. The cause is
     written with the intent to delete, by whoever had it — a client, or the
-    reconciler letting go of a lease nobody renews — and the moment by the move
+    reconciler letting go of a lease nobody renews or a task held until it settled —
+    and the moment by the move
     into ``deleted``, once, the way a node's ``terminated_at`` is.
     """
 
@@ -119,6 +120,7 @@ class ComputeRow(Table, tablename="computes"):
 
     lease_owner = Varchar(null=True, default=None)
     lease_expires_at = Timestamptz(null=True, default=None)
+    lease_task = Varchar(null=True, default=None)
 
     created_at = Timestamptz()
 

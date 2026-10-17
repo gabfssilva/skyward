@@ -275,7 +275,11 @@ export const failedOf = (c: Compute): number => c.tasks.failed + c.tasks.timed_o
 /** The tasks that are over, however they turned out. */
 export const finishedOf = (c: Compute): number => callsOf(c) - c.tasks.queued - c.tasks.running
 
-export const CAUSE: Record<Ending['cause'], string> = { requested: 'someone asked for it', abandoned: 'nobody renewed its lease' }
+export const CAUSE: Record<Ending['cause'], string> = {
+  requested: 'someone asked for it',
+  abandoned: 'nobody renewed its lease',
+  finished: 'the task it was held for settled',
+}
 
 /** What was bought, or asked for: the offer a compute is bound to, else the first spec it named. */
 export type Bound = { accelerator: string | null; accelerator_count: number; kind: string; region: string | null; instance: string | null }

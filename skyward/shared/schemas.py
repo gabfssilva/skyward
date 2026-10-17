@@ -91,12 +91,14 @@ A machine kept for 61 seconds costs 2 minutes on a per-minute provider and a ful
 hour on a per-hour one. Stamped by each adapter on its offers, because it is a fact
 about the provider's billing, not a preference.
 """
-type DeletionCause = Literal["requested", "abandoned"]
+type DeletionCause = Literal["requested", "abandoned", "finished"]
 """Why a compute was deleted.
 
 ``requested`` is a ``DELETE`` somebody sent — a ``with`` block exiting, ``sky compute
 delete``, a button. ``abandoned`` is the reconciler's: nobody renewed the lease, and
-``delete_on_exit`` said that a compute nobody holds is torn down.
+``delete_on_exit`` said that a compute nobody holds is torn down. ``finished`` is the
+reconciler's too: the lease was held for a task, the task settled, and
+``delete_on_exit`` said the compute goes with it.
 """
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process", "loky"]
@@ -641,10 +643,15 @@ class Lease(Struct, frozen=True):
     owners is legitimate and temporary — a daemon restarting, a script killed —
     and only the holder opens SSH connections to the machines. Losing it destroys
     nothing by itself.
+
+    A lease is held until ``expires_at``, or, with ``task``, until that task
+    settles: an owner that leaves the compute to its work holds it for the work's
+    length, with nothing left running to renew it.
     """
 
     owner: str | None = None
     expires_at: datetime | None = None
+    task: str | None = None
 
 
 class Ending(Struct, frozen=True):
@@ -705,10 +712,11 @@ class Compute(Struct, frozen=True):
 
 
 class LeaseClaim(Struct, frozen=True):
-    """A bid for ownership: who is claiming, and for how long before it lapses."""
+    """A bid for ownership: who is claiming, and for how long — ``ttl_seconds``, or until ``task`` settles."""
 
     owner: str
-    ttl_seconds: int
+    ttl_seconds: int | None = None
+    task: str | None = None
 
 
 class Node(Struct, frozen=True):

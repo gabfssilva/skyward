@@ -265,14 +265,16 @@ refused.
 
 `repl` opens the Python interpreter bootstrapped on that machine.
 
-`sky monitor` attaches to a running compute and follows it until you interrupt:
+`sky monitor` follows computes from the moment it starts:
 
 ```bash
-sky monitor research
-sky monitor research --mode log
+sky monitor research                # the live footer, until you interrupt
+sky monitor research --mode log     # lines instead
+sky monitor research eval           # several computes, each line after the compute's name
+sky monitor                         # every compute the daemon has
 ```
 
-`--mode rich` (the default) draws the live footer; `--mode log` prints plain lines, which is what you want in CI or when piping to a file. Monitoring creates nothing — the compute has to exist already.
+One compute on a terminal gets the live footer (`--mode rich`, the default). Anything else is lines on stdout, one per event worth one: a compute or a machine changing state, a line a node printed, an attempt at a task ending. Named computes end the lines once every one of them is deleted; with none named they go on until interrupted. Nothing from before is replayed — that is `sky log`. `--quiet` keeps the lines to changes of state and task endings, leaving out what the nodes print; the Claude Code plugin runs `sky monitor --quiet` as its monitor, so a session hears when a compute changes state or a task ends. Monitoring creates nothing: a named compute has to exist already.
 
 ## Next steps
 

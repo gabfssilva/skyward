@@ -403,31 +403,35 @@ def describe_a_script_run_on_containers() -> None:
         path.write_text(declared(nodes=1, delete_on_exit=True))
         async with connected(daemon) as client:
             started = await answer(client, "run_script", path=str(path), args=["3"])
-            task = await until(lambda: ended(client, started["name"]))
+            name = started["compute"]["name"]
+            task = await until(lambda: ended(client, name))
             result = await answer(client, "read_result", task=task["id"])
             printed = await answer(client, "read_log", task=task["id"], types=["node.console"])
-            gone = await until(lambda: state(client, started["name"], "deleted"))
+            gone = await until(lambda: state(client, name, "deleted"))
+            final = await answer(client, "get_compute", ref=name)
 
         assert started["delete_on_exit"] is True
-        assert Path(started["log"]).is_file(), "sky run's own progress is kept where the answer says"
+        assert started["task"] == task["id"], "the answer names the run's task"
         assert result == {"state": "succeeded", "results": [{"rank": 0, "returned": 3}]}, "a file run whole returns its exit status"
         assert "rank 0 of 1 said ['3']" in [entry.get("content") for entry in printed["items"]]
-        assert gone == "deleted", "the run took the compute down once its task ended, as the file declared"
+        assert gone == "deleted", "the daemon took the compute down once its task ended, as the file declared"
+        assert final["ended"]["cause"] == "finished"
 
     async def a_function_answers_with_what_it_returned(daemon: str, tmp_path: Path) -> None:
         path = tmp_path / "shouting.py"
         path.write_text(entries(nodes=1, delete_on_exit=False))
         async with connected(daemon) as client:
             started = await answer(client, "run_script", path=str(path), args=["shout", "--word", "hi", "--times", "2"])
+            name = started["compute"]["name"]
             try:
-                task = await until(lambda: ended(client, started["name"]))
+                task = await until(lambda: ended(client, name))
                 result = await answer(client, "read_result", task=task["id"])
-                kept = await answer(client, "get_compute", ref=started["name"])
+                kept = await until(lambda: released(client, name))
             finally:
-                await answer(client, "delete_compute", ref=started["name"])
+                await answer(client, "delete_compute", ref=name)
 
         assert result == {"state": "succeeded", "results": [{"rank": 0, "returned": {"rank": 0, "said": "hihi"}}]}
-        assert kept["state"] == "ready", "delete_on_exit = false leaves it up for the next run"
+        assert kept["status"]["state"] == "ready", "delete_on_exit = false leaves it up for the next run, and nobody holding it"
 
 
 @sky.function
@@ -448,6 +452,12 @@ async def ended(client: Client, compute: str) -> dict[str, Any] | None:
     """The compute's task, once it is no longer queued or running."""
     tasks = (await answer(client, "list_tasks", compute=compute))["items"]
     return next((task for task in tasks if task["state"] not in ("queued", "running")), None)
+
+
+async def released(client: Client, compute: str) -> dict[str, Any] | None:
+    """The compute whole, once the daemon has let go of the lease a run held for its task."""
+    found = await answer(client, "get_compute", ref=compute, raw=True)
+    return found if found["lease"]["owner"] is None else None
 
 
 async def state(client: Client, compute: str, *wanted: str) -> str | None:

@@ -43,7 +43,7 @@ type Allocation = Literal["spot", "on_demand", "spot_if_available", "cheapest"]
 type Selection = Literal["cheapest", "first"]
 type Market = Literal["spot", "on_demand"]
 type BillingUnit = Literal["second", "minute", "hour"]
-type DeletionCause = Literal["requested", "abandoned"]
+type DeletionCause = Literal["requested", "abandoned", "finished"]
 type Executor = Literal["thread", "process", "loky"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 type VolumeType = Literal["mount", "sync"]
@@ -265,10 +265,11 @@ class FunctionSummary(Struct, frozen=True, kw_only=True):
 
 
 class LeaseResource(Struct, frozen=True, kw_only=True):
-    """Who owns the compute, and until when. Zero owners is legitimate and temporary."""
+    """Who owns the compute, and until when — ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary."""
 
     owner: str | None
     expires_at: datetime | None
+    task: str | None = None
 
 
 class Refusal(Struct, frozen=True, kw_only=True):
@@ -615,8 +616,11 @@ class CreateGenerationResource(Struct, frozen=True, kw_only=True):
 
 
 class ClaimLeaseResource(Struct, frozen=True, kw_only=True):
+    """Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until."""
+
     owner: str
-    ttl_seconds: int
+    ttl_seconds: int | None = None
+    task: str | None = None
 
 
 class CreateTaskResource(Struct, frozen=True, kw_only=True):

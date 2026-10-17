@@ -107,11 +107,13 @@ export interface paths {
         head?: never;
         /**
          * Change a compute's spec
-         * @description Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.
+         * @description `spec.nodes` and `spec.image` are mutable in place. A new size bumps `generation` and the reconciler resizes with drain.
          *
-         *     A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.
+         *     `spec.image` changes only when the compute's `Image` was created with `mutable=true`, and then only in `pip`, `pip_indexes`, `includes` and `excludes`. A ready node is sent through bootstrapping and comes back `ready` with the new packages. Removing a package is not promised to take it off the machine. Any other field of the image that differs, or any image change on a compute that is not mutable, is `422 image_fixed`, naming the field.
          *
-         *     The rest of the definition (provider, image, worker, plugins, volumes, ports) is fixed for the life of the compute; a different one is a different compute.
+         *     A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused a change of `spec.nodes` with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.
+         *
+         *     The rest of the definition (provider, worker, plugins, volumes, ports) is fixed for the life of the compute; a different one is a different compute.
          */
         patch: operations["V1ComputesUpdate"];
         trace?: never;
@@ -295,6 +297,8 @@ export interface paths {
          * @description A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).
          *
          *     Claiming requires the current lease to be expired or absent — it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.
+         *
+         *     A claim gives exactly one of `ttl_seconds` and `task`. With `task`, one of this compute's, the lease lasts until that task settles, with nothing renewing it — how an owner that leaves holds the compute for the work it left behind. Once the task settles the reconciler releases it and, if `spec.delete_on_exit` is `true`, deletes the compute (`finished`).
          */
         put: operations["V1ComputesLeaseClaimLease"];
         post?: never;
@@ -546,6 +550,7 @@ export interface paths {
          *     | `node.{state}` — ten of them | `node.state` |
          *     | `node.progress` | `node.progress` |
          *     | `node.console` | `node.console` |
+         *     | `node.emitted` | `node.emitted` |
          *     | `node.phase` | `node.phase` |
          *     | `node.metrics` | `node.metrics` |
          *     | `task.started`, `task.retrying`, `task.succeeded`, `task.failed`, `task.cancelled`, `task.timed_out`, `task.indeterminate` | `task.state` |
@@ -852,7 +857,7 @@ export interface paths {
          * Submit a task
          * @description A task is **one call**: `function` + `args` → `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.
          *
-         *     `dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank — a later scale-up does not add executions.
+         *     `dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank — a later scale-up does not add executions. On a compute with no `ready` node yet it is for the ranks the compute opens with (`spec.nodes.initial`), each waiting for its machine.
          *
          *     The arguments are a pickle: `args_inline` under a size threshold, `args_sha256` over it. A caller with no Python to pickle with sends `call` instead — the values in JSON — and the daemon encodes them here.
          *
@@ -881,7 +886,7 @@ export interface paths {
         post?: never;
         /**
          * Cancel a task
-         * @description Before `started`, cancellation is guaranteed (CAS + worker ack). After `started` it is best-effort: the execution enters `cancel_requested` and only becomes `cancelled` once the worker confirms it stopped. Without that confirmation the outcome is `indeterminate` — Python code that may still be running is never declared cancelled.
+         * @description Before `started`, cancellation is certain: the execution has not reached a worker, and it is cancelled by a write conditional on that. After `started` the execution enters `cancel_requested`, the worker is asked to stop it until it lets go, and it becomes `cancelled` once the worker says it stopped. An execution that finished before the stop landed keeps its outcome, and one whose worker is gone is `indeterminate` — Python code that may still be running is never declared cancelled. A cancelled task is not retried.
          */
         delete: operations["V1TasksTaskIdCancel"];
         options?: never;
@@ -1016,10 +1021,14 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /** ClaimLeaseResource */
+        /**
+         * ClaimLeaseResource
+         * @description Exactly one of ``ttl_seconds`` and ``task``: how long the lease lasts, or the task it lasts until.
+         */
         ClaimLeaseResource: {
             owner: string;
-            ttl_seconds: number;
+            task?: string | null;
+            ttl_seconds?: number | null;
         };
         /**
          * CommandResultResource
@@ -1108,7 +1117,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1153,7 +1162,7 @@ export interface components {
              * @default reconcile_failed
              * @enum {string}
              */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             compute: string;
             error: string;
             /**
@@ -1423,13 +1432,13 @@ export interface components {
             /** Format: date-time */
             at: string;
             /** @enum {string} */
-            cause: "requested" | "abandoned";
+            cause: "requested" | "abandoned" | "finished";
             cost: number;
         };
         /** Error */
         Error: {
             /** @enum {string} */
-            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
+            code: "not_found" | "revision_conflict" | "idempotency_conflict" | "lease_held" | "name_taken" | "compute_not_connected" | "compute_not_accepting" | "compute_not_resizable" | "image_fixed" | "unsupported_provider" | "unsupported_plugin" | "hash_mismatch" | "task_failed" | "task_indeterminate" | "duplication_not_acknowledged" | "capability_mismatch" | "release_pending" | "illegal_transition" | "reconcile_failed" | "source_rejected";
             details: {
                 [key: string]: unknown;
             } | null;
@@ -1519,6 +1528,8 @@ export interface components {
             includes: string[];
             includes_sha256?: string | null;
             metrics?: (("cpu" | "mem_used_mb" | "mem_total_mb" | "gpu_util" | "gpu_mem_mb" | "gpu_mem_total_mb" | "gpu_temp_c" | "gpu_power_w" | "net_rx_kbps" | "net_tx_kbps" | "disk_used_pct") | components["schemas"]["MetricSpec"])[] | null;
+            /** @default false */
+            mutable: boolean;
             /** @default [] */
             pip: string[];
             /** @default [] */
@@ -1542,11 +1553,12 @@ export interface components {
         };
         /**
          * LeaseResource
-         * @description Who owns the compute, and until when. Zero owners is legitimate and temporary.
+         * @description Who owns the compute, and until when — ``expires_at``, or until ``task`` settles. Zero owners is legitimate and temporary.
          */
         LeaseResource: {
             expires_at: string | null;
             owner: string | null;
+            task?: string | null;
         };
         /** LivenessResource */
         LivenessResource: {
@@ -1560,7 +1572,7 @@ export interface components {
         LogEntryResource: {
             /** Format: date-time */
             at: string;
-            data: components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
+            data: components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodeEmittedEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
             sequence: number;
             type: string;
         };
@@ -1661,6 +1673,26 @@ export interface components {
             type: "node.console";
         };
         /**
+         * NodeEmittedEvent
+         * @description A JSON value the code on a node sent with ``sky.emit``, once per ``id``, and the task and attempt it belongs to when it belongs to one.
+         */
+        NodeEmittedEvent: {
+            /** Format: date-time */
+            at: string;
+            compute: string;
+            execution?: string | null;
+            id: string;
+            name: string;
+            node: string;
+            payload?: unknown;
+            task?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "node.emitted";
+        };
+        /**
          * NodeMetricsEvent
          * @description One reading off one node. Streamed, never logged.
          */
@@ -1724,6 +1756,7 @@ export interface components {
             desired: "present" | "deleted";
             generation: number;
             id: string;
+            image?: string | null;
             last_error: components["schemas"]["Error"] | null;
             launched_at: string | null;
             machine: string | null;
@@ -2113,10 +2146,11 @@ export interface components {
         };
         /**
          * UpdateComputeResource
-         * @description A resize: ``nodes`` is the one part of a spec that changes without replacing the machines.
+         * @description A resize, a new image for a mutable compute, or both: the parts of a spec that change without replacing the machines.
          */
         UpdateComputeResource: {
-            nodes: components["schemas"]["NodeBounds"];
+            image?: components["schemas"]["Image"];
+            nodes?: components["schemas"]["NodeBounds"];
         };
         /**
          * Utilization
@@ -2347,7 +2381,7 @@ export interface operations {
                 /** @description `true` lists what is still running, `false` what is finished. */
                 live?: boolean | null;
                 /** @description Why the compute ended — `requested` or `abandoned`. */
-                cause?: ("requested" | "abandoned") | null;
+                cause?: ("requested" | "abandoned" | "finished") | null;
             };
             header?: never;
             path?: never;
@@ -4047,7 +4081,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
+                    "text/event-stream": components["schemas"]["ComputeCreatedEvent"] | components["schemas"]["ComputeBoundEvent"] | components["schemas"]["ComputeAdoptedEvent"] | components["schemas"]["ComputeProvisioningEvent"] | components["schemas"]["ComputeReadyEvent"] | components["schemas"]["ComputeDegradedEvent"] | components["schemas"]["ComputeGenerationCreatedEvent"] | components["schemas"]["ComputeGenerationAppliedEvent"] | components["schemas"]["ComputeLeaseClaimedEvent"] | components["schemas"]["ComputeLeaseReleasedEvent"] | components["schemas"]["ComputeAbandonedEvent"] | components["schemas"]["ComputeDeletingEvent"] | components["schemas"]["ComputeDeletionFailedEvent"] | components["schemas"]["ComputeStraysTerminatedEvent"] | components["schemas"]["ComputeDeletedEvent"] | components["schemas"]["ComputeCostEvent"] | components["schemas"]["NodeStateEvent"] | components["schemas"]["NodeProgressEvent"] | components["schemas"]["NodeConsoleEvent"] | components["schemas"]["NodeEmittedEvent"] | components["schemas"]["NodePhaseEvent"] | components["schemas"]["NodeMetricsEvent"] | components["schemas"]["TaskStateEvent"];
                 };
             };
             /** @description Bad request syntax or unsupported method */

@@ -67,6 +67,7 @@ const image = (base: string | null, pip: string[]): Image => ({
   includes: [],
   includes_sha256: null,
   metrics: null,
+  mutable: false,
   pip,
   pip_indexes: [],
   python: '3.12',

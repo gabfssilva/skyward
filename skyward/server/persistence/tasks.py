@@ -31,6 +31,7 @@ from skyward.shared.errors import (
 )
 from skyward.shared.events import TaskEvent
 from skyward.shared.schemas import (
+    Compute,
     ComputeState,
     Dispatch,
     Error,
@@ -133,7 +134,7 @@ class TaskStore:
                 run_timeout=_limit(body.run_timeout_seconds, compute.spec.options.task_run_timeout),
             ).save().run()
 
-            for rank in await self._ranks(compute.id, body):
+            for rank in await self._ranks(compute, body):
                 await self.attempt(task, rank=rank, ordinal=1, retry_of=None)
 
             return task
@@ -368,19 +369,24 @@ class TaskStore:
             self._settled[task_id].set()
         return row
 
-    async def _ranks(self, compute: str, body: TaskCreate) -> tuple[int, ...]:
+    async def _ranks(self, compute: Compute, body: TaskCreate) -> tuple[int, ...]:
         """Which nodes this task is for, decided once, at admission.
 
         A broadcast freezes the set of ready nodes here. A node that joins a second
         later does not get an execution: the user asked for the compute they had,
         and silently growing the fan-out would make ``@`` mean something different
         on every call.
+
+        A compute with no ready node has nothing to freeze yet, and what it was asked
+        for is all it is: the ranks it opens with. That is a broadcast sent while the
+        machines are still being bought, which waits for each of them.
         """
         if body.dispatch in ("one", "stream"):
             return (body.rank or 0,)
 
-        nodes = await self._nodes.list(compute, include_terminal=False, generation=None)
-        return tuple(node.rank for node in nodes.items if node.state == "ready")
+        nodes = await self._nodes.list(compute.id, include_terminal=False, generation=None)
+        ready = tuple(node.rank for node in nodes.items if node.state == "ready")
+        return ready or tuple(range(compute.spec.nodes.initial))
 
     async def attempt(self, task_id: str, rank: int, ordinal: int, retry_of: str | None) -> str:
         """Write one attempt down, with the wait it is allowed starting now — a retry's included."""

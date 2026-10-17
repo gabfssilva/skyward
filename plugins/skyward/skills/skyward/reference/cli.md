@@ -134,14 +134,16 @@ A stock-out reads like `no market could place a runpod machine` wrapping the pro
 
 ```bash
 sky monitor training                # live Rich footer until interrupted
-sky monitor training --mode log     # plain lines
+sky monitor training --mode log     # lines on stdout, until the compute is deleted
+sky monitor training eval           # several computes, each line after the compute's name
+sky monitor                         # every compute, until interrupted
 sky log training                    # replay the event log from the start
 sky log training -f                 # replay, then follow
 sky log training -n 50
 sky log export training run.md      # .md or .jsonl
 ```
 
-The log replays from the beginning, so attaching late loses nothing. A non-following command stops once the replay goes quiet for `--idle` seconds (1.0 by default).
+`sky monitor` starts from now; `sky log` replays from the beginning, so attaching late loses nothing. A non-following command stops once the replay goes quiet for `--idle` seconds (1.0 by default).
 
 `sky app` watches every live compute on one screen, until `q`.
 

@@ -23,27 +23,29 @@ from collections.abc import Callable, Sequence
 from contextlib import aclosing, suppress
 from functools import partial
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 
 import msgspec
 from cyclopts import Parameter
 
 from skyward import api
-from skyward.api.v1 import ComputeResource, FunctionResource, NodeResource, Page, TaskResource, TaskState
+from skyward.api.v1 import ComputeResource, Error, FunctionResource, LeaseResource, NodeResource, Page, TaskResource, TaskState
 from skyward.cli import app as cli
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call, resolve
 from skyward.cli._output import Output, dump, render
 from skyward.cli.script import FACTORIES, Call, Script, Whole, read
 from skyward.core import console, usercode, writes
+from skyward.core.app import App
 from skyward.core.client import Client
-from skyward.core.compute import Compute
+from skyward.core.compute import LEASE_SECONDS, Compute, definition
 from skyward.core.errors import SkywardError
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
-from skyward.core.spec import bounds
+from skyward.core.spec import Spec, bounds
 from skyward.core.view import ComputeView
 from skyward.shared import codec
+from skyward.shared import retry as retries
 from skyward.shared.events import ConsoleEvent, Event
 from skyward.shared.observability import notice
 from skyward.shared.retry import Retry
@@ -54,13 +56,16 @@ from skyward.shared.schemas import (
     Dispatch,
     FunctionExcerpt,
     Image,
+    LeaseClaim,
     NodeBounds,
     PipIndex,
     PluginRef,
     ProviderCreate,
     ProviderRef,
-    Spec,
     TaskCreate,
+)
+from skyward.shared.schemas import (
+    Spec as SpecRef,
 )
 from skyward.worker.plugins import PLUGINS
 from skyward.worker.script import Exited, Outcome, Returned
@@ -86,6 +91,13 @@ IDLE = 1.0
 """Seconds of quiet that mean a settled task has no more output coming."""
 DRAIN = 5.0
 """Longest a settled task waits on its own output before giving up on the rest."""
+
+
+class Launched(NamedTuple):
+    """A run left to the daemon: the compute it stands on, and the task the compute's lease is held for."""
+
+    compute: ComputeResource
+    task: TaskResource
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -468,10 +480,37 @@ def cancel_task(
     render(TASK_COLUMNS, [_task_row(cancelled)], output=output)
 
 
+@compute_app.command(name="result")
+def task_result(
+    task: str,
+    *,
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+) -> None:
+    """Wait for a task ``sky run`` started, print what it returned, and exit with its status.
+
+    What a ``sky.app`` function returned is printed as JSON, as a list by rank when it
+    ran on every node; a file run whole returns its exit status and prints nothing.
+    A task that failed or was cancelled is refused with its reason. What it printed
+    is in ``sky log``.
+    """
+
+    async def settled(client: Client) -> tuple[TaskResource, list[int | Outcome]]:
+        while await client.blob(f"/v1/tasks/{task}/result", wait=WAIT) is None:
+            continue
+        found = await client.call("GET", f"/v1/tasks/{task}", TaskResource)
+        return found, await _results(client, found.id, codec.Pickle[int | Outcome]())
+
+    found, returned = _call(settled, url=url)
+    _answered(returned, "all" if found.dispatch == "all" else "any")
+    if status := max(map(_exit, returned), default=0):
+        raise SystemExit(status)
+
+
 def run_declared(
     script: Path | None = None,
     *args: Annotated[str, Parameter(allow_leading_hyphen=True, help="The function's command line, or the script's argv")],
     node: Annotated[str, Parameter(name="--node", help=WHERE_HELP)] = "any",
+    foreground: Annotated[bool, Parameter(name=("-f", "--foreground"), help="Stay for the run: draw it, print what it returned, exit with its status")] = False,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
 ) -> None:
     """Run a local Python file on the compute it declares itself.
@@ -480,22 +519,33 @@ def run_declared(
     ``dependencies`` are the image, ``[tool.skyward]`` the rest — and then all of
     it runs, with ``args`` as its argv. Or it decorates functions with
     ``sky.app``, and then ``args`` name one and are its arguments, parsed against
-    its signature; ``sky run FILE --help`` lists them. What the function returns
-    is printed as JSON once it has, and as a list by rank under ``--node all``.
+    its signature; ``sky run FILE --help`` lists them. Everything after the file
+    that is one of this command's flags is taken as one; ``--`` hands the rest to
+    the file.
+
+    The run is left to the daemon: the compute is asked for, the run's task is
+    queued on it, and the command answers with both, waiting on neither the
+    machines nor the task. The compute's lease is held for the task, so nothing
+    here stays to renew it; once the task settles the daemon deletes the compute,
+    unless the file declares ``delete_on_exit = false``. ``sky log`` follows the
+    run, and ``sky compute result`` waits for what it returned.
+
+    With ``--foreground`` the command stays for the run instead. On a terminal the
+    compute is drawn as a script against the SDK would draw it: a panel under what
+    the nodes print. Piped, it is a line per event on stderr and the script's
+    output alone on stdout. What a function returns is printed as JSON once it
+    has, and as a list by rank under ``--node all``, and the command exits with the
+    worst node's status.
 
     The compute is named after the file and what it declares, so a second run
     lands on the same machines while they are up, and a declaration whose
-    ``nodes`` changed resizes them rather than buying others. Whether they are
-    still up after a run is its ``delete_on_exit``.
+    ``nodes`` changed resizes them rather than buying others. A run on machines
+    another run still holds is refused.
 
     What the image includes goes with each run, not with the machines: they are
     built without it, so a node never holds a copy older than the one it runs.
 
-    On a terminal the compute is drawn as a script against the SDK would draw it:
-    a panel under what the nodes print. Piped, it is a line per event on stderr and
-    the script's output alone on stdout.
-
-    Exits with the worst node's status. Given no file, prints this.
+    Given no file, prints this.
     """
     if script is None:
         cli.help_print(["run"])
@@ -507,6 +557,10 @@ def run_declared(
     declared = read(script, args)
     app = declared.app
     daemon = resolve(url)
+    if not foreground:
+        _handed(declared, _call(lambda client: launch(client, declared, where), url=daemon))
+        return
+
     standing = _call(lambda client: _standing(client, declared), url=daemon)
     drawn = sys.stdout.isatty() and sys.stderr.isatty()
     callbacks = () if drawn else (_progress,)
@@ -574,7 +628,7 @@ def compute_spec(
 
     spec = ComputeSpec(
         specs=(
-            Spec(
+            SpecRef(
                 provider=ProviderRef(kind=account.kind, name=account.name or account.kind),
                 accelerator=resolve(accelerator, None)[0],
                 cpus=cpus,
@@ -630,6 +684,29 @@ async def update(
     return await writes.conditional(client, found.id, "PATCH", body=msgspec.json.encode(ComputeSpecPatch(image=image)))
 
 
+async def launch(client: Client, script: Script, where: Where) -> Launched:
+    """Leave what the file declares to the daemon, and answer without waiting on any of it.
+
+    The compute is asked for, or the one a run of the same declaration left up is
+    taken; the run's task is queued on it; and the compute's lease is held for that
+    task, so that no process has to stay to renew it. Once the task settles the
+    daemon lets go of the lease, and deletes the compute when the file says
+    ``delete_on_exit``.
+
+    The lease is claimed before the task is sent, so a compute another run holds is
+    refused with nothing queued on it. A claim that is never handed to the task —
+    this process dying in between — runs out like any other.
+    """
+    owner = f"run_{uuid.uuid4().hex[:12]}"
+    compute = await _standing(client, script) or await create(client, script.app.provider, await _definition(client, script.app), script.name)
+    lease = f"/v1/computes/{compute.id}/lease"
+    await client.call("PUT", lease, LeaseResource, body=msgspec.json.encode(LeaseClaim(owner=owner, ttl_seconds=LEASE_SECONDS)))
+    work, name = _work(script)
+    task = await _submit(client, compute.id, work, script.source, name, where, script.app.retry)
+    await client.call("PUT", lease, LeaseResource, body=msgspec.json.encode(LeaseClaim(owner=owner, task=task.id)))
+    return Launched(compute, task)
+
+
 def _node(node: str) -> str:
     """Reject a target the daemon would only reject later, and with less to say."""
     if node == "all" or node.lstrip("-").isdigit():
@@ -669,8 +746,8 @@ def _spoke(ran: dict[str, Result], output: Output) -> None:
                 sys.stdout.write(f"{name}\n{(result.stdout + result.stderr).rstrip()}\n")
 
 
-async def _standing(client: Client, script: Script) -> bool:
-    """Whether the compute the file declares is up, sized and imaged to what it asks for now.
+async def _standing(client: Client, script: Script) -> ComputeResource | None:
+    """The compute the file declares, when it is up, sized and imaged to what it asks for now.
 
     A mutable image is brought to the one the file asks for, keeping whatever the
     compute was given to include by ``sky compute update`` — a run ships its own
@@ -684,13 +761,14 @@ async def _standing(client: Client, script: Script) -> bool:
     except SkywardError as error:
         if error.code != "not_found":
             raise
-        return False
+        return None
 
     match found.status.state:
         case "deleted":
-            return False
+            return None
         case "deleting":
-            raise SystemExit(f"compute {script.name} is being deleted; run again once it is gone")
+            refusal = f"compute {script.name} is being deleted; run again once it is gone"
+            raise SkywardError(Error(code="compute_not_accepting", message=refusal, retryable=True, request_id=None, details=None))
         case _:
             wanted = bounds(script.app.nodes)
             resized = (found.spec.nodes.initial, found.spec.nodes.min, found.spec.nodes.max) != (wanted.initial, wanted.min, wanted.max)
@@ -704,8 +782,35 @@ async def _standing(client: Client, script: Script) -> bool:
             reimaged = current.mutable and current != image
             if resized or reimaged:
                 patch = ComputeSpecPatch(nodes=wanted if resized else msgspec.UNSET, image=image if reimaged else msgspec.UNSET)
-                await writes.conditional(client, found.id, "PATCH", msgspec.json.encode(patch))
-            return True
+                return await writes.conditional(client, found.id, "PATCH", msgspec.json.encode(patch))
+            return found
+
+
+async def _definition(client: Client, app: App) -> ComputeSpec:
+    """The compute ``--foreground`` asks for through a pool, posted without one: the same spec, and the pool's retry stored as the compute's."""
+    spec = definition(
+        (Spec(app.provider, app.accelerator, app.cpus, app.memory_gb, app.region),),
+        nodes=app.nodes,
+        allocation=app.allocation,
+        image=_without_includes(app.image),
+        plugins=app.plugins,
+        options=app.options,
+        delete_on_exit=app.delete_on_exit,
+    )
+    return msgspec.structs.replace(spec, retry=await _stored(client, retries.default))
+
+
+def _handed(script: Script, launched: Launched) -> None:
+    """Where a run left to the daemon is, and the commands that reach it again."""
+    after = "deleted once the task settles" if script.app.delete_on_exit else f"kept after the task; sky stop {script.name} ends it"
+    sys.stdout.write(
+        f"compute  {script.name} ({launched.compute.status.state})\n"
+        f"task     {launched.task.id}\n"
+        f"follow   sky monitor {script.name}\n"
+        f"result   sky compute result {launched.task.id}\n"
+        f"after    {after}\n"
+    )
+    sys.stdout.flush()
 
 
 def _without_includes(image: Image) -> Image:
@@ -726,16 +831,19 @@ def _where(node: str) -> Where:
 
 async def _performed(client: Client, compute: str, script: Script, where: Where, *, echo: bool) -> int:
     """Run what the file declares, print what a function returned, and answer with the worst status."""
+    work, name = _work(script)
+    returned = await _remotely(client, compute, work, script.source, name, where, echo=echo, retry=script.app.retry)
+    _answered(returned, where)
+    return max(map(_exit, returned), default=0)
+
+
+def _work(script: Script) -> tuple[Callable[[], int | Outcome], str]:
+    """What the file declares as a callable a node runs, and the name its task goes by: the file's, or the function's."""
     match script.work:
         case Whole(argv):
-            work = partial(execute, script.source, argv, script.includes)
-            statuses = await _remotely(client, compute, work, script.source, script.path.name, where, echo=echo, retry=script.app.retry)
-            return max(statuses, default=0)
+            return partial(execute, script.source, argv, script.includes), script.path.name
         case Call(entry, arguments):
-            work = partial(invoke, script.source, str(script.path), entry, arguments, script.includes)
-            outcomes = await _remotely(client, compute, work, script.source, entry, where, echo=echo, retry=script.app.retry)
-            _answered(outcomes, where)
-            return max((_exit(outcome) for outcome in outcomes), default=0)
+            return partial(invoke, script.source, str(script.path), entry, arguments, script.includes), entry
 
 
 async def _remotely[R](
@@ -800,9 +908,7 @@ async def _submit(
         case None | msgspec.UnsetType():
             decision = retry
         case _:
-            stored = await codec.payload.encode(retry)
-            decision = await codec.digest(stored)
-            await client.upload(f"/v1/blobs/{decision}", stored)
+            decision = await _stored(client, retry)
 
     dispatch: Dispatch
     match where:
@@ -831,33 +937,42 @@ async def _submit(
     )
 
 
-def _answered(outcomes: Sequence[Outcome], where: Where) -> None:
-    """What the function returned, on stdout: the one value, or every node's in a list under ``--node all``.
+async def _stored(client: Client, decision: Retry) -> str:
+    """A retry decision where the daemon and the nodes can ask it: a blob, named by its digest, as a pool stores its own."""
+    blob = await codec.payload.encode(decision)
+    digest = await codec.digest(blob)
+    await client.upload(f"/v1/blobs/{digest}", blob)
+    return digest
+
+
+def _answered(returned: Sequence[int | Outcome], where: Where) -> None:
+    """What a function returned, on stdout: the one value, or every node's in a list under ``--node all``.
 
     Nothing is printed when a node did not return — its traceback is already on
-    the terminal and the status says so — nor when nothing was returned at all.
+    the terminal and the status says so — nor when nothing was returned at all, nor
+    for a file run whole, which returns only its exit status.
     """
-    values = [value for outcome in outcomes if (value := _value(outcome)) is not None]
-    if len(values) < len(outcomes) or all(value == b"null" for value in values):
+    values = [value for outcome in returned if (value := _value(outcome)) is not None]
+    if len(values) < len(returned) or all(value == b"null" for value in values):
         return
     answer = b"[" + b",".join(values) + b"]" if where == "all" else values[0]
     sys.stdout.write(f"{answer.decode()}\n")
     sys.stdout.flush()
 
 
-def _value(outcome: Outcome) -> bytes | None:
+def _value(outcome: int | Outcome) -> bytes | None:
     match outcome:
         case Returned(value):
             return value
-        case Exited():
+        case Exited() | int():
             return None
 
 
-def _exit(outcome: Outcome) -> int:
+def _exit(outcome: int | Outcome) -> int:
     match outcome:
         case Returned():
             return 0
-        case Exited(status):
+        case Exited(status) | int(status):
             return status
 
 
@@ -1011,6 +1126,7 @@ def _call[T](work: Work[T], *, url: str | None = None) -> T:
 
 
 __all__ = [
+    "Launched",
     "Result",
     "cancel_task",
     "compute_spec",
@@ -1021,6 +1137,7 @@ __all__ = [
     "download_path",
     "exec_command",
     "get_compute",
+    "launch",
     "list_computes",
     "list_path",
     "list_tasks",
@@ -1028,6 +1145,7 @@ __all__ = [
     "remove_path",
     "run_declared",
     "run_script",
+    "task_result",
     "update",
     "upload_path",
     "view_compute",

@@ -12,6 +12,7 @@ const CAUSES: readonly (readonly [HistoryFilters['cause'], string])[] = [
   ['all', 'any reason'],
   ['requested', 'asked for'],
   ['abandoned', 'abandoned'],
+  ['finished', 'its run finished'],
 ]
 
 const providerOf = (c: Compute): string => boundOf(c)?.kind ?? '—'
