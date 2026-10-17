@@ -23,6 +23,7 @@ import io
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import groupby
 from pathlib import Path
@@ -38,7 +39,7 @@ from msgspec.structs import asdict, replace
 from pydantic import AwareDatetime, Field, JsonValue
 
 from skyward.api import v1
-from skyward.cli.compute import Result, compute_spec, computes, create, launch, update
+from skyward.cli.compute import Launched, Result, compute_spec, computes, create, launch, update
 from skyward.cli.script import FACTORIES, Script, read
 from skyward.core import writes
 from skyward.core.client import Client
@@ -70,12 +71,13 @@ create_compute, run_script, and scale_compute when it grows a compute, buy machi
 delete_compute ends them. scale_compute when it shrinks a compute, update_compute and delete_compute act on machines \
 that are running.
 
-run_script runs a Python file on the compute it declares, as `sky run` does, and answers with the compute and the \
-run's task as soon as the task is queued: read_log with the task gives what it prints, and read_result its exit status \
-or what its function returned once it settles. The task holds the compute until it settles, and the daemon deletes the \
-compute once nothing holds it unless the file says `delete_on_exit = false`. Runs of one file share its compute, each \
-its own task. `sky monitor <name>` in a background shell prints a line per \
-event of the run as it happens, and ends once the compute is deleted.
+run_script runs a Python file on the compute it declares, as `sky run` does, once for each of its runs, each with its \
+own arguments and node, and answers with each run's task as soon as the tasks are queued: read_log with a task gives \
+what it prints, and read_result their exit statuses or what their functions returned once they settle. A task holds \
+the compute until it settles, and the daemon deletes the compute once nothing holds it unless the file says \
+`delete_on_exit = false`. Runs of one file share its compute, each its own task. `sky monitor <name>` in a background \
+shell prints a line per event of the run as it happens, and ends once the compute is deleted. read_result and \
+cancel_task take any number of tasks, and answer for each one, with the error the daemon gave for one it refused.
 
 An answer leaves out every field that is null or empty, but for a page's `items`. A compute, a task, an offer or a log line comes with the \
 fields that matter to act on it; `raw` on the tool that read it answers with everything the daemon holds. The values \
@@ -121,6 +123,18 @@ def server(url: str) -> MCPServer:
     ):
         served.add_tool(tool, annotations=hints, structured_output=False)
     return served
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    """One run of a file ``run_script`` is given: its command line, and the node it runs on.
+
+    A dataclass rather than a ``Struct``, because the host's arguments are checked by
+    pydantic, and that is the frozen value pydantic knows how to build.
+    """
+
+    args: tuple[str, ...] = ()
+    node: Literal["any", "all"] | int = "any"
 
 
 class Tools:
@@ -436,20 +450,21 @@ class Tools:
             lambda client: client.call("GET", "/v1/providers", v1.Page[v1.ProviderResource]), lambda page: _paged(page, lambda account: account)
         )
 
-    async def read_result(self, task: str) -> str:
-        """Read what a task returned on each node that finished it, by rank, beside the task's ``state``.
+    async def read_result(self, tasks: Annotated[tuple[str, ...], Field(min_length=1)]) -> str:
+        """Read what tasks returned on each node that finished them, by rank, beside each task's ``state``, keyed by task id.
 
         A file ``run_script`` ran whole returns its exit status. A ``sky.app`` function returns what it returned, as JSON, or
         ``exit`` when it exited instead. A task still running has no results yet, and an attempt that failed has none: its
-        error is in ``list_tasks``. What a function returned is answered as it is, nulls and all.
+        error is in ``list_tasks``. What a function returned is answered as it is, nulls and all. A task the daemon does not
+        know, or whose result this server cannot load, answers with its ``error`` beside the others.
 
         Parameters
         ----------
-        task
-            The task's id, from ``list_tasks``.
+        tasks
+            The tasks' ids, from ``run_script`` or ``list_tasks``.
         """
 
-        async def results(client: Client) -> tuple[v1.TaskResource, list[tuple[int, object]]]:
+        async def result(client: Client, task: str) -> dict[str, object]:
             found = await client.call("GET", f"/v1/tasks/{task}", v1.TaskResource)
             ranked = sorted(found.executions, key=lambda execution: execution.rank)
             blobs = [
@@ -457,9 +472,12 @@ class Tools:
                 for execution in ranked
                 if execution.result_sha256 and (blob := await client.blob(f"/v1/blobs/{execution.result_sha256}"))
             ]
-            return found, [(rank, await _unpickled(task, blob)) for rank, blob in blobs]
+            return {"state": found.state, "results": [_returned(rank, await _unpickled(task, blob)) for rank, blob in blobs]}
 
-        return await self._ask(results, lambda found: {"state": found[0].state, "results": [_returned(rank, value) for rank, value in found[1]]})
+        async def results(client: Client) -> dict[str, dict[str, object] | Refused]:
+            return {task: await _attempted(result(client, task)) for task in tasks}
+
+        return await self._ask(results, lambda found: found)
 
     async def create_compute(
         self,
@@ -555,48 +573,70 @@ class Tools:
         )
         return await self._ask(lambda client: create(client, account, spec, name), _described)
 
-    async def run_script(self, path: str, args: tuple[str, ...] = (), node: Literal["any", "all"] | int = "any") -> str:
-        """Run a Python file on the compute it declares, as ``sky run`` does, and answer once the run's task is queued.
+    async def run_script(self, path: str, runs: Annotated[tuple[Run, ...], Field(min_length=1)] = (Run(),)) -> str:
+        """Run a Python file on the compute it declares, as ``sky run`` does, once for each run, and answer once their tasks are queued.
 
         The file declares its compute in a PEP 723 header (a ``# /// script`` block with ``[tool.skyward]``), and then all
-        of it runs with ``args`` as its argv. Or it decorates functions with ``sky.app``, and then ``args`` name one and give
-        its arguments as flags, such as ``["train", "--epochs", "5"]``; ``["--help"]`` answers with the functions and what
-        they take, buying nothing.
+        of it runs with a run's ``args`` as its argv. Or it decorates functions with ``sky.app``, and then a run's ``args``
+        name one and give its arguments as flags, such as ``["train", "--epochs", "5"]``; ``["--help"]`` as the only run
+        answers with the functions and what they take, buying nothing.
 
-        The answer is the compute the run stands on, usually still being bought, and ``task``, the run's task. A compute an
-        earlier run of the same declaration left up is used again, also while that run is still going: the two tasks
-        share its machines. ``read_log`` with the task gives what it prints, and ``read_result`` its exit status or what its
-        function returned once it settles. Nothing waits on the run: the task holds the compute until it settles, whether
-        or not this session goes on, and once nothing holds it the daemon deletes the compute unless ``delete_on_exit`` is
-        false.
+        Each run is a task of its own, queued in the order given, on the node it names. Runs of one declaration share its
+        compute, and so does a run of an earlier call while that compute is up: their tasks take turns on its machines.
+        Every run is read before anything is asked of the daemon, so one the file cannot take refuses them all.
+
+        The answer is ``computes``, the computes the runs stand on, usually still being bought, each with whether the daemon
+        deletes it once nothing holds it (``delete_on_exit``); and ``runs``, in the order given, each one's ``task`` and
+        ``compute``, or the ``error`` it was refused with. ``read_log`` with a task gives what it prints, and ``read_result``
+        with the tasks their exit statuses or what their functions returned once they settle. Nothing waits on the runs:
+        each task holds its compute until it settles, whether or not this session goes on.
 
         Parameters
         ----------
         path
             The file, on the machine this server runs on.
-        args
-            The file's argv, or a function's name and its flags.
-        node
-            ``any`` runs it on one node, ``all`` on every node, a rank on that node.
+        runs
+            One object per run: ``args``, the file's argv or a function's name and its flags, empty unless given; and
+            ``node``, where it runs: ``any`` (one node, the default), ``all`` (every node) or a rank (that node).
         """
+
+        def alone(declared: Script | str) -> Script:
+            match declared:
+                case Script():
+                    return declared
+                case str():
+                    raise ToolError("--help is answered for a run on its own, not among others")
+
+        def answered(launches: list[Launched | Refused]) -> object:
+            def run(launched: Launched | Refused) -> object:
+                match launched:
+                    case Launched(compute, task):
+                        return {"task": task.id, "compute": compute.id}
+                    case Refused():
+                        return launched
+
+            standing = {launched.compute.id: launched.compute for launched in launches if isinstance(launched, Launched)}
+            return _brief(
+                {
+                    "computes": [replace(_compute(compute, detail=False), delete_on_exit=compute.spec.delete_on_exit) for compute in standing.values()],
+                    "runs": [run(launched) for launched in launches],
+                }
+            )
+
         file = Path(path).expanduser()
         if not file.is_file():
             raise ToolError(f"no such file: {file}")
 
-        match _declared(file, args):
-            case str(said):
+        match tuple(_declared(file, run.args) for run in runs):
+            case (str(said),):
                 return said
-            case Script() as script:
-                return await self._ask(
-                    lambda client: launch(client, script, node),
-                    lambda launched: _brief(
-                        {
-                            "compute": _compute(launched.compute, detail=False),
-                            "task": launched.task.id,
-                            "delete_on_exit": script.app.delete_on_exit,
-                        }
-                    ),
-                )
+            case declared:
+                scripts = tuple(map(alone, declared))
+
+        async def launched(client: Client) -> list[Launched | Refused]:
+            return [await _attempted(launch(client, script, run.node)) for script, run in zip(scripts, runs, strict=True)]
+
+        return await self._ask(launched, answered)
 
     async def scale_compute(self, ref: str, nodes: Count, max_nodes: Count | None = None) -> str:
         """Change how many machines a compute stands on. Growing it buys machines; shrinking it terminates them and whatever they held.
@@ -659,18 +699,26 @@ class Tools:
         """
         return await self._ask(lambda client: writes.delete(client, ref), _described)
 
-    async def cancel_task(self, task: str) -> str:
-        """Cancel a task, by the id ``list_tasks`` gives it.
+    async def cancel_task(self, tasks: Annotated[tuple[str, ...], Field(min_length=1)]) -> str:
+        """Cancel tasks, by the ids ``run_script`` or ``list_tasks`` gives them, and answer with each one as the cancel left it, keyed by task id.
 
         A task no machine has started never runs. A running one is asked to stop, and its attempt is ``cancel_requested`` until the
-        worker lets go. One that finished first keeps its outcome.
+        worker lets go. One that finished first keeps its outcome. A task the daemon refused to cancel answers with its ``error``
+        beside the others.
 
         Parameters
         ----------
-        task
-            The task's id.
+        tasks
+            The tasks' ids.
         """
-        return await self._ask(lambda client: writes.cancel(client, task), lambda found: _brief(_as(TaskView)(found)))
+
+        async def cancelled(client: Client, task: str) -> TaskView:
+            return _as(TaskView)(await writes.cancel(client, task))
+
+        async def each(client: Client) -> dict[str, TaskView | Refused]:
+            return {task: await _attempted(cancelled(client, task)) for task in tasks}
+
+        return await self._ask(each, _brief)
 
     async def exec_command(self, ref: str, command: str, node: Literal["all"] | int = "all") -> str:
         """Run a shell command on a compute's machines and answer, for each node, its exit code, stdout and stderr.
@@ -702,6 +750,12 @@ class Tools:
             raise ToolError(str(error)) from None
         finally:
             await client.close()
+
+
+class Refused(Struct, frozen=True):
+    """One item of a call on several, which the daemon refused, answered beside the ones it took."""
+
+    error: str
 
 
 class OfferView(Struct, frozen=True, kw_only=True):
@@ -767,6 +821,7 @@ class ComputeView(Struct, frozen=True, kw_only=True):
     image: ImageView | None = None
     plugins: tuple[v1.PluginRef, ...] = ()
     nodes: tuple[NodeView, ...] = ()
+    delete_on_exit: bool | None = None
 
 
 class FunctionView(Struct, frozen=True, kw_only=True):
@@ -878,6 +933,19 @@ def _declared(file: Path, args: tuple[str, ...]) -> Script | str:
                 raise ToolError(said.getvalue().strip()) from None
     except Exception as failed:
         raise ToolError(f"{file} cannot be read: {type(failed).__name__}: {failed}") from None
+
+
+async def _attempted[T](work: Awaitable[T]) -> T | Refused:
+    """What ``work`` came to, or why it was refused: one item of a call on several, answered beside the others.
+
+    No daemon at all is not one item's failure, and is left to fail the whole call.
+    """
+    try:
+        return await work
+    except SkywardError as error:
+        return Refused(f"{error.code}: {error.message}")
+    except (UnexpectedResponseError, ToolError) as error:
+        return Refused(str(error))
 
 
 async def _unpickled(task: str, blob: bytes) -> object:

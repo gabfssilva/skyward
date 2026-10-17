@@ -78,12 +78,20 @@ def describe_reading() -> None:
                 assert await answer(client, "list_computes") == []
 
     def describe_when_the_compute_named_is_not_there() -> None:
-        @pytest.mark.parametrize(("tool", "arguments"), [("get_compute", {"ref": "absent"}), ("cancel_task", {"task": "absent"})])
-        async def the_refusal_is_the_daemons_by_name(alone: str, tool: str, arguments: dict[str, str]) -> None:
+        async def the_refusal_is_the_daemons_by_name(alone: str) -> None:
             async with connected(alone) as client:
-                said = await refusal(client, tool, **arguments)
+                said = await refusal(client, "get_compute", ref="absent")
 
             assert "not_found" in said
+
+    def describe_when_several_tasks_are_named() -> None:
+        @pytest.mark.parametrize("tool", ["read_result", "cancel_task"])
+        async def each_answers_for_itself_one_the_daemon_does_not_know_with_its_error(alone: str, tool: str) -> None:
+            async with connected(alone) as client:
+                answered = await answer(client, tool, tasks=["absent", "missing"])
+
+            assert list(answered) == ["absent", "missing"], "keyed by task, in the order asked"
+            assert all(item["error"].startswith("not_found") for item in answered.values())
 
     def describe_offers() -> None:
         async def the_catalog_is_cut_to_the_limit_and_says_how_much_matched(alone: str) -> None:
@@ -336,29 +344,31 @@ def describe_changing_a_compute() -> None:
 @pytest.mark.local
 def describe_running_a_script() -> None:
     @pytest.mark.parametrize(
-        ("source", "args", "said"),
+        ("source", "runs", "said"),
         [
-            (None, [], "no such file"),
-            ("print('hello')\n", [], "declares no compute"),
-            (TRAIN, ["--epochs", "five"], "--epochs"),
+            (None, [[]], "no such file"),
+            ("print('hello')\n", [[]], "declares no compute"),
+            (TRAIN, [["--epochs", "five"]], "--epochs"),
+            (TRAIN, [["--epochs", "5"], ["--epochs", "five"]], "--epochs"),
+            (TRAIN, [["--help"], ["--epochs", "5"]], "on its own"),
         ],
     )
-    async def what_cannot_run_is_refused_before_anything_is_bought(alone: str, tmp_path: Path, source: str | None, args: list[str], said: str) -> None:
+    async def what_cannot_run_is_refused_before_anything_is_bought(alone: str, tmp_path: Path, source: str | None, runs: list[list[str]], said: str) -> None:
         path = tmp_path / "train.py"
         if source is not None:
             path.write_text(source)
         async with connected(alone) as client:
-            refused = await refusal(client, "run_script", path=str(path), args=args)
+            refused = await refusal(client, "run_script", path=str(path), runs=[{"args": args} for args in runs])
             listed = await answer(client, "list_computes")
 
         assert said in refused
-        assert listed == []
+        assert listed == [], "one run the file cannot take refuses the others with it"
 
     async def help_answers_with_the_functions_and_what_they_take(alone: str, tmp_path: Path) -> None:
         path = tmp_path / "train.py"
         path.write_text(TRAIN)
         async with connected(alone) as client:
-            helped = await text(client, "run_script", path=str(path), args=["--help"])
+            helped = await text(client, "run_script", path=str(path), runs=[{"args": ["--help"]}])
             listed = await answer(client, "list_computes")
 
         assert "--epochs" in helped, "what the file's function takes, as sky run would print it"
@@ -398,34 +408,39 @@ def describe_running_a_command_on_the_nodes() -> None:
 @pytest.mark.compute
 @pytest.mark.xdist_group("script")
 def describe_a_script_run_on_containers() -> None:
-    async def a_file_runs_on_the_compute_it_declares_which_goes_when_it_ends(daemon: str, tmp_path: Path) -> None:
+    async def a_file_runs_once_per_run_on_the_compute_it_declares_which_goes_when_they_end(daemon: str, tmp_path: Path) -> None:
         path = tmp_path / "declared.py"
         path.write_text(declared(nodes=1, delete_on_exit=True))
         async with connected(daemon) as client:
-            started = await answer(client, "run_script", path=str(path), args=["3"])
-            name = started["compute"]["name"]
-            task = await until(lambda: ended(client, name))
-            result = await answer(client, "read_result", task=task["id"])
-            printed = await answer(client, "read_log", task=task["id"], types=["node.console"])
-            gone = await until(lambda: state(client, name, "deleted"))
-            final = await answer(client, "get_compute", ref=name)
+            started = await answer(client, "run_script", path=str(path), runs=[{"args": ["3"]}, {"args": ["4"], "node": 0}])
+            ((compute,), (first, second)) = started["computes"], started["runs"]
+            tasks = [first["task"], second["task"]]
+            results = await until(lambda: settled(client, tasks))
+            printed = await answer(client, "read_log", task=first["task"], types=["node.console"])
+            listed = (await answer(client, "list_tasks", compute=compute["id"], raw=True))["items"]
+            gone = await until(lambda: state(client, compute["id"], "deleted"))
+            final = await answer(client, "get_compute", ref=compute["id"])
 
-        assert started["delete_on_exit"] is True
-        assert started["task"] == task["id"], "the answer names the run's task"
-        assert result == {"state": "succeeded", "results": [{"rank": 0, "returned": 3}]}, "a file run whole returns its exit status"
+        assert compute["delete_on_exit"] is True
+        assert first["compute"] == second["compute"] == compute["id"], "the runs of one declaration share its compute"
+        assert results == {
+            first["task"]: {"state": "succeeded", "results": [{"rank": 0, "returned": 3}]},
+            second["task"]: {"state": "succeeded", "results": [{"rank": 0, "returned": 4}]},
+        }, "a file run whole returns its exit status, each run its own"
         assert "rank 0 of 1 said ['3']" in [entry.get("content") for entry in printed["items"]]
-        assert gone == "deleted", "the daemon took the compute down once its task ended, as the file declared"
+        assert len({task["function"]["sha256"] for task in listed}) == 1, "the runs are one function, given different arguments"
+        assert gone == "deleted", "the daemon took the compute down once both tasks ended, as the file declared"
         assert final["ended"]["cause"] == "finished"
 
     async def a_function_answers_with_what_it_returned(daemon: str, tmp_path: Path) -> None:
         path = tmp_path / "shouting.py"
         path.write_text(entries(nodes=1, delete_on_exit=False))
         async with connected(daemon) as client:
-            started = await answer(client, "run_script", path=str(path), args=["shout", "--word", "hi", "--times", "2"])
-            name = started["compute"]["name"]
+            started = await answer(client, "run_script", path=str(path), runs=[{"args": ["shout", "--word", "hi", "--times", "2"]}])
+            name = started["computes"][0]["name"]
             try:
                 task = await until(lambda: ended(client, name))
-                result = await answer(client, "read_result", task=task["id"])
+                result = (await answer(client, "read_result", tasks=[task["id"]]))[task["id"]]
                 kept = await until(lambda: released(client, name))
             finally:
                 await answer(client, "delete_compute", ref=name)
@@ -452,6 +467,12 @@ async def ended(client: Client, compute: str) -> dict[str, Any] | None:
     """The compute's task, once it is no longer queued or running."""
     tasks = (await answer(client, "list_tasks", compute=compute))["items"]
     return next((task for task in tasks if task["state"] not in ("queued", "running")), None)
+
+
+async def settled(client: Client, tasks: list[str]) -> dict[str, Any] | None:
+    """What every one of ``tasks`` returned, once none of them is queued or running."""
+    found = await answer(client, "read_result", tasks=tasks)
+    return found if all(item["state"] not in ("queued", "running") for item in found.values()) else None
 
 
 async def released(client: Client, compute: str) -> dict[str, Any] | None:

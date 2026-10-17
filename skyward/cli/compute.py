@@ -20,7 +20,7 @@ import asyncio
 import json
 import sys
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from contextlib import aclosing, suppress
 from functools import partial
 from pathlib import Path
@@ -41,6 +41,7 @@ from skyward.core.app import App
 from skyward.core.client import Client
 from skyward.core.compute import Compute, definition
 from skyward.core.errors import SkywardError
+from skyward.core.function import Pending
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Spec, bounds
@@ -439,7 +440,7 @@ def run_script(
 
     where = _where(node)
     source = script.read_text()
-    work = partial(execute, source, (str(script), *(args or ())))
+    work = Pending[int](partial(execute, source), ((str(script), *(args or ())),), {})
     if status := max(_call(lambda client: _remotely(client, ref, work, source, script.name, where, echo=True), url=url), default=0):
         raise SystemExit(status)
 
@@ -708,7 +709,7 @@ async def launch(client: Client, script: Script, where: Where) -> Launched:
 
     compute = await _standing(client, script) or await created()
     work, name = _work(script)
-    task = await _submit(client, compute.id, work, script.source, name, where, script.app.retry, hold=True)
+    task = await _submit(client, compute.id, work, script.source, name, where, hold=True)
     return Launched(compute, task)
 
 
@@ -837,30 +838,36 @@ def _where(node: str) -> Where:
 async def _performed(client: Client, compute: str, script: Script, where: Where, *, echo: bool) -> int:
     """Run what the file declares, print what a function returned, and answer with the worst status."""
     work, name = _work(script)
-    returned = await _remotely(client, compute, work, script.source, name, where, echo=echo, retry=script.app.retry)
+    returned = await _remotely(client, compute, work, script.source, name, where, echo=echo)
     _answered(returned, where)
     return max(map(_exit, returned), default=0)
 
 
-def _work(script: Script) -> tuple[Callable[[], int | Outcome], str]:
-    """What the file declares as a callable a node runs, and the name its task goes by: the file's, or the function's."""
+def _work(script: Script) -> tuple[Pending[int | Outcome], str]:
+    """What the file declares as a call a node makes, and the name its task goes by: the file's, or the function's.
+
+    The function is the file, what it includes and, for a ``sky.app``, which of its
+    functions runs; the argument is what this run gives it — the argv, or the parsed
+    flags. Every run of one file is then one function, sent to the daemon once, and
+    what tells two runs apart is only their arguments.
+    """
     match script.work:
         case Whole(argv):
-            return partial(execute, script.source, argv, script.includes), script.path.name
+            return Pending(partial(execute, script.source, includes=script.includes), (argv,), {}, retry=script.app.retry), script.path.name
         case Call(entry, arguments):
-            return partial(invoke, script.source, str(script.path), entry, arguments, script.includes), entry
+            function = partial(invoke, script.source, str(script.path), entry, includes=script.includes)
+            return Pending(function, (arguments,), {}, retry=script.app.retry), entry
 
 
 async def _remotely[R](
     client: Client,
     ref: str,
-    work: Callable[[], R],
+    work: Pending[R],
     excerpt: str,
     name: str,
     where: Where,
     *,
     echo: bool,
-    retry: Retry | None | msgspec.UnsetType = msgspec.UNSET,
 ) -> list[R]:
     """Submit ``work``, print what it prints, and answer with what each node returned, by rank.
 
@@ -874,7 +881,7 @@ async def _remotely[R](
     is told the task is done and left to drain until the log goes quiet.
     """
     compute = await client.call("GET", f"/v1/computes/{ref}", ComputeResource)
-    task = await _submit(client, compute.id, work, excerpt, name, where, retry)
+    task = await _submit(client, compute.id, work, excerpt, name, where)
 
     settled = asyncio.Event()
     printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled, echo=echo))
@@ -893,35 +900,41 @@ async def _remotely[R](
     return await _results(client, task.id, codec.Pickle[R]())
 
 
-async def _submit(
+async def _submit[T](
     client: Client,
     compute: str,
-    work: Callable[[], object],
+    work: Pending[T],
     excerpt: str,
     name: str,
     where: Where,
-    retry: Retry | None | msgspec.UnsetType,
     *,
     hold: bool = False,
 ) -> TaskResource:
-    """``work`` as a task: :mod:`skyward.worker.script` bound to the file's text.
+    """``work`` as a task: :mod:`skyward.worker.script` bound to the file's text, called with this run's arguments.
 
-    The text is also the function's excerpt, so the console shows the file that
-    ran rather than the few lines that ran it. ``retry`` is the task's own
-    decision, stored as a blob as a pool stores its own; unset leaves the task the
-    compute's. ``hold`` keeps the compute until the task settles, for a run no
-    process stays to hold.
+    The function is uploaded only when the daemon does not hold it yet: it carries
+    the file and what it includes, which every run of the file shares, so a hundred
+    runs send it once. The text is also the function's excerpt, so the console
+    shows the file that ran rather than the few lines that ran it. ``retry`` is the
+    task's own decision, stored as a blob as a pool stores its own; unset leaves the
+    task the compute's. ``hold`` keeps the compute until the task settles, for a run
+    no process stays to hold.
     """
-    blob = await codec.payload.encode(work)
+    blob = await codec.payload.encode(work.fn)
     function = await codec.digest(blob)
-    await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": name})
+    try:
+        await client.call("GET", f"/v1/functions/{function}", FunctionResource)
+    except SkywardError as error:
+        if error.code != "not_found":
+            raise
+        await client.upload(f"/v1/functions/{function}", blob, headers={"X-Skyward-Function-Name": name})
     await client.call("PUT", f"/v1/functions/{function}/excerpt", FunctionResource, body=msgspec.json.encode(FunctionExcerpt(text=excerpt)))
 
     decision: str | None | msgspec.UnsetType
-    match retry:
+    match work.retry:
         case None | msgspec.UnsetType():
-            decision = retry
-        case _:
+            decision = work.retry
+        case retry:
             decision = await _stored(client, retry)
 
     dispatch: Dispatch
@@ -942,7 +955,7 @@ async def _submit(
                 compute=compute,
                 function=function,
                 dispatch=dispatch,
-                args_inline=await codec.payload.encode(((), {})),
+                args_inline=await codec.payload.encode((work.args, work.kwargs)),
                 rank=rank,
                 retry=decision,
                 hold=hold,

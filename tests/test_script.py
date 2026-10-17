@@ -721,8 +721,16 @@ sys.exit(int(sys.argv[1]))
 
 @pytest.mark.local
 def describe_launching_a_run() -> None:
-    async def two_runs_of_one_declaration_share_its_compute_each_task_holding_it(tmp_path: Path) -> None:
+    async def two_runs_of_one_declaration_share_its_compute_each_task_holding_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = written(tmp_path, FAKED)
+        uploaded: list[str] = []
+        upload = Client.upload
+
+        async def counted(self: Client, path: str, body: bytes, headers: dict[str, str] | None = None) -> None:
+            uploaded.append(path)
+            await upload(self, path, body, headers)
+
+        monkeypatch.setattr(Client, "upload", counted)
         client = await Client.embedded(tmp_path / "skyward.sqlite")
         try:
             first = await launch(client, read(path, ["0"]), "any")
@@ -734,6 +742,9 @@ def describe_launching_a_run() -> None:
         assert first.compute.id == second.compute.id == compute.id, "the second run lands beside the first rather than being refused"
         assert (first.task.hold, second.task.hold) == (True, True)
         assert (compute.holding, compute.leases) == (2, ()), "each run's task holds the compute, and no lease is left behind"
+        assert first.task.function.sha256 == second.task.function.sha256, "the file is one function, whatever each run gives it"
+        assert first.task.args_sha256 != second.task.args_sha256, "what tells the runs apart is their arguments"
+        assert [path for path in uploaded if path.startswith("/v1/functions/")] == [f"/v1/functions/{first.task.function.sha256}"], "sent once"
 
     async def one_that_finds_the_name_taken_meanwhile_takes_the_compute_that_took_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = written(tmp_path, FAKED)
