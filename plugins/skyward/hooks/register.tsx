@@ -205,6 +205,18 @@ const items = <T,>(body: unknown, parse: (item: unknown) => T | undefined): T[] 
     const parsed = parse(item)
     return parsed === undefined ? [] : [parsed]
   })
+// The engine refuses a whole tree when a Text holds an escape sequence, and a node prints them: tqdm moves the cursor
+// up over its bars and redraws each after `\r`. A line keeps what a terminal would leave of it, and no control
+// character but tab and newline.
+const ESCAPE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[ -/]*[0-~])?/g
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
+const printable = (text: string): string =>
+  text
+    .replace(ESCAPE, '')
+    .split('\n')
+    .map((line) => line.split('\r').findLast((part) => part !== '') ?? '')
+    .join('\n')
+    .replace(CONTROL, '')
 const metricKey = (node: string, name: string): string => `${node}/${name}`
 const metricNode = (key: string): string => key.slice(0, key.lastIndexOf('/'))
 
@@ -277,10 +289,15 @@ function parseLogLine(item: unknown): LogLine | undefined {
   const when = time(at(item, 'at'))
   if (type === undefined || when === null) return undefined
   const data = at(item, 'data')
-  const error = str(at(data, 'error'))
+  const raw = str(at(data, 'error'))
+  const error = raw === undefined ? undefined : printable(raw)
+  const content = str(at(data, 'content')) ?? ''
+  const shown = printable(content)
+  // A line that only moved the cursor leaves nothing to read.
+  if (type === 'node.console' && content !== '' && shown === '') return undefined
   const text =
     type === 'node.console'
-      ? str(at(data, 'content')) ?? ''
+      ? shown
       : type === 'node.phase'
         ? `${str(at(data, 'phase')) ?? '?'} ${str(at(data, 'event')) ?? '?'}`
         : type
@@ -321,7 +338,8 @@ function parseFailure(item: unknown): Failure | undefined {
   const when = time(at(item, 'at'))
   const compute = str(at(item, 'data', 'compute'))
   if (sequence === undefined || kind === undefined || when === null || compute === undefined) return undefined
-  return { sequence, kind, compute, at: when, reason: str(at(item, 'data', 'error')) ?? null }
+  const reason = str(at(item, 'data', 'error'))
+  return { sequence, kind, compute, at: when, reason: reason === undefined ? null : printable(reason) }
 }
 
 // Failures arrive newest first, so the first of each group is its newest.
@@ -476,7 +494,7 @@ function refusal(response: HttpResponse): Error {
   } catch {
     body = undefined
   }
-  return new Error(`HTTP ${response.status} ${str(at(body, 'message')) ?? response.text.slice(0, 200)}`)
+  return new Error(`HTTP ${response.status} ${printable(str(at(body, 'message')) ?? response.text.slice(0, 200))}`)
 }
 
 async function getJson($: EngineInterface, path: string): Promise<unknown> {

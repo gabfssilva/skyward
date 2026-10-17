@@ -37,10 +37,16 @@ tasks:
       - uv run lint-imports
 
   plugin:check:
-    desc: Type check the plugin and validate both manifests
+    desc: Type check the plugin, run its tests and validate both manifests
     cmds:
       - task: plugin:types
+      - task: plugin:test
       - task: plugin:validate
+
+  plugin:test:
+    desc: Run the plugin's tests against the engine's own host
+    cmds:
+      - claude plugin test plugins/skyward
 
   plugin:types:
     desc: Type check the plugin against the declarations the engine writes when a session loads it
