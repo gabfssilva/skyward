@@ -27,7 +27,7 @@ import httpx
 import msgspec
 import pytest
 
-from skyward.api.v1 import ComputeResource, Page
+from skyward.api.v1 import ComputeResource, Page, ProviderResource
 from skyward.cli import compute as commands
 from skyward.cli.compute import launch
 from skyward.cli.script import Call, Script, Whole, read
@@ -37,7 +37,7 @@ from skyward.core.app import App
 from skyward.core.client import Client
 from skyward.core.spec import Options
 from skyward.shared.providers import AWS
-from skyward.shared.schemas import Image, NodeBounds, PipIndex
+from skyward.shared.schemas import Image, NodeBounds, PipIndex, ProviderCreate
 from skyward.worker.plugins import HuggingFace, Torch
 from skyward.worker.script import Exited, Returned, call, run
 from skyward.worker.stopping import Stop
@@ -718,6 +718,29 @@ sys.exit(int(sys.argv[1]))
 """
 """A file whole on a provider that sells nothing: enough for the daemon to take a compute and its tasks, and to buy no machine."""
 
+DECLARED = """
+import skyward as sky
+from skyward.shared.providers import Fake
+
+
+@sky.app(provider=Fake(region="here"))
+def run() -> None:
+    pass
+"""
+"""The same provider declared by a ``sky.app``, with a setting of its own."""
+
+
+async def account_after(tmp_path: Path, script: Script) -> ProviderResource:
+    """The fake account a launch of ``script`` leaves, over one registered with ``region=elsewhere``."""
+    client = await Client.embedded(tmp_path / "skyward.sqlite")
+    try:
+        registered = ProviderCreate(name="fake", kind="fake", credentials={}, config={"region": "elsewhere"})
+        await client.call("POST", "/v1/providers", ProviderResource, body=msgspec.json.encode(registered))
+        await launch(client, script, "any")
+        return await client.call("GET", "/v1/providers/fake", ProviderResource)
+    finally:
+        await client.close()
+
 
 @pytest.mark.local
 def describe_launching_a_run() -> None:
@@ -764,6 +787,17 @@ def describe_launching_a_run() -> None:
 
         assert [compute.id for compute in computes.items] == [launched.compute.id], "one compute, the one the other run asked for"
         assert launched.task.hold is True
+
+    def describe_the_account_it_runs_on() -> None:
+        async def an_app_writes_the_one_it_declares_over_the_one_registered(tmp_path: Path) -> None:
+            account = await account_after(tmp_path, read(written(tmp_path, DECLARED)))
+
+            assert account.config["region"] == "here", "the file says which settings the compute runs with, as a pool does"
+
+        async def a_header_leaves_the_one_registered_as_it_was(tmp_path: Path) -> None:
+            account = await account_after(tmp_path, read(written(tmp_path, FAKED), ["0"]))
+
+            assert account.config["region"] == "elsewhere", "a header names only a kind, so the settings are the account's own"
 
 
 @pytest.mark.compute

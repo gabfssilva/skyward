@@ -254,24 +254,43 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
         with pytest.raises(ApiError):
             await provider.launch(launching, "on_demand", "aaaa")
 
-    def describe_held_to_a_download_speed() -> None:
+    def describe_held_to_a_speed() -> None:
         """Salad filters nodes by nothing about their network, so the container measures its own."""
 
-        async def it_is_told_the_speed_the_account_requires() -> None:
-            provider, groups = _salad({}, min_mbps=25)
+        async def it_is_told_the_speeds_the_account_requires() -> None:
+            provider, groups = _salad({}, min_download_mbps=25, min_upload_mbps=10)
 
             await provider.launch(launching, "on_demand", "aaaa")
 
             container = groups.created[0].container
-            assert container.environment_variables["MIN_MBPS"] == "25", "the threshold, where the container's command reads it"
-            assert "169.254.169.254/v1/reallocate" in container.command[2], "and what a node short of it does about itself"
+            assert container.environment_variables["MIN_DOWNLOAD_MBPS"] == "25", "each threshold, where the container's command reads it"
+            assert container.environment_variables["MIN_UPLOAD_MBPS"] == "10"
+            assert "169.254.169.254/v1/reallocate" in container.command[-1], "and what a node short of one does about itself"
+
+        async def it_is_launched_with_a_command_salad_accepts() -> None:
+            """Salad refuses a group any element of whose command is past 2497 characters, with a 400 that does not say so."""
+            provider, groups = _salad({}, min_download_mbps=25, min_upload_mbps=10)
+
+            await provider.launch(launching, "on_demand", "aaaa")
+
+            assert max(map(len, groups.created[0].container.command)) <= 2497
+
+        async def it_is_told_only_the_direction_the_account_names() -> None:
+            provider, groups = _salad({}, min_upload_mbps=10)
+
+            await provider.launch(launching, "on_demand", "aaaa")
+
+            environment = groups.created[0].container.environment_variables
+            assert environment["MIN_UPLOAD_MBPS"] == "10"
+            assert "MIN_DOWNLOAD_MBPS" not in environment, "the download goes unmeasured"
 
         async def it_measures_nothing_when_the_account_requires_nothing() -> None:
             provider, groups = _salad({})
 
             await provider.launch(launching, "on_demand", "aaaa")
 
-            assert "MIN_MBPS" not in groups.created[0].container.environment_variables, "the command skips the check it was not given a speed for"
+            environment = groups.created[0].container.environment_variables
+            assert not {"MIN_DOWNLOAD_MBPS", "MIN_UPLOAD_MBPS"} & environment.keys(), "the command skips the checks it was not given a speed for"
 
 
 def describe_what_a_salad_account_may_buy() -> None:

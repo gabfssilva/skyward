@@ -241,16 +241,18 @@ class Salad(Provider, frozen=True, kw_only=True):
     country_codes: str | Sequence[str] | None = None
     image: str | None = None
     storage_gb: int = 50
-    min_mbps: int | None = None
-    """The download speed a node must show before it is kept, in megabits per second.
+    min_download_mbps: int | None = None
+    min_upload_mbps: int | None = None
+    """The download and upload speeds a node must show before it is kept, in megabits per second.
 
-    Salad has no filter for it: a node is somebody's home computer, on whatever
-    uplink their ISP sold them. Set, the container measures its own download
-    before sshd comes up, and a node short of it on every attempt asks Salad to
-    reallocate the replica — which moves it to another machine and keeps the
-    rejected one out of this account's pool for 48 hours. That exclusion is the
-    cost of the knob: it is the speed the workload needs, not the one it would
-    like. Unset, nothing is measured.
+    Salad has no filter for either: a node is somebody's home computer, on whatever
+    connection their ISP sold them, and a home connection usually uploads at a
+    fraction of what it downloads — which is why each direction has a floor of its
+    own. Set, the container measures that direction before sshd comes up, and a
+    node short of it on every attempt asks Salad to reallocate the replica — which
+    moves it to another machine and keeps the rejected one out of this account's
+    pool for 48 hours. That exclusion is the cost of the knob: it is the speed the
+    workload needs, not the one it would like. Unset, nothing is measured.
     """
     vcpu_price: float = 0.005
     memory_price: float = 0.001

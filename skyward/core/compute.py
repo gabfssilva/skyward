@@ -518,29 +518,8 @@ class Compute:
         the row holds what it takes to log in. Registering it here is what makes
         ``Compute(provider=Container())`` enough on a store that has never seen one.
         """
-        for name, provider in self._providers.items():
-            credentials, config = resolve_provider(provider)
-            body = ProviderCreate(name=name, kind=provider.kind, credentials=credentials, config=config)
-            try:
-                existing = await self.client.call("GET", f"/v1/providers/{name}", ProviderResource)
-            except SkywardError as error:
-                if error.code != "not_found":
-                    raise
-                await self.client.call(
-                    "POST",
-                    "/v1/providers",
-                    dict[str, object],
-                    body=msgspec.json.encode(body),
-                )
-            else:
-                stored = msgspec.json.decode(msgspec.json.encode(config), type=dict[str, object])
-                if existing.kind != provider.kind or existing.config != stored:
-                    await self.client.call(
-                        "PUT",
-                        f"/v1/providers/{name}",
-                        dict[str, object],
-                        body=msgspec.json.encode(body),
-                    )
+        for provider in self._providers.values():
+            await declare(self.client, provider)
 
     async def _upload_includes(self) -> None:
         self._spec = msgspec.structs.replace(self._spec, image=await self._packed(self._spec.image))
@@ -968,6 +947,27 @@ def definition(
         delete_on_exit=delete_on_exit,
         ttl=ttl,
     )
+
+
+async def declare(client: Client, provider: Provider) -> None:
+    """Make the daemon's account by this provider's name the one it declares, settings and credentials both.
+
+    The account is written whole, and only when its settings are not already the
+    declared ones: rewriting it drops the offers the daemon cached for it.
+    """
+    name = provider.name or provider.kind
+    credentials, config = resolve_provider(provider)
+    body = msgspec.json.encode(ProviderCreate(name=name, kind=provider.kind, credentials=credentials, config=config))
+    try:
+        existing = await client.call("GET", f"/v1/providers/{name}", ProviderResource)
+    except SkywardError as error:
+        if error.code != "not_found":
+            raise
+        await client.call("POST", "/v1/providers", dict[str, object], body=body)
+    else:
+        stored = msgspec.json.decode(msgspec.json.encode(config), type=dict[str, object])
+        if existing.kind != provider.kind or existing.config != stored:
+            await client.call("PUT", f"/v1/providers/{name}", dict[str, object], body=body)
 
 
 async def _next[T](source: AsyncIterator[T]) -> T | None:

@@ -5,6 +5,8 @@ Pure drawing: nothing here knows about the daemon or its events.
 
 from __future__ import annotations
 
+import os
+
 from rich.style import Style
 from rich.text import Text
 
@@ -13,7 +15,6 @@ WARNING_STYLE = "yellow"
 
 
 def _detect_terminal_bg() -> tuple[int, int, int] | None:
-    import os
     import select
     import sys
     import termios
@@ -47,11 +48,10 @@ def _detect_terminal_bg() -> tuple[int, int, int] | None:
 
 
 def _is_dark_background() -> bool:
-    background = _detect_terminal_bg()
-    if background is None:
-        return True
-    red, green, blue = background
-    return 0.299 * red + 0.587 * green + 0.114 * blue < 128
+    if (background := _detect_terminal_bg()) is not None:
+        red, green, blue = background
+        return 0.299 * red + 0.587 * green + 0.114 * blue < 128
+    return os.environ.get("COLORFGBG", "").rpartition(";")[2] not in ("7", "15")
 
 
 _DARK = _is_dark_background()

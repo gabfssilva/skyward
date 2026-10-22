@@ -39,7 +39,7 @@ from skyward.cli.script import FACTORIES, Call, Script, Whole, read
 from skyward.core import console, usercode, writes
 from skyward.core.app import App
 from skyward.core.client import Client
-from skyward.core.compute import Compute, definition
+from skyward.core.compute import Compute, declare, definition
 from skyward.core.errors import SkywardError
 from skyward.core.function import Pending
 from skyward.core.provider import Provider
@@ -697,6 +697,10 @@ async def launch(client: Client, script: Script, where: Where) -> Launched:
     Runs share the compute, so two of them launched at once may both find no
     compute and both ask for one; the one whose name is taken by then takes the
     compute the other asked for.
+
+    A ``sky.app`` declares its account, and the account is written as declared, as
+    a pool writes it. A header names only a kind, so the account's settings are
+    whatever ``sky providers set`` left, and it is only registered when absent.
     """
 
     async def created() -> ComputeResource:
@@ -707,6 +711,11 @@ async def launch(client: Client, script: Script, where: Where) -> Launched:
                 raise
             return standing
 
+    match script.work:
+        case Call():
+            await declare(client, script.app.provider)
+        case Whole():
+            pass
     compute = await _standing(client, script) or await created()
     work, name = _work(script)
     task = await _submit(client, compute.id, work, script.source, name, where, hold=True)

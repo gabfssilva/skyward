@@ -101,38 +101,58 @@ than something rounded up to the next entry in a list somebody chose.
 """
 
 APT_LIST = "/tmp/skyward-apt.list"
-SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=25000000"
-BANDWIDTH_CHECK = """[ -z "$MIN_MBPS" ] || (
-floor=$((MIN_MBPS * 125000)); best=-1
-for attempt in 1 2 3; do
-  [ "$attempt" = 1 ] || sleep 20
-  out=$(curl -sS -o /dev/null --connect-timeout 5 --max-time $((400 / MIN_MBPS + 5)) -w '%{http_code}:%{speed_download}' '""" + SPEED_TEST_URL + """')
-  code=${out%%:*}; speed=${out#*:}; speed=${speed%%.*}
-  if [ "$code" != 200 ]; then echo "bandwidth check $attempt/3: the speed test did not answer (http $code)"; continue; fi
-  echo "bandwidth check $attempt/3: $((speed / 125000)) Mbps down, $MIN_MBPS required"
-  [ "$speed" -ge "$floor" ] && exit 0
-  [ "$speed" -gt "$best" ] && best=$speed
-done
-[ "$best" -lt 0 ] && { echo "bandwidth unmeasured, carrying on"; exit 0; }
-reason="insufficient download bandwidth: best of 3 attempts $((best / 125000)) Mbps, $MIN_MBPS Mbps required"
-echo "$reason, asking salad to reallocate"
-curl -sS --max-time 10 http://169.254.169.254/v1/reallocate -H 'Content-Type: application/json' -H 'Metadata: true' --data "{\\"reason\\":\\"$reason\\"}"
-exit 1
-)"""
-"""What a node does about its uplink, when the account names a speed.
+BANDWIDTH_CHECK = """measure() {
+  w="-sSo /dev/null --connect-timeout 5 --max-time $((400 / $2 + 5)) -w %{http_code}:%{speed_$1}:"
+  case $1 in
+    download) curl $w 'https://speed.cloudflare.com/__down?bytes=25000000';;
+    upload) head -c 25000000 /dev/zero | curl $w --data-binary @- https://speed.cloudflare.com/__up;;
+  esac
+  echo $?
+}
+check() {
+  [ -z "$2" ] && return 0
+  best=-1
+  for attempt in 1 2 3; do
+    [ $attempt = 1 ] || sleep 20
+    out=$(measure $1 $2); code=${out%%:*}; speed=${out#*:}; speed=${speed%%[.:]*}
+    if [ $code != 200 ] && [ ${out##*:} != 28 -o $speed = 0 ]; then
+      echo "bandwidth check $attempt/3: the $1 test did not answer (http $code)"; continue
+    fi
+    echo "bandwidth check $attempt/3: $((speed / 125000)) Mbps $1, $2 required"
+    [ $speed -ge $(($2 * 125000)) ] && return 0
+    [ $speed -gt $best ] && best=$speed
+  done
+  [ $best -lt 0 ] && { echo "$1 bandwidth unmeasured, carrying on"; return 0; }
+  reason="insufficient $1 bandwidth: best of 3 attempts $((best / 125000)) Mbps, $2 Mbps required"
+  echo "$reason, asking salad to reallocate"
+  curl -sS --max-time 10 http://169.254.169.254/v1/reallocate -H 'Content-Type: application/json' -H 'Metadata: true' --data "{\\"reason\\":\\"$reason\\"}"
+  return 1
+}
+check download "$MIN_DOWNLOAD_MBPS" && check upload "$MIN_UPLOAD_MBPS"
+"""
+"""What a node does about its connection, when the account names a speed.
 
 Salad filters nodes by nothing about their network, and its own answer is this
 one: measure from inside the container and ask for a reallocation (``POST
 /v1/reallocate`` on the instance metadata service) when the node falls short.
-The script is Salad's example, in the ``sh`` the command runs under: ``curl``
-reports the average over the whole transfer, so a download cut by ``--max-time``
-is still measured, and the cut is at twice what a node at the threshold needs.
+The script is Salad's example, in the ``sh`` the command runs under, run once
+per direction the account names: ``curl`` reports the average over the whole
+transfer, so a transfer cut by ``--max-time`` is still measured, and the cut is
+at twice what a node at the threshold needs.
 
 Cloudflare's endpoint serves the 25 MB Salad's script asks for and refuses some
 other sizes — 12.5 MB and 100 MB answered 403 when tried — so the size is fixed
-and the threshold sets the time instead. A speed test that does not answer is
-not held against the node: a reallocation costs the account that node for 48
-hours, and an endpoint that is down says nothing about the uplink.
+and the threshold sets the time instead; the upload sends as much. A speed test
+that does not answer is not held against the node: a reallocation costs the
+account that node for 48 hours, and an endpoint that is down says nothing about
+the connection.
+
+What counts as an answer differs by direction. A download cut by the time limit
+has had its ``200`` already, since the headers come before the body; an upload's
+``200`` comes only once the whole body has arrived, so a cut upload has none and
+is measured by having been cut (curl's exit 28) with something sent. Without
+that, the slow uploads the check exists to turn away would read as a speed test
+that did not answer, and pass.
 """
 NODE_COMMAND = (
     "([ -x /usr/sbin/sshd ] && command -v curl > /dev/null || ("
@@ -145,7 +165,7 @@ NODE_COMMAND = (
     "apt-get $APT_OPTS -o Acquire::Languages=none update && "
     "DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y --no-install-recommends openssh-server curl ca-certificates"
     ")) && "
-    f"({BANDWIDTH_CHECK}) && "
+    'sh -c "$1" && '
     "mkdir -p /run/sshd /root/.ssh && "
     'printf \'%s\\n\' "$PUBLIC_KEY" > /root/.ssh/authorized_keys && '
     "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && "
@@ -171,6 +191,12 @@ The bandwidth check sits between the install and sshd: after it, so curl is
 there on any image, and before it, so a node that is turned away has cost the
 install's few megabytes and not the bootstrap. Each line it prints is the last
 line of the container's output, which is what a booting node progresses by.
+
+The check is the command's first argument, ``$1``, rather than part of it: Salad
+refuses a container group any element of whose command is longer than 2497
+characters, and the two together are. The refusal is a ``400`` that does not say
+so — its type was ``name_conflict`` or ``container_group_update_exception`` when
+measured, depending on what the element held.
 
 An image that does not is installed into over the node's own connection, and a
 Salad node is somebody's home computer: ``apt-get update`` against the sources an
@@ -580,10 +606,11 @@ class SaladProvider:
         )
         container = ContainerConfiguration(
             image=_binding_text(binding, "image"),
-            command=["sh", "-c", NODE_COMMAND],
+            command=["sh", "-c", NODE_COMMAND, "sh", BANDWIDTH_CHECK],
             environment_variables={
                 "PUBLIC_KEY": _binding_text(binding, "public_key"),
-                **({"MIN_MBPS": str(self._config.min_mbps)} if self._config.min_mbps else {}),
+                **({"MIN_DOWNLOAD_MBPS": str(self._config.min_download_mbps)} if self._config.min_download_mbps else {}),
+                **({"MIN_UPLOAD_MBPS": str(self._config.min_upload_mbps)} if self._config.min_upload_mbps else {}),
             },
             image_caching=True,
             priority=ContainerGroupPriority(self._priority),
