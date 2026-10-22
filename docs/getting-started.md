@@ -18,28 +18,38 @@ Or with pip:
 pip install "skyward[client,server]"
 ```
 
-The optional extras are split by role:
+### Optional extras
+
+The base package (`uv add skyward`) contains the worker runtime. Add optional extras for the features you need:
+
+| Extra | Includes |
+| --- | --- |
+| `client` | Python SDK for connecting to a daemon |
+| `server` | Daemon, standalone or embedded |
+| `cli` | The `sky` command |
+| `tui` | Terminal dashboard and rendering |
+| `aws` | AWS dependencies (`aioboto3`) |
+| `gcp` | GCP authentication dependencies (`cryptography`) |
+| `salad` | Salad SDK and WebSocket support |
+| `providers` | `aws`, `gcp`, and `salad` |
+| `notebook` | Jupyter kernel provisioning |
+| `storage` | S3-compatible object storage helpers |
+| `mcp` | MCP server, including `client` and `cli` |
+| `all` | Every extra listed above |
+
+Combine extras in a comma-separated list. For example, install the SDK, daemon, CLI, terminal dashboard, and AWS support:
 
 ```bash
-uv add "skyward[client]"    # SDK for a remote daemon
-uv add "skyward[server]"    # the daemon, standalone or embedded
-uv add "skyward[cli]"       # sky command
-uv add "skyward[notebook]"  # Jupyter kernel provisioning
-uv add "skyward[tui]"       # terminal rendering
-uv add "skyward[storage]"   # user-facing object storage helpers
-uv add "skyward[all]"       # every extra below plus every provider
+uv add "skyward[client,server,cli,tui,aws]"
 ```
 
-Three providers need an SDK the daemon does not install by itself, and each has an extra of its own. The other twelve speak plain HTTP and are always available:
+To install every optional extra:
 
 ```bash
-uv add "skyward[aws]"        # aioboto3
-uv add "skyward[gcp]"        # cryptography, for the service-account signature
-uv add "skyward[salad]"      # salad-cloud-sdk and websockets
-uv add "skyward[providers]"  # all three at once
+uv add "skyward[all]"
 ```
 
-A provider whose SDK is missing is not registered: `sky providers list` omits it, and asking for it names the extra that brings it back.
+The `server` extra includes support for providers that use HTTP directly. AWS, GCP, and Salad require their corresponding extras on the daemon; `providers` installs all three. A provider whose dependencies are missing is not registered: `sky providers list` omits it, and asking for it names the extra that brings it back.
 
 Frameworks belong in the remote image or in a plugin. They do not need to be installed locally just to define a function.
 
