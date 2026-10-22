@@ -5,6 +5,8 @@ credentials and the config a provider row is made of, and the adapter puts it
 back together on the other side of the wire. These are the two halves agreeing.
 """
 
+import os
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +21,7 @@ import skyward as sky
 from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
 from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
-from skyward.providers.salad import SaladProvider
+from skyward.providers.salad import BANDWIDTH_CHECK, SaladProvider
 from skyward.providers.tensordock import TensorDockProvider
 from skyward.server.application import market
 from skyward.server.persistence.db import connect
@@ -291,6 +293,56 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
 
             environment = groups.created[0].container.environment_variables
             assert not {"MIN_DOWNLOAD_MBPS", "MIN_UPLOAD_MBPS"} & environment.keys(), "the command skips the checks it was not given a speed for"
+
+        def describe_measured_on_the_node() -> None:
+            """The check under ``sh``, against a ``curl`` that answers each transfer as told and a ``sleep`` that does not wait.
+
+            An answer is what ``curl -w`` prints, ``code:bytes:ended:began``, and the exit status it leaves.
+            """
+
+            def _checked(tmp_path: Path, **environment: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+                tools = tmp_path / "bin"
+                tools.mkdir()
+                (tools / "curl").write_text(
+                    '#!/bin/sh\ncase "$*" in\n'
+                    "  *__down*) set -- $DOWNLOAD;;\n"
+                    "  *__up*) cat > /dev/null; set -- $UPLOAD;;\n"
+                    '  *) echo "$*" >> "$REALLOCATED"; exit 0;;\n'
+                    'esac\nprintf %s "$1"; exit $2\n'
+                )
+                (tools / "sleep").write_text("#!/bin/sh\n")
+                for tool in tools.iterdir():
+                    tool.chmod(0o755)
+                reallocated = tmp_path / "reallocated"
+                ran = subprocess.run(
+                    ["sh", "-c", BANDWIDTH_CHECK],
+                    env={"PATH": f"{tools}:{os.environ['PATH']}", "REALLOCATED": str(reallocated), **environment},
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                return ran, reallocated
+
+            def it_adds_up_what_every_connection_moved_over_the_time_they_moved_it(tmp_path: Path) -> None:
+                ran, reallocated = _checked(tmp_path, MIN_DOWNLOAD_MBPS="300", DOWNLOAD="200:25000000:2.5:0.5 0")
+
+                assert ran.returncode == 0
+                assert "800 Mbps download" in ran.stdout, "eight connections of 25 MB in two seconds, where one alone reads 100"
+                assert not reallocated.exists()
+
+            def it_measures_an_upload_the_time_limit_cut(tmp_path: Path) -> None:
+                """A cut upload has no ``200``: it is measured by having been cut, curl's exit 28, with something sent."""
+                ran, reallocated = _checked(tmp_path, MIN_UPLOAD_MBPS="120", UPLOAD="000:5000000:15:0.5 28")
+
+                assert ran.returncode == 1
+                assert "insufficient upload bandwidth: best of 3 attempts 22 Mbps, 120 Mbps required" in reallocated.read_text()
+
+            def it_carries_on_when_the_test_does_not_answer(tmp_path: Path) -> None:
+                ran, reallocated = _checked(tmp_path, MIN_DOWNLOAD_MBPS="300", DOWNLOAD="000:0:5:0 28")
+
+                assert ran.returncode == 0
+                assert "download bandwidth unmeasured, carrying on" in ran.stdout
+                assert not reallocated.exists(), "an endpoint that is down says nothing about the node"
 
 
 def describe_what_a_salad_account_may_buy() -> None:

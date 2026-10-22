@@ -101,22 +101,28 @@ than something rounded up to the next entry in a list somebody chose.
 """
 
 APT_LIST = "/tmp/skyward-apt.list"
-BANDWIDTH_CHECK = """measure() {
-  w="-sSo /dev/null --connect-timeout 5 --max-time $((400 / $2 + 5)) -w %{http_code}:%{speed_$1}:"
+BANDWIDTH_CHECK = """transfer() {
+  w="-sSo /dev/null --connect-timeout 5 --max-time 15 -w %{http_code}:%{size_$1}:%{time_total}:"
   case $1 in
-    download) curl $w 'https://speed.cloudflare.com/__down?bytes=25000000';;
-    upload) head -c 25000000 /dev/zero | curl $w --data-binary @- https://speed.cloudflare.com/__up;;
+    download) out=$(curl $w%{time_starttransfer} 'https://speed.cloudflare.com/__down?bytes=25000000');;
+    upload) out=$(head -c 25000000 /dev/zero | curl $w%{time_pretransfer} -T - -X POST https://speed.cloudflare.com/__up);;
   esac
-  echo $?
+  echo $out:$?
+}
+measure() {
+  for connection in 1 2 3 4 5 6 7 8; do transfer $1 & done | awk -F: '
+    { code = $1 }
+    $1 == 200 || $5 == 28 && $2 > 0 { bytes += $2; if ($3 > ended) ended = $3; if (!n++ || $4 < began) began = $4 }
+    END { print (ended > began ? int(bytes / (ended - began)) : -1), code }'
 }
 check() {
   [ -z "$2" ] && return 0
   best=-1
   for attempt in 1 2 3; do
     [ $attempt = 1 ] || sleep 20
-    out=$(measure $1 $2); code=${out%%:*}; speed=${out#*:}; speed=${speed%%[.:]*}
-    if [ $code != 200 ] && [ ${out##*:} != 28 -o $speed = 0 ]; then
-      echo "bandwidth check $attempt/3: the $1 test did not answer (http $code)"; continue
+    out=$(measure $1); speed=${out% *}
+    if [ $speed -lt 0 ]; then
+      echo "bandwidth check $attempt/3: the $1 test did not answer (http ${out#* })"; continue
     fi
     echo "bandwidth check $attempt/3: $((speed / 125000)) Mbps $1, $2 required"
     [ $speed -ge $(($2 * 125000)) ] && return 0
@@ -135,17 +141,26 @@ check download "$MIN_DOWNLOAD_MBPS" && check upload "$MIN_UPLOAD_MBPS"
 Salad filters nodes by nothing about their network, and its own answer is this
 one: measure from inside the container and ask for a reallocation (``POST
 /v1/reallocate`` on the instance metadata service) when the node falls short.
-The script is Salad's example, in the ``sh`` the command runs under, run once
-per direction the account names: ``curl`` reports the average over the whole
-transfer, so a transfer cut by ``--max-time`` is still measured, and the cut is
-at twice what a node at the threshold needs.
+The script follows Salad's example, in the ``sh`` the command runs under, run
+once per direction the account names, three attempts twenty seconds apart.
+
+An attempt is eight transfers at once, and the node's speed is the bytes they
+moved together over the window they moved them in: from the first transfer's
+first byte to the last one's end. One TCP connection carries a fraction of a
+link, so one transfer measures the connection rather than the node — from one
+home link, one transfer read 69 Mbps, eight read 343, and fast.com 820. The
+window leaves the handshakes out, a download's starting at its first byte and an
+upload's once TLS is up, because they move nothing. Every transfer is cut at
+fifteen seconds, and ``curl`` reports what a cut transfer moved and for how long,
+so a node too slow to finish is still measured.
 
 Cloudflare's endpoint serves the 25 MB Salad's script asks for and refuses some
-other sizes — 12.5 MB and 100 MB answered 403 when tried — so the size is fixed
-and the threshold sets the time instead; the upload sends as much. A speed test
-that does not answer is not held against the node: a reallocation costs the
-account that node for 48 hours, and an endpoint that is down says nothing about
-the connection.
+other sizes — 12.5 MB and 100 MB answered 403 when tried — and the upload sends
+as much, streamed rather than held in memory eight times. An address that asks
+for gigabytes in a few minutes is throttled: Cloudflare answered 429 and held
+connections ten seconds. A speed test that does not answer is not held against
+the node: a reallocation costs the account that node for 48 hours, and an
+endpoint that is down or throttling says nothing about the connection.
 
 What counts as an answer differs by direction. A download cut by the time limit
 has had its ``200`` already, since the headers come before the body; an upload's

@@ -248,7 +248,8 @@ class Salad(Provider, frozen=True, kw_only=True):
     Salad has no filter for either: a node is somebody's home computer, on whatever
     connection their ISP sold them, and a home connection usually uploads at a
     fraction of what it downloads — which is why each direction has a floor of its
-    own. Set, the container measures that direction before sshd comes up, and a
+    own. Set, the container measures that direction before sshd comes up, over
+    eight connections at once since one carries a fraction of a link, and a
     node short of it on every attempt asks Salad to reallocate the replica — which
     moves it to another machine and keeps the rejected one out of this account's
     pool for 48 hours. That exclusion is the cost of the knob: it is the speed the
