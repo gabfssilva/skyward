@@ -462,7 +462,7 @@ with sky.Compute(
 
 ## Salad
 
-Salad runs GPU workloads as containers on a distributed network of consumer machines, reached through its own container gateway. There is no private network between containers, so a Salad compute is always standalone: task dispatch works, distributed collections and distributed training do not.
+Salad runs GPU workloads as containers on a distributed network of consumer machines, reached through its container gateway or its SSH relay (`transport`). There is no private network between containers, so a Salad compute is always standalone: task dispatch works, distributed collections and distributed training do not.
 
 `organization` and `project` are the account's namespace. They are not optional to Salad — only to the constructor, where the environment may answer for them.
 

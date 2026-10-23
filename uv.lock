@@ -3145,11 +3145,13 @@ notebook = [
 ]
 providers = [
     { name = "aioboto3" },
+    { name = "asyncssh" },
     { name = "cryptography" },
     { name = "salad-cloud-sdk" },
     { name = "websockets" },
 ]
 salad = [
+    { name = "asyncssh" },
     { name = "salad-cloud-sdk" },
     { name = "websockets" },
 ]
@@ -3201,6 +3203,8 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'providers'", specifier = ">=13.0.0" },
     { name = "aioboto3", marker = "extra == 'storage'", specifier = ">=13.0.0" },
     { name = "asyncssh", marker = "extra == 'all'", specifier = ">=2.22.0" },
+    { name = "asyncssh", marker = "extra == 'providers'", specifier = ">=2.22.0" },
+    { name = "asyncssh", marker = "extra == 'salad'", specifier = ">=2.22.0" },
     { name = "asyncssh", marker = "extra == 'server'", specifier = ">=2.22.0" },
     { name = "casty", specifier = ">=0.30.2" },
     { name = "cloudpickle", specifier = ">=3.1" },

@@ -255,6 +255,25 @@ class Salad(Provider, frozen=True, kw_only=True):
     pool for 48 hours. That exclusion is the cost of the knob: it is the speed the
     workload needs, not the one it would like. Unset, nothing is measured.
     """
+    transport: Literal["gateway", "ssh", "any"] = "gateway"
+    """Which of Salad's two ways into a container the daemon reaches a node by.
+
+    ``gateway`` is the Container Gateway, the HTTP reverse proxy Salad puts in
+    front of one port; it reaches the container over IPv6, and on a node where that
+    path never forms it answers 503 for as long as the node lives. ``ssh`` is the
+    SSH relay the portal shows, an ``exec`` into the container from Salad's side
+    that needs no inbound path at all, and it needs ``ssh_key``. ``any`` sounds
+    both and takes the first that answers, which is what covers a node either one
+    fails on.
+    """
+    ssh_key: Annotated[str | None, Credential] = None
+    """The private key whose public half is registered in the Salad portal, under SSH Keys.
+
+    The portal holds one key per user, registered by hand, and the relay admits
+    nothing else, so this is the account's rather than a compute's: the ephemeral
+    key sshd takes is still minted per compute and travels inside. The contents of
+    the file ``SALAD_SSH_KEY_FILE`` names answer when it is left unset.
+    """
     vcpu_price: float = 0.005
     memory_price: float = 0.001
     """What a CPU-only node costs, per vCPU-hour and per GB-hour.

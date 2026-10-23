@@ -15,7 +15,7 @@ provider = sky.Salad(
 )
 ```
 
-The API key can come from `SALAD_API_KEY`. `organization` and `project` can come from `SALAD_ORGANIZATION` and `SALAD_PROJECT`; the project name is lowercased.
+The API key can come from `SALAD_API_KEY`. `organization` and `project` can come from `SALAD_ORGANIZATION` and `SALAD_PROJECT`; the project name is lowercased. `ssh_key`, needed by a `transport` other than `gateway`, can come from the file `SALAD_SSH_KEY_FILE` names; see [how a node is reached](#how-a-node-is-reached).
 
 `priority` (`high`, `medium`, `low` or `batch`) selects the price and how readily the workload is preempted. `spot` allocation is not available; every offer is on-demand, billed per second.
 
@@ -41,9 +41,13 @@ A compute that names no accelerator is sold a CPU node, even where a GPU class w
 
 ## How a node is reached
 
-Salad gives a container one way in: the Container Gateway, an HTTP reverse proxy in front of a single port. There is no inbound TCP, and the SSH relay shown in the Salad portal is a preview feature that runs outside the container — on a node whose relay fails it closes the connection before the SSH banner, and only reallocating the instance clears it.
+Salad gives a container two ways in, neither of them inbound TCP to the node, and `transport` says which the daemon uses:
 
-The adapter does not use that relay. Each container runs sshd behind a WebSocket-to-TCP bridge on the gateway port, and the daemon runs one loopback listener per node whose connections become WebSockets to that node's gateway domain. Everything above the adapter dials an ordinary host and port.
+- `gateway` (the default) is the Container Gateway, an HTTP reverse proxy in front of a single port. It reaches the container over IPv6, and on a node where that path never forms it answers 503 for as long as the node lives, with the container running and Salad calling the instance ready.
+- `ssh` is the SSH relay shown in the Salad portal: an `exec` into the container from Salad's side, over IPv4, admitted on the key registered in the portal under **SSH Keys**. It needs `ssh_key`, the private half of that key, which `SALAD_SSH_KEY_FILE` may name; the portal holds one key per user, registered by hand. On a node whose relay agent fails it closes the connection before the SSH banner.
+- `any` sounds both at every pass and takes the first that answers, which is what covers a node either one fails on. It needs `ssh_key` too.
+
+Either way is made to look like a socket. Each container runs sshd behind a WebSocket-to-TCP bridge on the gateway port, and the daemon runs one loopback listener per node whose connections become links to that node: a WebSocket to its gateway domain, or a session of the relay running the same websocat as a stdio-to-TCP bridge to the same sshd. Everything above the adapter dials an ordinary host and port. The relay is held to the host key fingerprint Salad publishes for the instance, execs on a PTY the bridge puts in raw mode, and allows no port forwarding of its own, which is why sshd stays inside; measured on one node, it carried 34 Mbps up and 53 down, and held a session for a quarter of an hour where the gateway ends every link after a few minutes.
 
 Two consequences follow from the gateway:
 

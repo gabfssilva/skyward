@@ -82,9 +82,16 @@ def _gcp_service_account() -> Mapping[str, str]:
     return {"service_account_json": Path(path).read_text()} if path and Path(path).is_file() else {}
 
 
+def _salad_ssh_key() -> Mapping[str, str]:
+    """``SALAD_SSH_KEY_FILE`` names the key registered in the portal; its contents are what travel."""
+    path = os.environ.get("SALAD_SSH_KEY_FILE")
+    return {"ssh_key": Path(path).read_text()} if path and Path(path).is_file() else {}
+
+
 FALLBACKS: Mapping[str, Callable[[], Mapping[str, str]]] = {
     "aws": _aws_shared,
     "gcp": _gcp_service_account,
+    "salad": _salad_ssh_key,
 }
 """Providers whose credentials live somewhere an environment variable cannot name."""
 

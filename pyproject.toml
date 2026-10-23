@@ -70,6 +70,7 @@ gcp = [
     "cryptography>=42",
 ]
 salad = [
+    "asyncssh>=2.22.0",
     "salad-cloud-sdk>=0.9.0a17",
     "websockets>=13",
 ]

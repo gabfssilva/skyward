@@ -1,17 +1,22 @@
-"""Salad Cloud, reached through its HTTP gateway rather than its SSH relay.
+"""Salad Cloud, reached through its container gateway or its SSH relay.
 
-Salad rents containers, not machines, and gives a container exactly one way in:
-the Container Gateway, an HTTP reverse proxy in front of one port. There is no
-inbound TCP to a node, and the SSH relay the portal advertises is a preview
-feature that runs on Salad's side of the container — on a node whose relay agent
-fails, it drops the connection before the banner and only a reallocation fixes
-it. Neither the daemon nor the node can do anything about that from here.
+Salad rents containers, not machines, and a container has two ways in, neither
+of them inbound TCP to the node. The Container Gateway is an HTTP reverse proxy
+in front of one port that reaches the container over IPv6; on a node where that
+path never forms it answers 503 for as long as the node lives, with the
+container running and Salad calling it ready. The SSH relay the portal shows is
+an ``exec`` into the container from Salad's side, admitted on the key registered
+in the portal; on a node whose relay agent fails it drops the connection before
+the banner. Each fails on nodes the other reaches, so the account's
+``transport`` says which to use, or ``any`` for whichever answers first.
 
-So the gateway is made to look like a socket. The container runs sshd and a
+Either way is made to look like a socket. The container runs sshd and a
 WebSocket-to-TCP bridge on the gateway port, and the daemon runs one loopback
-listener per node whose accepted connections become WebSockets to that node's
-gateway. Above :meth:`SaladProvider.machines` nothing knows: it hands back a
-host and a port, and ``asyncssh`` dials them like any other provider's.
+listener per node whose accepted connections become links to that node: a
+WebSocket to its gateway, or a session of the relay running websocat as a
+stdio-to-TCP bridge to the same sshd. Above :meth:`SaladProvider.machines`
+nothing knows: it hands back a host and a port, and ``asyncssh`` dials them like
+any other provider's.
 
 Two constraints of the gateway shape the design. It cannot carry the
 ``Salad-Api-Key`` header on a WebSocket upgrade, so the gateway is opened with
@@ -46,13 +51,17 @@ handler, which tries four times, so a request that fails costs four timeouts.
 """
 
 import asyncio
+import base64
 import contextlib
 import re
 import ssl
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, ClassVar, Self
 
+import asyncssh
 import httpx
 import msgspec
 from salad_cloud_sdk import SaladCloudSdkAsync
@@ -82,6 +91,25 @@ SSH_USER = "root"
 DEFAULT_IMAGE = "saladtechnologies/misc:ubuntu24-dev"
 GATEWAY_PORT = 8888
 WEBSOCAT_URL = "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl"
+
+
+def _one_word(script: str) -> str:
+    """``script`` as one word the relay passes through whole, which ``sh -c`` runs as written.
+
+    The relay splits the command it is given on whitespace and ignores quoting, so
+    ``sh -c 'a; b'`` reaches the container as ``sh -c "'a;"``. The script travels
+    base64-encoded inside a word with no whitespace of its own, and the shell puts
+    the spaces back: ``${IFS}`` expands to one where the word needs it, and ``eval``
+    runs what ``base64 -d`` gives back. The script itself may then say anything.
+    """
+    return 'eval${IFS}"$(echo${IFS}' + base64.b64encode(script.encode()).decode() + '|base64${IFS}-d)"'
+
+
+RELAY_SCRIPT = "stty raw -echo; exec /usr/local/bin/websocat --binary - tcp:127.0.0.1:22"
+RELAY_COMMAND = f"sh -c {_one_word(RELAY_SCRIPT)}"
+"""What the relay is asked to exec: the bridge, in a word it passes through whole."""
+RELAY_CONNECT_SECONDS = 10.0
+RELAY_PROBE_SECONDS = 15.0
 
 MAX_VCPUS = 16
 MAX_MEMORY_GB = 32
@@ -231,11 +259,24 @@ arrive as flags.
 """
 
 
-class _Bridge:
-    """A loopback port that carries one node's SSH over its gateway."""
+type Carry = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
+"""How one accepted connection reaches the container's sshd: over the gateway, or over the relay."""
 
-    def __init__(self, url: str) -> None:
-        self._url = url
+
+@dataclass(frozen=True, slots=True)
+class _Relay:
+    """Where Salad's SSH relay answers for one instance, and the host key it must show."""
+
+    host: str
+    port: int
+    fingerprint: str
+
+
+class _Bridge:
+    """A loopback port that carries one node's SSH, one link to the container per accepted connection."""
+
+    def __init__(self, carry: Carry) -> None:
+        self._carry = carry
         self._server: asyncio.Server | None = None
 
     @property
@@ -255,36 +296,153 @@ class _Bridge:
             await self._server.wait_closed()
 
     async def _pump(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Carry one SSH connection over one WebSocket, until either end lets go.
-
-        How the socket closed is logged: the gateway ends every one of them after a
-        few minutes, and its close frame is the only place that says why.
-        """
         try:
-            async with connect(self._url, ssl=_TLS, max_size=None, ping_interval=None) as socket:
-                streams = (
-                    asyncio.create_task(_upstream(reader, socket)),
-                    asyncio.create_task(_downstream(socket, writer)),
-                )
-                try:
-                    await asyncio.wait(streams, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    for stream in streams:
-                        stream.cancel()
-            closed = socket.protocol
-            logger.debug(
-                "salad bridge to {} closed: received {}, sent {}, received first: {}",
-                self._url,
-                closed.close_rcvd,
-                closed.close_sent,
-                closed.close_rcvd_then_sent,
-            )
-        except (OSError, WebSocketException) as error:
-            logger.debug("salad bridge to {} failed: {}", self._url, error)
+            await self._carry(reader, writer)
         finally:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+
+async def _over_gateway(url: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Carry one SSH connection over one WebSocket, until either end lets go.
+
+    How the socket closed is logged: the gateway ends every one of them after a
+    few minutes, and its close frame is the only place that says why.
+    """
+    try:
+        async with connect(url, ssl=_TLS, max_size=None, ping_interval=None) as socket:
+            await _either(_upstream(reader, socket), _downstream(socket, writer))
+        closed = socket.protocol
+        logger.debug(
+            "salad bridge to {} closed: received {}, sent {}, received first: {}",
+            url,
+            closed.close_rcvd,
+            closed.close_sent,
+            closed.close_rcvd_then_sent,
+        )
+    except (OSError, WebSocketException) as error:
+        logger.debug("salad bridge to {} failed: {}", url, error)
+
+
+async def _over_relay(relay: _Relay, key: asyncssh.SSHKey, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Carry one SSH connection over one session of the relay, until either end lets go.
+
+    The relay execs the bridge on a PTY it allocates whether asked to or not, in
+    cooked mode: it echoes what it is sent and rewrites line ends, which no SSH
+    client survives. The script puts the PTY in raw mode before websocat starts,
+    and nothing of the client's is sent until the container's sshd banner has come
+    back, the first moment raw mode is known to be on — what the client wrote
+    meanwhile waits in its socket. What the relay prints before that is its own,
+    and is dropped.
+    """
+    try:
+        async with asyncio.timeout(RELAY_CONNECT_SECONDS):
+            conn = await _relay_connect(relay, key)
+        async with conn:
+            process = await conn.create_process(RELAY_COMMAND, encoding=None)
+            async with asyncio.timeout(RELAY_PROBE_SECONDS):
+                first = await _banner(process.stdout)
+            if first is None:
+                logger.debug("salad relay {}:{} ended the session before the container answered", relay.host, relay.port)
+                return
+            writer.write(first)
+            await writer.drain()
+            await _either(_to_relay(reader, process.stdin), _from_relay(process.stdout, writer))
+        logger.debug("salad relay bridge to {}:{} closed", relay.host, relay.port)
+    except (OSError, asyncssh.Error, TimeoutError) as error:
+        logger.debug("salad relay bridge to {}:{} failed: {}", relay.host, relay.port, error)
+
+
+async def _either(*directions: Coroutine[Any, Any, None]) -> None:
+    """Run both directions of a link, and end it when either one ends."""
+    tasks = tuple(asyncio.create_task(direction) for direction in directions)
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+
+
+async def _to_relay(reader: asyncio.StreamReader, stdin: asyncssh.SSHWriter[bytes]) -> None:
+    while chunk := await reader.read(65536):
+        stdin.write(chunk)
+        await stdin.drain()
+
+
+async def _from_relay(stdout: asyncssh.SSHReader[bytes], writer: asyncio.StreamWriter) -> None:
+    while chunk := await stdout.read(65536):
+        writer.write(chunk)
+        await writer.drain()
+
+
+async def _banner(stdout: asyncssh.SSHReader[bytes]) -> bytes | None:
+    """The session's output from the container's sshd banner on, or nothing if the session ended first.
+
+    The relay announces the container it is entering on the same stream, so the
+    first line that begins ``SSH-`` is where the container starts to speak.
+    """
+    seen = b""
+    while chunk := await stdout.read(65536):
+        seen += chunk
+        at = seen.find(b"SSH-")
+        if at == 0 or at > 0 and seen[at - 1] == 0x0A:
+            return seen[at:]
+    return None
+
+
+async def _relay_connect(relay: _Relay, key: asyncssh.SSHKey) -> asyncssh.SSHClientConnection:
+    """A connection to the relay, admitted only on the host key the API published for the instance."""
+    host_key = await asyncssh.get_server_host_key(relay.host, relay.port)
+    if host_key is None or host_key.get_fingerprint() != relay.fingerprint:
+        raise asyncssh.HostKeyNotVerifiable(f"salad relay {relay.host}:{relay.port} shows a host key other than the instance's")
+    return await asyncssh.connect(
+        relay.host,
+        port=relay.port,
+        username=SSH_USER,
+        client_keys=[key],
+        known_hosts=([host_key], (), (), (), (), (), ()),
+        keepalive_interval=30,
+        keepalive_count_max=3,
+    )
+
+
+async def _relay_answering(relay: _Relay, key: asyncssh.SSHKey) -> bool:
+    """Whether a session through the relay reaches the container's sshd.
+
+    The relay admits a session as soon as the instance is scheduled, long before
+    the container runs, and an exec into one that is not running ends at once;
+    what says the node is there to dial is the banner of its sshd coming back.
+    """
+    try:
+        async with asyncio.timeout(RELAY_PROBE_SECONDS):
+            conn = await _relay_connect(relay, key)
+            try:
+                process = await conn.create_process(RELAY_COMMAND, encoding=None)
+                answered = await _banner(process.stdout) is not None
+            finally:
+                conn.close()
+                await conn.wait_closed()
+    except (OSError, asyncssh.Error, TimeoutError) as error:
+        logger.debug("salad relay {}:{} is not answering: {}", relay.host, relay.port, error)
+        return False
+    return answered
+
+
+async def _first_answering(ways: Sequence[tuple[Callable[[], Awaitable[bool]], Carry]]) -> Carry | None:
+    """The carrier of the first way that answers, the rest given up on; none when none does."""
+    pending = {asyncio.ensure_future(sound()): carry for sound, carry in ways}
+    try:
+        while pending:
+            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                carry = pending.pop(task)
+                if task.result():
+                    return carry
+        return None
+    finally:
+        for task in pending:
+            task.cancel()
 
 
 _BRIDGES: dict[str, _Bridge] = {}
@@ -312,11 +470,11 @@ async def _downstream(socket: ClientConnection, writer: asyncio.StreamWriter) ->
         await writer.drain()
 
 
-async def _bridge(group_name: str, dns: str) -> _Bridge:
+async def _bridge(group_name: str, carry: Carry) -> _Bridge:
     async with _BRIDGE_LOCK:
         if (running := _BRIDGES.get(group_name)) is not None:
             return running
-        bridge = _Bridge(f"wss://{dns}/")
+        bridge = _Bridge(carry)
         await bridge.start()
         _BRIDGES[group_name] = bridge
         return bridge
@@ -347,7 +505,7 @@ async def _release_bridge(group_name: str) -> None:
 
 class SaladProvider:
     kind: ClassVar[str] = "salad"
-    credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
+    credential_fields: ClassVar[tuple[str, ...]] = ("api_key", "ssh_key")
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
     def __init__(self, provider_id: str, name: str, api_key: str, config: Salad) -> None:
@@ -356,6 +514,8 @@ class SaladProvider:
         self._organization = _required(config.organization, "organization", name)
         self._project = _required(config.project, "project", name).lower()
         self._priority = config.priority
+        self._transport = config.transport
+        self._relay_key = asyncssh.import_private_key(config.ssh_key) if config.ssh_key else None
         self._config = config
         self._api_key = api_key
         self._sdk = SaladCloudSdkAsync()
@@ -367,6 +527,8 @@ class SaladProvider:
         settings = msgspec.convert({**credentials, **config}, Salad)
         if not settings.api_key:
             raise CapabilityMismatchError("salad requires an api_key credential", provider=name)
+        if settings.transport != "gateway" and not settings.ssh_key:
+            raise CapabilityMismatchError(f"salad transport {settings.transport!r} needs the ssh_key credential", provider=name)
         return cls(provider_id, name, settings.api_key, settings)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
@@ -514,7 +676,7 @@ class SaladProvider:
 
         Salad's ``running`` is the container's command started, not the bridge up,
         and between the two lies the install over the node's own uplink. A machine
-        is reported running only once its gateway answers; until then it is pending
+        is reported running only once a way into it answers; until then it is pending
         with the container's last line of output as its progress, so a boot that is
         still moving keeps its deadline and one that has stopped meets it.
 
@@ -536,7 +698,7 @@ class SaladProvider:
             if instances is None:
                 continue
             instance = next(iter(instances), None)
-            if _state(instance) != "running" or not dns:
+            if _state(instance) != "running":
                 machines[group_name] = Machine(
                     id=group_name,
                     state="pending",
@@ -546,7 +708,8 @@ class SaladProvider:
                     node=node,
                 )
                 continue
-            if group_name not in _BRIDGES and not await _answering(dns):
+            bridge = _BRIDGES.get(group_name) or await self._reach(group_name, dns, _relay(instance))
+            if bridge is None:
                 machines[group_name] = Machine(
                     id=group_name,
                     state="pending",
@@ -555,7 +718,6 @@ class SaladProvider:
                     node=node,
                 )
                 continue
-            bridge = await _bridge(group_name, dns)
             machines[group_name] = Machine(
                 id=group_name,
                 state="running",
@@ -576,6 +738,21 @@ class SaladProvider:
         for group_name, _, _ in await self._groups(binding):
             await self._discard(group_name)
             await _release_bridge(group_name)
+
+    async def _reach(self, group_name: str, dns: str, relay: _Relay | None) -> _Bridge | None:
+        """A bridge to the group over the first of its ways in that answers, or none yet.
+
+        Which ways are sounded is the account's ``transport``. The gateway is asked
+        with a handshake, the relay with a session that must come back with the
+        container's sshd banner; under ``any`` both are asked at once, and the first
+        to answer is what the bridge is built on, and kept for the group.
+        """
+        key = self._relay_key
+        over_gateway = [(partial(_answering, dns), partial(_over_gateway, f"wss://{dns}/"))] if dns else []
+        over_relay = [(partial(_relay_answering, relay, key), partial(_over_relay, relay, key))] if relay and key else []
+        ways = {"gateway": over_gateway, "ssh": over_relay, "any": [*over_gateway, *over_relay]}[self._transport]
+        carry = await _first_answering(ways)
+        return None if carry is None else await _bridge(group_name, carry)
 
     async def _groups(self, binding: Binding) -> tuple[tuple[str, str, str], ...]:
         """Every container group of this compute, by name, gateway and status, as Salad has them."""
@@ -749,6 +926,14 @@ def _state(instance: object) -> MachineState:
         return "pending"
     ready = bool(getattr(instance, "ready", False))
     return "running" if _enum_value(getattr(instance, "state", None)) == "running" and ready else "pending"
+
+
+def _relay(instance: object) -> _Relay | None:
+    """Where the relay reaches this instance, which Salad says once it has scheduled it on a node."""
+    host = _text(getattr(instance, "ssh_ip", None))
+    port = _integer(getattr(instance, "ssh_port", None))
+    fingerprint = _text(getattr(instance, "ssh_host_key_fingerprint", None))
+    return _Relay(host, port, fingerprint.split()[0]) if host and port and fingerprint else None
 
 
 def _stamp(moment: datetime) -> str:

@@ -5,13 +5,19 @@ credentials and the config a provider row is made of, and the adapter puts it
 back together on the other side of the wire. These are the two halves agreeing.
 """
 
+import asyncio
+import base64
+import contextlib
 import os
 import subprocess
 from collections.abc import Mapping
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Self
 
+import asyncssh
 import httpx
 import msgspec
 import pytest
@@ -21,12 +27,13 @@ import skyward as sky
 from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
 from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
-from skyward.providers.salad import BANDWIDTH_CHECK, SaladProvider
+from skyward.providers.salad import BANDWIDTH_CHECK, RELAY_COMMAND, RELAY_SCRIPT, SaladProvider, _Bridge, _first_answering, _one_word, _over_relay, _Relay
 from skyward.providers.tensordock import TensorDockProvider
 from skyward.server.application import market
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.providers import ProviderStore
 from skyward.shared import providers
+from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.providers import Provider
 from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, Offer, Page, ProviderCreate, ProviderRef, Spec, Worker
 
@@ -46,6 +53,7 @@ def nowhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         for variable in providers.variables(account).values():
             monkeypatch.delenv(variable, raising=False)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("SALAD_SSH_KEY_FILE", raising=False)
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-such-file"))
 
 
@@ -70,6 +78,14 @@ def describe_writing_a_provider() -> None:
             monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(shared))
 
             assert resolve(sky.AWS())[0] == {"access_key_id": "AKIAFILE", "secret_access_key": "filesecret"}
+
+        def it_reads_the_salad_key_from_the_file_named_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+            key = tmp_path / "id_ed25519"
+            key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nnot really\n")
+            monkeypatch.setenv("SALAD_SSH_KEY_FILE", str(key))
+
+            assert resolve(sky.Salad())[0] == {"ssh_key": key.read_text()}, "the file's contents travel, never its path"
+            assert resolve(sky.Salad(ssh_key="written-down"))[0] == {"ssh_key": "written-down"}
 
     def it_takes_one_region_or_several() -> None:
         assert sky.AWS(region="eu-west-1").regions == ("eu-west-1",)
@@ -670,3 +686,188 @@ def describe_a_pod_as_runpod_reports_it() -> None:
     @pytest.mark.parametrize("status", ["EXITED", "ERROR", "TERMINATED"])
     def it_is_reported_gone_once_it_has_stopped(status: str) -> None:
         assert _machine({"id": "jj4obfs25b0xig", "status": status}, "skyward-cmp_1-") is None
+
+
+def describe_a_salad_node_reached_over_the_relay() -> None:
+    """Salad's SSH relay is an exec into the container from Salad's side, on a PTY it allocates whether asked to or not.
+
+    What the daemon meets is a Go SSH server that names the container first, on the
+    same stream, then runs what it was handed, and a cooked PTY that echoes whatever
+    arrives. The fake here does the same, and withholds the container's banner until
+    told to, so a bridge that forwards before the container has spoken is caught by
+    its own echo arriving first.
+    """
+
+    class _Admitting(asyncssh.SSHServer):
+        def begin_auth(self, username: str) -> bool:
+            return True
+
+        def public_key_auth_supported(self) -> bool:
+            return True
+
+        def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
+            return True
+
+    class _FakeRelay:
+        def __init__(self, container_running: bool = True) -> None:
+            self.container_running = container_running
+            self.commands: list[str] = []
+            self.answer = asyncio.Event()
+            self.host_key = asyncssh.generate_private_key("ssh-ed25519")
+            self._acceptor: asyncssh.SSHAcceptor | None = None
+
+        async def __aenter__(self) -> Self:
+            self._acceptor = await asyncssh.listen(
+                "127.0.0.1",
+                0,
+                server_host_keys=[self.host_key],
+                server_factory=_Admitting,
+                process_factory=self._session,
+                encoding=None,
+            )
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            if self._acceptor is not None:
+                self._acceptor.close()
+
+        @property
+        def where(self) -> _Relay:
+            assert self._acceptor is not None
+            return _Relay("127.0.0.1", self._acceptor.get_port(), self.host_key.get_fingerprint())
+
+        async def _session(self, process: asyncssh.SSHServerProcess[bytes]) -> None:
+            self.commands.append(process.command or "")
+            process.stdout.write(b"Connecting to container c-1\r\n")
+            if not self.container_running:
+                process.exit(1)
+                return
+            echo = asyncio.create_task(self._echo(process))
+            await self.answer.wait()
+            process.stdout.write(b"SSH-2.0-OpenSSH_9.6\r\n")
+            await echo
+            process.exit(1)
+
+        async def _echo(self, process: asyncssh.SSHServerProcess[bytes]) -> None:
+            with contextlib.suppress(OSError, asyncssh.Error):
+                while chunk := await process.stdin.read(65536):
+                    process.stdout.write(chunk)
+
+    class _Groups:
+        """One running group whose instance Salad has scheduled on a node, with the relay's door on it."""
+
+        def __init__(self, relay: _Relay) -> None:
+            self._relay = relay
+            self.deleted: list[str] = []
+
+        async def list_container_groups(self, organization: str, project: str) -> Any:
+            group = SimpleNamespace(
+                name="skyward-cmp-1-aaaa",
+                networking=SimpleNamespace(dns="aaaa.salad.cloud"),
+                current_state=SimpleNamespace(status="running"),
+            )
+            return SimpleNamespace(items=[group])
+
+        async def list_container_group_instances(self, organization: str, project: str, name: str) -> Any:
+            instance = SimpleNamespace(
+                state="running",
+                ready=True,
+                pulling_progress=0.0,
+                ssh_ip=self._relay.host,
+                ssh_port=self._relay.port,
+                ssh_host_key_fingerprint=f"{self._relay.fingerprint} (ED25519)",
+            )
+            return SimpleNamespace(instances=[instance])
+
+        async def delete_container_group(self, organization: str, project: str, name: str) -> None:
+            self.deleted.append(name)
+
+    relay_key = asyncssh.generate_private_key("ssh-ed25519")
+
+    def _account(**config: Any) -> SaladProvider:
+        credentials = {"api_key": "not-a-key", "ssh_key": relay_key.export_private_key().decode()}
+        return SaladProvider.create("prv_salad", "salad", credentials, {"organization": "org", "project": "proj", **config})
+
+    async def it_carries_ssh_from_the_containers_banner_on() -> None:
+        async with _FakeRelay() as relay:
+            bridge = _Bridge(partial(_over_relay, relay.where, relay_key))
+            await bridge.start()
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
+                writer.write(b"SSH-2.0-client\r\n")
+                await writer.drain()
+                relay.answer.set()
+
+                assert await reader.readexactly(21) == b"SSH-2.0-OpenSSH_9.6\r\n", "what the relay said of itself never reaches the client"
+                assert await reader.readexactly(16) == b"SSH-2.0-client\r\n", "the client's bytes waited for the container to speak, then went"
+                writer.close()
+            finally:
+                await bridge.close()
+            assert relay.commands == [RELAY_COMMAND], "one session per connection, running the bridge"
+
+    def it_hands_the_relay_the_script_in_one_word() -> None:
+        """The relay splits its command on whitespace and ignores quoting, so the script travels encoded."""
+        word = RELAY_COMMAND.removeprefix("sh -c ")
+        assert " " not in word
+        assert base64.b64decode(word.split("echo${IFS}")[1].split("|")[0]) == RELAY_SCRIPT.encode()
+
+        run = subprocess.run(["sh", "-c", _one_word("echo one  two; echo three")], capture_output=True, text=True, check=True)
+
+        assert run.stdout == "one two\nthree\n", "the shell puts the spaces back and runs the script whole"
+
+    async def it_refuses_a_relay_showing_another_host_key() -> None:
+        async with _FakeRelay() as relay:
+            bridge = _Bridge(partial(_over_relay, replace(relay.where, fingerprint="SHA256:somebody-else"), relay_key))
+            await bridge.start()
+            try:
+                reader, _ = await asyncio.open_connection("127.0.0.1", bridge.port)
+
+                assert await reader.read() == b"", "nothing is carried"
+            finally:
+                await bridge.close()
+            assert relay.commands == [], "and no session was opened"
+
+    async def it_is_running_once_the_relay_reaches_its_sshd() -> None:
+        """The relay admits a session as soon as the instance is scheduled; the container's banner is what counts."""
+
+        async def booting(group_name: str) -> str:
+            return "booting"
+
+        async with _FakeRelay(container_running=False) as relay:
+            provider = _account(transport="ssh")
+            provider._sdk = SimpleNamespace(container_groups=_Groups(relay.where))
+            provider._booting = booting
+            try:
+                before = await provider.machines({"compute_id": "cmp_1"})
+                assert before["skyward-cmp-1-aaaa"].state == "pending", "a session that ends before the banner is a container not yet running"
+
+                relay.container_running = True
+                relay.answer.set()
+                after = await provider.machines({"compute_id": "cmp_1"})
+
+                assert after["skyward-cmp-1-aaaa"].state == "running"
+                assert after["skyward-cmp-1-aaaa"].host == "127.0.0.1", "a loopback port, like any other provider's host"
+                assert len(relay.commands) == 2, "one session sounded it each pass; the bridge opens one per connection"
+            finally:
+                await provider.release({"compute_id": "cmp_1"})
+
+    async def it_takes_the_first_way_that_answers() -> None:
+        async def after(delay: float, answer: bool) -> bool:
+            await asyncio.sleep(delay)
+            return answer
+
+        async def gateway(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            pass
+
+        async def relay(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            pass
+
+        assert await _first_answering([(partial(after, 0.2, True), gateway), (partial(after, 0, True), relay)]) is relay
+        assert await _first_answering([(partial(after, 0, False), gateway), (partial(after, 0.05, True), relay)]) is relay, "a no is not waited on"
+        assert await _first_answering([(partial(after, 0, False), gateway)]) is None
+        assert await _first_answering([]) is None
+
+    @pytest.mark.parametrize("transport", ["ssh", "any"])
+    def it_is_not_registered_without_the_portal_key(transport: str) -> None:
+        with pytest.raises(CapabilityMismatchError):
+            SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", "transport": transport})
