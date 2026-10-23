@@ -8,7 +8,8 @@ container running and Salad calling it ready. The SSH relay the portal shows is
 an ``exec`` into the container from Salad's side, admitted on the key registered
 in the portal; on a node whose relay agent fails it drops the connection before
 the banner. Each fails on nodes the other reaches, so the account's
-``transport`` says which to use, or ``any`` for whichever answers first.
+``transport`` says which to use: the relay unless told otherwise, the gateway,
+or ``any`` for whichever answers first.
 
 Either way is made to look like a socket. The container runs sshd and a
 WebSocket-to-TCP bridge on the gateway port, and the daemon runs one loopback
@@ -528,7 +529,11 @@ class SaladProvider:
         if not settings.api_key:
             raise CapabilityMismatchError("salad requires an api_key credential", provider=name)
         if settings.transport != "gateway" and not settings.ssh_key:
-            raise CapabilityMismatchError(f"salad transport {settings.transport!r} needs the ssh_key credential", provider=name)
+            raise CapabilityMismatchError(
+                f"salad transport {settings.transport!r} needs the ssh_key credential: register a key in the portal under SSH Keys "
+                "and name its private half in SALAD_SSH_KEY_FILE, or choose transport='gateway'",
+                provider=name,
+            )
         return cls(provider_id, name, settings.api_key, settings)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:

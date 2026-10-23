@@ -50,7 +50,7 @@ def targets() -> tuple[Target, ...]:
         Target("massed_compute", sky.MassedCompute(), sky.accelerators.RTX_A4000(), ("MASSED_API_KEY",)),
         Target("novita", sky.Novita(), sky.accelerators.RTX_4090(), ("NOVITA_API_KEY",)),
         Target("runpod", sky.RunPod(container_image='nvidia/cuda:12.8.2-runtime-ubuntu24.04'), sky.accelerators.A40(), ("RUNPOD_API_KEY",)),
-        Target("salad", sky.Salad(), sky.accelerators.RTX_4090(), ("SALAD_API_KEY", "SALAD_ORGANIZATION", "SALAD_PROJECT")),
+        Target("salad", sky.Salad(), sky.accelerators.RTX_4090(), ("SALAD_API_KEY", "SALAD_ORGANIZATION", "SALAD_PROJECT", "SALAD_SSH_KEY_FILE")),
         Target("scaleway", sky.Scaleway(), sky.accelerators.L4(), ("SCW_SECRET_KEY",)),
         Target("tensordock", sky.TensorDock(), sky.accelerators.RTX_4090(), ("TENSORDOCK_API_TOKEN",)),
         Target("vastai", sky.VastAI(), sky.accelerators.RTX_4090(), ("VAST_API_KEY",), cluster=True),

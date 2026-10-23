@@ -193,7 +193,8 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
             self.deleted.append(name)
 
     def _salad(instances: dict[str, str], pulled: float = 0.43, stopped: frozenset[str] = frozenset(), **config: Any) -> tuple[SaladProvider, _Salad]:
-        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", **config})
+        settings = {"organization": "org", "project": "proj", "transport": "gateway", **config}
+        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, settings)
         groups = _Salad(instances, pulled, stopped)
         provider._sdk = SimpleNamespace(container_groups=groups)
         return provider, groups
@@ -391,7 +392,8 @@ def describe_what_a_salad_account_may_buy() -> None:
         )
 
     def _salad(classes: SimpleNamespace, **config: Any) -> SaladProvider:
-        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", **config})
+        settings = {"organization": "org", "project": "proj", "transport": "gateway", **config}
+        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, settings)
 
         async def list_gpu_classes(organization: str) -> SimpleNamespace:
             return classes
@@ -867,7 +869,12 @@ def describe_a_salad_node_reached_over_the_relay() -> None:
         assert await _first_answering([(partial(after, 0, False), gateway)]) is None
         assert await _first_answering([]) is None
 
-    @pytest.mark.parametrize("transport", ["ssh", "any"])
-    def it_is_not_registered_without_the_portal_key(transport: str) -> None:
+    @pytest.mark.parametrize("config", [{}, {"transport": "ssh"}, {"transport": "any"}], ids=["default", "ssh", "any"])
+    def it_is_not_registered_without_the_portal_key(config: dict[str, str]) -> None:
         with pytest.raises(CapabilityMismatchError):
-            SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", "transport": transport})
+            SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", **config})
+
+    def it_is_registered_without_one_for_the_gateway() -> None:
+        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", "transport": "gateway"})
+
+        assert provider.kind == "salad"
