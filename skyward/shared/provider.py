@@ -116,7 +116,8 @@ class Catalog(Protocol):
     kind : str
         Selects the adapter. Several registered providers may share one.
     credential_fields : tuple[str, ...]
-        The secrets :meth:`create` expects, named.
+        The secrets :meth:`create` expects whatever the settings, named. One that
+        only some settings need is :meth:`create`'s to refuse.
     offers_ttl : timedelta
         How long this provider's catalog stays true. A marketplace bundle is gone
         in minutes; an instance type is not.
@@ -145,6 +146,12 @@ class Catalog(Protocol):
         -------
         Self
             An adapter bound to that account.
+
+        Raises
+        ------
+        CapabilityMismatchError
+            When the account cannot be opened as written. The store builds an
+            adapter before it writes an account down, so this is where one is refused.
         """
         ...
 

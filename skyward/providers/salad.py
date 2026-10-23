@@ -506,17 +506,17 @@ async def _release_bridge(group_name: str) -> None:
 
 class SaladProvider:
     kind: ClassVar[str] = "salad"
-    credential_fields: ClassVar[tuple[str, ...]] = ("api_key", "ssh_key")
+    credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Salad) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, relay_key: asyncssh.SSHKey | None, config: Salad) -> None:
         self._id = provider_id
         self._name = name
         self._organization = _required(config.organization, "organization", name)
         self._project = _required(config.project, "project", name).lower()
         self._priority = config.priority
         self._transport = config.transport
-        self._relay_key = asyncssh.import_private_key(config.ssh_key) if config.ssh_key else None
+        self._relay_key = relay_key
         self._config = config
         self._api_key = api_key
         self._sdk = SaladCloudSdkAsync()
@@ -528,13 +528,19 @@ class SaladProvider:
         settings = msgspec.convert({**credentials, **config}, Salad)
         if not settings.api_key:
             raise CapabilityMismatchError("salad requires an api_key credential", provider=name)
-        if settings.transport != "gateway" and not settings.ssh_key:
+        if settings.transport == "gateway":
+            return cls(provider_id, name, settings.api_key, None, settings)
+        if not settings.ssh_key:
             raise CapabilityMismatchError(
                 f"salad transport {settings.transport!r} needs the ssh_key credential: register a key in the portal under SSH Keys "
-                "and name its private half in SALAD_SSH_KEY_FILE, or choose transport='gateway'",
+                "and name its private half in SALAD_SSH_KEY_FILE if it is not ~/.ssh/id_ed25519, or choose transport='gateway'",
                 provider=name,
             )
-        return cls(provider_id, name, settings.api_key, settings)
+        try:
+            relay_key = asyncssh.import_private_key(settings.ssh_key)
+        except asyncssh.KeyImportError as error:
+            raise CapabilityMismatchError(f"salad ssh_key cannot be read: {error}", provider=name) from error
+        return cls(provider_id, name, settings.api_key, relay_key, settings)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False

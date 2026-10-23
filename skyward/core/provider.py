@@ -83,9 +83,9 @@ def _gcp_service_account() -> Mapping[str, str]:
 
 
 def _salad_ssh_key() -> Mapping[str, str]:
-    """``SALAD_SSH_KEY_FILE`` names the key registered in the portal; its contents are what travel."""
-    path = os.environ.get("SALAD_SSH_KEY_FILE")
-    return {"ssh_key": Path(path).read_text()} if path and Path(path).is_file() else {}
+    """The key registered in the portal, the file ``SALAD_SSH_KEY_FILE`` names or else ``~/.ssh/id_ed25519``; its contents are what travel."""
+    path = Path(os.environ.get("SALAD_SSH_KEY_FILE") or Path.home() / ".ssh" / "id_ed25519")
+    return {"ssh_key": path.read_text()} if path.is_file() else {}
 
 
 FALLBACKS: Mapping[str, Callable[[], Mapping[str, str]]] = {

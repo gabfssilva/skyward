@@ -55,6 +55,7 @@ def nowhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     monkeypatch.delenv("SALAD_SSH_KEY_FILE", raising=False)
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-such-file"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def describe_writing_a_provider() -> None:
@@ -86,6 +87,17 @@ def describe_writing_a_provider() -> None:
 
             assert resolve(sky.Salad())[0] == {"ssh_key": key.read_text()}, "the file's contents travel, never its path"
             assert resolve(sky.Salad(ssh_key="written-down"))[0] == {"ssh_key": "written-down"}
+
+        def it_reads_the_salad_key_from_the_users_ed25519_key_when_no_file_is_named(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+            (tmp_path / ".ssh").mkdir()
+            (tmp_path / ".ssh" / "id_ed25519").write_text("the user's own")
+            named = tmp_path / "salad"
+            named.write_text("the one named")
+
+            assert resolve(sky.Salad())[0] == {"ssh_key": "the user's own"}
+
+            monkeypatch.setenv("SALAD_SSH_KEY_FILE", str(named))
+            assert resolve(sky.Salad())[0] == {"ssh_key": "the one named"}, "a file named for it wins over the default"
 
     def it_takes_one_region_or_several() -> None:
         assert sky.AWS(region="eu-west-1").regions == ("eu-west-1",)
@@ -869,12 +881,26 @@ def describe_a_salad_node_reached_over_the_relay() -> None:
         assert await _first_answering([(partial(after, 0, False), gateway)]) is None
         assert await _first_answering([]) is None
 
+    async def _registered(tmp_path: Path, credentials: Mapping[str, str], config: Mapping[str, str]) -> None:
+        await connect(tmp_path / "skyward.sqlite")
+        await ProviderStore().create(
+            ProviderCreate(
+                name="salad",
+                kind="salad",
+                credentials={"api_key": "not-a-key", **credentials},
+                config={"organization": "org", "project": "proj", **config},
+            )
+        )
+
     @pytest.mark.parametrize("config", [{}, {"transport": "ssh"}, {"transport": "any"}], ids=["default", "ssh", "any"])
-    def it_is_not_registered_without_the_portal_key(config: dict[str, str]) -> None:
-        with pytest.raises(CapabilityMismatchError):
-            SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", **config})
+    async def it_is_not_registered_without_the_portal_key(tmp_path: Path, config: dict[str, str]) -> None:
+        with pytest.raises(CapabilityMismatchError, match="needs the ssh_key"):
+            await _registered(tmp_path, {}, config)
 
-    def it_is_registered_without_one_for_the_gateway() -> None:
-        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj", "transport": "gateway"})
+    async def it_is_not_registered_with_a_key_it_cannot_read(tmp_path: Path) -> None:
+        with pytest.raises(CapabilityMismatchError, match="ssh_key cannot be read"):
+            await _registered(tmp_path, {"ssh_key": "not a key"}, {})
 
-        assert provider.kind == "salad"
+    @pytest.mark.parametrize("credentials", [{}, {"ssh_key": "not a key"}], ids=["no key", "a key it never reads"])
+    async def it_is_registered_for_the_gateway_whatever_the_key(tmp_path: Path, credentials: dict[str, str]) -> None:
+        await _registered(tmp_path, credentials, {"transport": "gateway"})

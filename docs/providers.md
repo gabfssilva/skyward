@@ -472,10 +472,10 @@ Salad runs GPU workloads as containers on a distributed network of consumer mach
 export SALAD_API_KEY=your_api_key
 export SALAD_ORGANIZATION=your_org
 export SALAD_PROJECT=your_project
-export SALAD_SSH_KEY_FILE=~/.ssh/id_ed25519
+export SALAD_SSH_KEY_FILE=~/.ssh/salad  # only if the key is not ~/.ssh/id_ed25519
 ```
 
-The key file is the private half of the key registered in the Salad portal under **SSH Keys**, which is how the daemon reaches a node by default; `transport="gateway"` is the one setting that does without it. See [the provider reference](reference/providers/salad.md#how-a-node-is-reached).
+The key file is the private half of the key registered in the Salad portal under **SSH Keys**, `~/.ssh/id_ed25519` unless `SALAD_SSH_KEY_FILE` names another, which is how the daemon reaches a node by default; `transport="gateway"` is the one setting that does without it. See [the provider reference](reference/providers/salad.md#how-a-node-is-reached).
 
 ### Install
 
@@ -502,7 +502,7 @@ with sky.Compute(
 |-----------|------|---------|-------------|
 | `api_key` | `str or None` | `None` | API key. Falls back to `SALAD_API_KEY`. |
 | `transport` | `"ssh"`, `"gateway"` or `"any"` | `"ssh"` | How a node is reached: Salad's SSH relay, its container gateway, or whichever answers first. |
-| `ssh_key` | `str or None` | `None` | Private half of the key registered in the portal; required unless `transport` is `"gateway"`. Falls back to the contents of the file `SALAD_SSH_KEY_FILE` names. |
+| `ssh_key` | `str or None` | `None` | Private half of the key registered in the portal; required unless `transport` is `"gateway"`. Falls back to the contents of the file `SALAD_SSH_KEY_FILE` names, then of `~/.ssh/id_ed25519`. |
 | `organization` | `str or None` | `None` | Organization name. Falls back to `SALAD_ORGANIZATION`. |
 | `project` | `str or None` | `None` | Project name. Falls back to `SALAD_PROJECT`. |
 | `priority` | `"high", "medium", "low", "batch"` | `"low"` | Allocation priority. Higher is faster to place and more expensive. |

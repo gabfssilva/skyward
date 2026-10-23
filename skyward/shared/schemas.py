@@ -1033,8 +1033,9 @@ class ProviderKind(Struct, frozen=True):
 class ProviderCreate(Struct, frozen=True):
     """An account to register: what to call it, which cloud it is, and what opens it.
 
-    ``credentials`` are validated against the kind's declared fields before the
-    row is written, and no read path returns them afterwards.
+    The kind's adapter is built from it before the row is written, so an account
+    it could not be opened as is refused here; no read path returns
+    ``credentials`` afterwards.
     """
 
     name: str

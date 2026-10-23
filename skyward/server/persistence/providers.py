@@ -16,19 +16,14 @@ class ProviderStore:
         self._adapters: dict[str, tuple[bytes, Catalog]] = {}
 
     async def create(self, body: ProviderCreate) -> Provider:
-        adapter = adapter_for(body.kind)
-
-        if missing := [f for f in adapter.credential_fields if not body.credentials.get(f)]:
-            raise CapabilityMismatchError(
-                f"{body.kind} requires credentials: {', '.join(adapter.credential_fields)}",
-                missing=missing,
-            )
+        provider_id = f"prv_{uuid.uuid4().hex[:12]}"
+        _validate(provider_id, body)
 
         if await ProviderRow.exists().where(ProviderRow.name == body.name):
             raise IdempotencyConflictError(f"provider name already taken: {body.name}")
 
         row = ProviderRow(
-            id=f"prv_{uuid.uuid4().hex[:12]}",
+            id=provider_id,
             name=body.name,
             kind=body.kind,
             credentials=dict(body.credentials),
@@ -55,12 +50,7 @@ class ProviderStore:
                 f"provider {provider.name} is {provider.kind}, not {body.kind}",
             )
 
-        adapter = adapter_for(body.kind)
-        if missing := [f for f in adapter.credential_fields if not body.credentials.get(f)]:
-            raise CapabilityMismatchError(
-                f"{body.kind} requires credentials: {', '.join(adapter.credential_fields)}",
-                missing=missing,
-            )
+        _validate(provider.id, body)
 
         await ProviderRow.update(
             {
@@ -101,6 +91,16 @@ class ProviderStore:
         adapter = adapter_for(row.kind).create(row.id, row.name, credentials, config)
         self._adapters[row.id] = (fingerprint, adapter)
         return adapter
+
+
+def _validate(provider_id: str, body: ProviderCreate) -> None:
+    adapter = adapter_for(body.kind)
+    if missing := [f for f in adapter.credential_fields if not body.credentials.get(f)]:
+        raise CapabilityMismatchError(
+            f"{body.kind} requires credentials: {', '.join(adapter.credential_fields)}",
+            missing=missing,
+        )
+    adapter.create(provider_id, body.name, body.credentials, body.config)
 
 
 async def _to_provider(row: ProviderRow) -> Provider:

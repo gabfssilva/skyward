@@ -272,7 +272,8 @@ class Salad(Provider, frozen=True, kw_only=True):
     registered by hand, and the relay admits nothing else, so this is the account's
     rather than a compute's: the ephemeral key sshd takes is still minted per
     compute and travels inside. The contents of the file ``SALAD_SSH_KEY_FILE``
-    names answer when it is left unset.
+    names answer when it is left unset, and those of ``~/.ssh/id_ed25519`` when
+    that is unset too.
     """
     vcpu_price: float = 0.005
     memory_price: float = 0.001
